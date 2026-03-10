@@ -2,6 +2,8 @@
   <img src="ghostpwn-logo.svg" alt="GhostPwn" width="200">
 </p>
 
+<h1 align="center">GhostPWN</h1>
+
 <p align="center">
   <strong>Autonomous Web Penetration Testing Agent</strong><br>
   <em>Multi-provider LLM support · Human-in-the-loop · Lightweight architecture</em>
