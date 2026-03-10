@@ -89,11 +89,11 @@ Each agent operates autonomously within its phase but requires **human approval*
 |:-----------------|:--------------------------------------------|
 | Runtime          | Bun                                         |
 | Language         | TypeScript (strict, no `any`)               |
-| Framework        | React (OpenTUI template)                    |
+| Framework        | SolidJS (OpenTUI template)                    |
 | LLM Orchestration| Vercel AI SDK                               |  
 | Terminal UI      | OpenTUI (React-based TUI)                   |
 | Database         | SQLite                                      |
-| HTTP Clients     | Playwright, Selenium                        |
+| HTTP Clients     | Playwright, Selenium, requests                        |
 
 ---
 
