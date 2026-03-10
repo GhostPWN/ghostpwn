@@ -1,25 +1,6 @@
-<table align="center">
-<tr>
-<td valign="top" width="200">
-<img src="ghostpwn-logo.svg" alt="GhostPwn" width="200">
-</td>
-<td align="right">
-<pre>
-<span style="color: #9b59b6;">
-  ▄████  ██░ ██  ▒█████    ██████ ▄▄▄█████▓ ██▓███   █     █░ ███▄    █ 
- ██▒ ▀█▒▓██░ ██▒▒██▒  ██▒▒██    ▒ ▓  ██▒ ▓▒▓██░  ██▒▓█░ █ ░█░ ██ ▀█   █ 
-▒██░▄▄▄░▒██▀▀██░▒██░  ██▒░ ▓██▄   ▒ ▓██░ ▒░▓██░ ██▓▒▒█░ █ ░█ ▓██  ▀█ ██▒
-░▓█  ██▓░▓█ ░██ ▒██   ██░  ▒   ██▒░ ▓██▓ ░ ▒██▄█▓▒ ▒░█░ █ ░█ ▓██▒  ▐▌██▒
-░▒▓███▀▒░▓█▒░██▓░ ████▓▒░▒██████▒▒  ▒██▒ ░ ▒██▒ ░  ░░░██▒██▓ ▒██░   ▓██░
- ░▒   ▒  ▒ ░░▒░▒░ ▒░▒░▒░ ▒ ▒▓▒ ▒ ░  ▒ ░░   ▒▓▒░ ░  ░░ ▓░▒ ▒  ░ ▒░   ▒ ▒ 
-  ░   ░  ▒ ░▒░ ░  ░ ▒ ▒░ ░ ░▒  ░ ░    ░    ░▒ ░       ▒ ░ ░  ░ ░░   ░ ▒░
-░ ░   ░  ░  ░░ ░░ ░ ░ ▒  ░  ░  ░    ░      ░░         ░   ░     ░   ░ ░ 
-      ░  ░  ░  ░    ░ ░        ░                        ░             ░ 
-</span>
-</pre>
-</td>
-</tr>
-</table>
+<p align="center">
+  <img src="ghostpwn-logo.svg" alt="GhostPwn" width="200">
+</p>
 
 <p align="center">
   <strong>Autonomous Web Penetration Testing Agent</strong><br>
@@ -137,7 +118,7 @@ Each agent operates autonomously within its phase but requires **human approval*
 
 ```bash
 # Clone
-git clone https://github.com/<your-org>/ghostpwn.git
+git clone https://github.com/GhostPWN/ghostpwn.git
 cd ghostpwn
 
 # Install dependencies
