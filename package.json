@@ -13,6 +13,9 @@
     "typescript": "^5"
   },
   "dependencies": {
+    "@ai-sdk/anthropic": "^3.0.67",
+    "@ai-sdk/google": "^3.0.59",
+    "@ai-sdk/openai": "^3.0.51",
     "@babel/core": "^7.29.0",
     "@babel/preset-typescript": "^7.28.5",
     "@opentui/core": "^0.1.87",

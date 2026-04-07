@@ -2,7 +2,7 @@ import { For } from "solid-js";
 import { TextAttributes } from "@opentui/core";
 
 const GHOST = [
-  "            ████████████████           ",
+  "            ████████████████          ",
   "          ██░░░░░░░░░░░░░░██          ",
   "        ██░░░░░░░░░░░░░░░░░░██        ",
   "      ██░░░░░░░░░░░░░░░░░░░░░░██      ",
