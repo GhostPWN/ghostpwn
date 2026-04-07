@@ -10,9 +10,9 @@ const registry = createProviderRegistry({
 });
 
 const DEFAULT_MODELS: Record<string, string> = {
-  anthropic: "claude-sonnet-4-5",
-  openai: "gpt-4o",
-  google: "gemini-2.5-flash",
+  anthropic: "claude-sonnet-4-6",
+  openai: "gpt-5.4",
+  google: "gemini-3.1-flash-lite-preview",
 };
 
 const API_KEY_VARS: Record<string, string> = {
@@ -22,12 +22,16 @@ const API_KEY_VARS: Record<string, string> = {
 };
 
 function getProvider(): string {
-  return process.env["GHOSTPWN_PROVIDER"] || "anthropic";
+  return process.env["GHOSTPWN_PROVIDER"] || "google";
 }
 
 function getModelId(): string {
   const provider = getProvider();
-  return process.env["GHOSTPWN_MODEL"] || DEFAULT_MODELS[provider] || "claude-sonnet-4-5";
+  return (
+    process.env["GHOSTPWN_MODEL"] ||
+    DEFAULT_MODELS[provider] ||
+    "gemini-3.1-flash-lite-preview"
+  );
 }
 
 export function getModel() {
@@ -37,7 +41,7 @@ export function getModel() {
   const keyVar = API_KEY_VARS[provider];
   if (keyVar && !process.env[keyVar]) {
     throw new Error(
-      `No API key set for ${provider}. Set ${keyVar} in your .env file.`
+      `No API key set for ${provider}. Set ${keyVar} in your .env file.`,
     );
   }
 

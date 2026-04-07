@@ -78,8 +78,10 @@ export function InputBar() {
       setInput((prev) => prev.slice(0, -1));
     } else if (key.name === "c" && key.ctrl) {
       process.exit(0);
+    } else if (key.name === "space" && !key.ctrl && !key.meta) {
+      setInput((prev) => prev + " ");
     } else if (key.name.length === 1 && !key.ctrl && !key.meta) {
-      setInput((prev) => prev + key.name);
+      setInput((prev) => prev + (key.shift ? key.name.toUpperCase() : key.name));
     }
   });
 
