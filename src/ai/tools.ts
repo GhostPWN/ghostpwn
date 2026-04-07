@@ -1,7 +1,7 @@
 import { tool } from "ai";
 import { z } from "zod";
 import { readdir, readFile, stat } from "node:fs/promises";
-import { join, resolve } from "node:path";
+import { resolve } from "node:path";
 import { Glob } from "bun";
 
 export const agentTools = {
@@ -82,7 +82,12 @@ export const agentTools = {
           matches.push(match);
           if (matches.length >= 100) break;
         }
-        return { pattern, cwd: base, matches, truncated: matches.length >= 100 };
+        return {
+          pattern,
+          cwd: base,
+          matches,
+          truncated: matches.length >= 100,
+        };
       } catch (err) {
         return {
           error: `Search failed: ${err instanceof Error ? err.message : String(err)}`,
@@ -99,7 +104,9 @@ export const agentTools = {
       path: z
         .string()
         .optional()
-        .describe("File or directory to search in (default: current directory)"),
+        .describe(
+          "File or directory to search in (default: current directory)",
+        ),
       glob: z
         .string()
         .optional()

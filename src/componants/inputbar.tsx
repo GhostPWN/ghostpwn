@@ -77,7 +77,7 @@ export function InputBar() {
       onToolResult(_toolName) {
         setToolStatus("");
       },
-      onFinish(text) {
+      onFinish(_text) {
         // Flush any remaining streaming content
         const remaining = streamingContent();
         if (remaining) {
