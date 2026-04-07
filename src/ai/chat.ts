@@ -9,6 +9,14 @@ You have tools to explore the codebase and run commands. Use them proactively to
 
 let history: ModelMessage[] = [];
 
+function isObjectRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
+function normalizeToolArgs(input: unknown): Record<string, unknown> {
+  return isObjectRecord(input) ? input : {};
+}
+
 export function clearHistory() {
   history = [];
 }
@@ -47,10 +55,7 @@ export async function sendMessage(text: string, callbacks: StreamCallbacks) {
           callbacks.onText(part.text);
           break;
         case "tool-call":
-          callbacks.onToolCall(
-            part.toolName,
-            part.input as Record<string, unknown>,
-          );
+          callbacks.onToolCall(part.toolName, normalizeToolArgs(part.input));
           break;
         case "tool-result":
           callbacks.onToolResult(part.toolName);
