@@ -68,10 +68,10 @@ export function InputBar() {
         }
 
         const argSummary = formatToolArgs(toolName, args);
-        setToolStatus(`⚡ ${toolName}(${argSummary})`);
+        setToolStatus(`${toolName}(${argSummary})`);
         setMessages((prev) => [
           ...prev,
-          { role: "tool", content: `⚡ ${toolName}(${argSummary})` },
+          { role: "tool", content: `${toolName}(${argSummary})` },
         ]);
       },
       onToolResult(_toolName) {
