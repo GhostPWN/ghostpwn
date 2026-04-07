@@ -5,8 +5,10 @@ import { SyntaxStyle } from "@opentui/core";
 import { GhostLogo } from "./ghostlogo";
 import { sendMessage, clearHistory, getProviderName } from "../ai";
 
+type MessageRole = "user" | "assistant" | "error" | "tool";
+
 interface Message {
-  role: "user" | "assistant" | "error";
+  role: MessageRole;
   content: string;
 }
 
@@ -17,6 +19,7 @@ export function InputBar() {
   const [messages, setMessages] = createSignal<Message[]>([]);
   const [isStreaming, setIsStreaming] = createSignal(false);
   const [streamingContent, setStreamingContent] = createSignal("");
+  const [toolStatus, setToolStatus] = createSignal("");
 
   async function handleSubmit() {
     const text = input().trim();
@@ -46,27 +49,57 @@ export function InputBar() {
     setInput("");
     setIsStreaming(true);
     setStreamingContent("");
+    setToolStatus("");
 
-    try {
-      const { textStream, response } = sendMessage(text);
+    await sendMessage(text, {
+      onText(delta) {
+        setStreamingContent((prev) => prev + delta);
+        setToolStatus("");
+      },
+      onToolCall(toolName, args) {
+        // Flush any accumulated text before showing tool call
+        const current = streamingContent();
+        if (current) {
+          setMessages((prev) => [
+            ...prev,
+            { role: "assistant", content: current },
+          ]);
+          setStreamingContent("");
+        }
 
-      for await (const chunk of textStream) {
-        setStreamingContent((prev) => prev + chunk);
-      }
+        const argSummary = formatToolArgs(toolName, args);
+        setToolStatus(`⚡ ${toolName}(${argSummary})`);
+        setMessages((prev) => [
+          ...prev,
+          { role: "tool", content: `⚡ ${toolName}(${argSummary})` },
+        ]);
+      },
+      onToolResult(_toolName) {
+        setToolStatus("");
+      },
+      onFinish(text) {
+        // Flush any remaining streaming content
+        const remaining = streamingContent();
+        if (remaining) {
+          setMessages((prev) => [
+            ...prev,
+            { role: "assistant", content: remaining },
+          ]);
+        }
+        setStreamingContent("");
+        setToolStatus("");
+        setIsStreaming(false);
+      },
+      onError(error) {
+        setMessages((prev) => [...prev, { role: "error", content: error }]);
+        setStreamingContent("");
+        setToolStatus("");
+        setIsStreaming(false);
+      },
+    });
 
-      await response;
-      setMessages((prev) => [
-        ...prev,
-        { role: "assistant", content: streamingContent() },
-      ]);
-    } catch (err) {
-      const errorMsg =
-        err instanceof Error ? err.message : "An unknown error occurred";
-      setMessages((prev) => [...prev, { role: "error", content: errorMsg }]);
-    } finally {
-      setStreamingContent("");
-      setIsStreaming(false);
-    }
+    // Safety net in case onFinish didn't fire
+    setIsStreaming(false);
   }
 
   useKeyboard((key) => {
@@ -110,32 +143,7 @@ export function InputBar() {
             stickyScroll={true}
           >
             <For each={messages()}>
-              {(msg) => (
-                <Show
-                  when={msg.role === "error"}
-                  fallback={
-                    <Show
-                      when={msg.role === "user"}
-                      fallback={
-                        <box flexDirection="column" paddingBottom={1}>
-                          <markdown
-                            content={msg.content}
-                            syntaxStyle={syntaxStyle}
-                          />
-                        </box>
-                      }
-                    >
-                      <box paddingBottom={1}>
-                        <text fg="#c4b5fd">{"❯ " + msg.content}</text>
-                      </box>
-                    </Show>
-                  }
-                >
-                  <box paddingBottom={1}>
-                    <text fg="#ef4444">{"✗ " + msg.content}</text>
-                  </box>
-                </Show>
-              )}
+              {(msg) => <MessageBubble msg={msg} />}
             </For>
             <Show when={isStreaming() && streamingContent()}>
               <box flexDirection="column" paddingBottom={1}>
@@ -151,9 +159,71 @@ export function InputBar() {
       </box>
       <box borderStyle="single" borderColor="#6d28d9" paddingX={1} width="100%">
         <text fg={isStreaming() ? "#666666" : "#e9d5ff"}>
-          {isStreaming() ? "  thinking..." : "❯ " + input() + "█"}
+          {isStreaming()
+            ? toolStatus()
+              ? `  ${toolStatus()}`
+              : "  thinking..."
+            : "❯ " + input() + "█"}
         </text>
       </box>
     </box>
   );
+}
+
+function MessageBubble(props: { msg: Message }) {
+  return (
+    <Show
+      when={props.msg.role === "user"}
+      fallback={
+        <Show
+          when={props.msg.role === "tool"}
+          fallback={
+            <Show
+              when={props.msg.role === "error"}
+              fallback={
+                <box flexDirection="column" paddingBottom={1}>
+                  <markdown
+                    content={props.msg.content}
+                    syntaxStyle={syntaxStyle}
+                  />
+                </box>
+              }
+            >
+              <box paddingBottom={1}>
+                <text fg="#ef4444">{"✗ " + props.msg.content}</text>
+              </box>
+            </Show>
+          }
+        >
+          <text fg="#666666">{props.msg.content}</text>
+        </Show>
+      }
+    >
+      <box paddingBottom={1}>
+        <text fg="#c4b5fd">{"❯ " + props.msg.content}</text>
+      </box>
+    </Show>
+  );
+}
+
+function formatToolArgs(
+  toolName: string,
+  args: Record<string, unknown>,
+): string {
+  switch (toolName) {
+    case "readFile":
+      return String(args["path"] || "");
+    case "listDirectory":
+      return String(args["path"] || "");
+    case "searchFiles":
+      return String(args["pattern"] || "");
+    case "grep":
+      return String(args["pattern"] || "");
+    case "runCommand":
+      return String(args["command"] || "");
+    case "fileInfo":
+      return String(args["path"] || "");
+    default:
+      return JSON.stringify(args).slice(0, 60);
+  }
 }
