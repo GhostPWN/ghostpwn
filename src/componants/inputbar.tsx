@@ -1,7 +1,11 @@
 import { createSignal } from "solid-js";
 import { useKeyboard } from "@opentui/solid";
 import { For, Show } from "solid-js";
-import { SyntaxStyle } from "@opentui/core";
+import {
+  SyntaxStyle,
+  type MarkdownTableOptions,
+  type ThemeTokenStyle,
+} from "@opentui/core";
 import { GhostLogo } from "./ghostlogo";
 import { sendMessage, clearHistory, getProviderName } from "../ai";
 
@@ -12,7 +16,215 @@ interface Message {
   content: string;
 }
 
-const syntaxStyle = SyntaxStyle.create();
+const syntaxTheme = [
+  { scope: ["comment"], style: { foreground: "#6b7280", italic: true } },
+  { scope: ["string", "markup.raw", "markup.raw.block"], style: { foreground: "#a3e635" } },
+  { scope: ["string.escape", "character.special"], style: { foreground: "#f59e0b" } },
+  { scope: ["number", "boolean", "constant", "constant.builtin"], style: { foreground: "#fb7185" } },
+  { scope: ["keyword", "keyword.import", "keyword.operator", "keyword.return"], style: { foreground: "#60a5fa", bold: true } },
+  { scope: ["type", "type.builtin", "constructor"], style: { foreground: "#22d3ee" } },
+  { scope: ["function", "function.call", "function.method", "function.method.call", "function.builtin"], style: { foreground: "#facc15" } },
+  { scope: ["variable", "variable.parameter", "variable.member", "variable.builtin"], style: { foreground: "#e5e7eb" } },
+  { scope: ["module", "module.builtin", "label"], style: { foreground: "#c4b5fd" } },
+  { scope: ["operator", "punctuation.delimiter", "punctuation.bracket", "punctuation.special"], style: { foreground: "#94a3b8" } },
+  { scope: ["markup.heading", "markup.heading.1", "markup.heading.2", "markup.heading.3", "markup.heading.4", "markup.heading.5", "markup.heading.6"], style: { foreground: "#f472b6", bold: true } },
+  { scope: ["markup.strong"], style: { bold: true } },
+  { scope: ["markup.italic"], style: { italic: true } },
+  { scope: ["markup.link", "markup.link.label"], style: { foreground: "#c4b5fd", underline: true } },
+  { scope: ["markup.link.url"], style: { foreground: "#22d3ee", underline: true } },
+  { scope: ["markup.quote"], style: { foreground: "#9ca3af", italic: true } },
+  { scope: ["markup.list", "markup.list.checked", "markup.list.unchecked"], style: { foreground: "#f9a8d4" } },
+] satisfies ThemeTokenStyle[];
+
+const syntaxStyle = SyntaxStyle.fromTheme(syntaxTheme);
+
+const markdownTableOptions: MarkdownTableOptions = {
+  widthMode: "full",
+  wrapMode: "word",
+  cellPadding: 1,
+  borders: true,
+  outerBorder: true,
+  borderColor: "#3f3f46",
+};
+
+const TOOL_ARG_KEYS = {
+  readFile: "path",
+  listDirectory: "path",
+  searchFiles: "pattern",
+  grep: "pattern",
+  runCommand: "command",
+  fileInfo: "path",
+} as const;
+
+type KnownToolName = keyof typeof TOOL_ARG_KEYS;
+
+function isKnownToolName(value: string): value is KnownToolName {
+  return value in TOOL_ARG_KEYS;
+}
+
+function stringifyToolArg(value: unknown): string {
+  if (typeof value === "string") return value;
+  if (typeof value === "number" || typeof value === "boolean") {
+    return String(value);
+  }
+  return "";
+}
+
+const SUPPORTED_RENDER_LANGUAGES = new Set([
+  "javascript",
+  "js",
+  "typescript",
+  "ts",
+  "tsx",
+  "jsx",
+  "markdown",
+  "md",
+  "zig",
+]);
+
+const LANGUAGE_FALLBACKS: Record<string, string> = {
+  python: "javascript",
+  py: "javascript",
+  bash: "javascript",
+  sh: "javascript",
+  zsh: "javascript",
+  sql: "javascript",
+  rust: "typescript",
+  rs: "typescript",
+  go: "typescript",
+};
+
+function normalizeRenderLanguage(language: string): string {
+  const normalized = language.toLowerCase().trim();
+  if (normalized.length === 0) return "typescript";
+  if (SUPPORTED_RENDER_LANGUAGES.has(normalized)) return normalized;
+
+  const fallback = LANGUAGE_FALLBACKS[normalized];
+  if (fallback !== undefined) return fallback;
+
+  return "typescript";
+}
+
+function normalizeExistingCodeFenceLanguages(content: string): string {
+  return content.replace(/^```\s*([A-Za-z0-9_+-]+)([^\n]*)$/gm, (_full, lang: string) => {
+    return `\`\`\`${normalizeRenderLanguage(lang)}`;
+  });
+}
+
+function findNextNonEmptyLine(lines: string[], fromIndex: number): string | null {
+  for (let i = fromIndex; i < lines.length; i += 1) {
+    const line = lines[i];
+    if (line !== undefined && line.trim().length > 0) {
+      return line;
+    }
+  }
+  return null;
+}
+
+function isLikelyCodeLine(line: string): boolean {
+  const trimmed = line.trim();
+  if (trimmed.length === 0 || trimmed.startsWith("```")) return false;
+
+  if (/^\s{2,}\S/.test(line) || /^\t\S/.test(line)) return true;
+
+  const patterns = [
+    /^(def|class)\s+[A-Za-z_][\w]*/,
+    /^(if|elif|else|for|while|try|except|finally)\b.*:?$/,
+    /^return\b/,
+    /^(const|let|var|function|interface|type|enum)\b/,
+    /^(import|from)\b/,
+    /^print\(/,
+    /^[A-Za-z_][\w]*\s*=\s*.+/,
+    /^['"]{3}/,
+    /[{};]$/,
+  ];
+
+  return patterns.some((pattern) => pattern.test(trimmed));
+}
+
+function detectCodeLanguage(code: string): string {
+  if (
+    /(^|\n)\s*def\s+[A-Za-z_][\w]*\s*\(/.test(code) ||
+    /(^|\n)\s*class\s+[A-Za-z_][\w]*/.test(code) ||
+    /if\s+__name__\s*==\s*["']__main__["']/.test(code)
+  ) {
+    return "python";
+  }
+
+  if (
+    /(^|\n)\s*(const|let|var)\s+/.test(code) ||
+    /(^|\n)\s*function\s+/.test(code) ||
+    /=>/.test(code)
+  ) {
+    return "typescript";
+  }
+
+  if (/^\s*#!/.test(code)) return "bash";
+  if (/(^|\n)\s*(SELECT|INSERT|UPDATE|DELETE)\b/i.test(code)) return "sql";
+  if (/(^|\n)\s*(fn|let\s+mut|impl|pub\s+fn)\b/.test(code)) return "rust";
+  if (/(^|\n)\s*(package|func\s+[A-Za-z_][\w]*\(|import\s+\()/m.test(code)) {
+    return "go";
+  }
+
+  return "text";
+}
+
+function ensureFencedCodeBlocks(content: string): string {
+  const normalizedContent = normalizeExistingCodeFenceLanguages(content);
+  if (normalizedContent.includes("```")) return normalizedContent;
+
+  const lines = normalizedContent.split("\n");
+  const output: string[] = [];
+
+  let i = 0;
+  while (i < lines.length) {
+    const line = lines[i] ?? "";
+
+    if (!isLikelyCodeLine(line)) {
+      output.push(line);
+      i += 1;
+      continue;
+    }
+
+    const codeLines: string[] = [];
+    while (i < lines.length) {
+      const current = lines[i] ?? "";
+
+      if (current.trim().length === 0) {
+        const nextNonEmpty = findNextNonEmptyLine(lines, i + 1);
+        if (nextNonEmpty !== null && isLikelyCodeLine(nextNonEmpty)) {
+          codeLines.push(current);
+          i += 1;
+          continue;
+        }
+        break;
+      }
+
+      if (!isLikelyCodeLine(current)) {
+        break;
+      }
+
+      codeLines.push(current);
+      i += 1;
+    }
+
+    const code = codeLines.join("\n");
+    const hasStrongCodeSignal =
+      /(^|\n)\s*(def|class|function|const|let|var|return)\b/.test(code) ||
+      /(^|\n)\s*[A-Za-z_][\w]*\s*=\s*.+/.test(code);
+
+    if (codeLines.length >= 2 || hasStrongCodeSignal) {
+      const language = normalizeRenderLanguage(detectCodeLanguage(code));
+      output.push(`\`\`\`${language}`);
+      output.push(code);
+      output.push("```");
+    } else {
+      output.push(...codeLines);
+    }
+  }
+
+  return output.join("\n");
+}
 
 export function InputBar() {
   const [input, setInput] = createSignal("");
@@ -148,8 +360,11 @@ export function InputBar() {
             <Show when={isStreaming() && streamingContent()}>
               <box flexDirection="column" paddingBottom={1}>
                 <markdown
-                  content={streamingContent()}
+                  content={ensureFencedCodeBlocks(streamingContent())}
                   syntaxStyle={syntaxStyle}
+                  conceal={false}
+                  concealCode={false}
+                  tableOptions={markdownTableOptions}
                   streaming={true}
                 />
               </box>
@@ -183,8 +398,11 @@ function MessageBubble(props: { msg: Message }) {
               fallback={
                 <box flexDirection="column" paddingBottom={1}>
                   <markdown
-                    content={props.msg.content}
+                    content={ensureFencedCodeBlocks(props.msg.content)}
                     syntaxStyle={syntaxStyle}
+                    conceal={false}
+                    concealCode={false}
+                    tableOptions={markdownTableOptions}
                   />
                 </box>
               }
@@ -210,20 +428,11 @@ function formatToolArgs(
   toolName: string,
   args: Record<string, unknown>,
 ): string {
-  switch (toolName) {
-    case "readFile":
-      return String(args["path"] || "");
-    case "listDirectory":
-      return String(args["path"] || "");
-    case "searchFiles":
-      return String(args["pattern"] || "");
-    case "grep":
-      return String(args["pattern"] || "");
-    case "runCommand":
-      return String(args["command"] || "");
-    case "fileInfo":
-      return String(args["path"] || "");
-    default:
-      return JSON.stringify(args).slice(0, 60);
+  if (isKnownToolName(toolName)) {
+    const key = TOOL_ARG_KEYS[toolName];
+    return stringifyToolArg(args[key]);
   }
+
+  const fallback = JSON.stringify(args);
+  return (fallback || "").slice(0, 60);
 }

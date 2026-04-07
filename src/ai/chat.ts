@@ -1,11 +1,16 @@
-import { streamText, stepCountIs } from "ai";
+import { smoothStream, stepCountIs, streamText } from "ai";
 import type { ModelMessage } from "@ai-sdk/provider-utils";
 import { getModel } from "./provider";
 import { agentTools } from "./tools";
 
 const SYSTEM_PROMPT = `You are GhostPWN, an autonomous web penetration testing assistant for academic security research. You help analyze web application vulnerabilities. Be precise, technical, and security-focused.
 
-You have tools to explore the codebase and run commands. Use them proactively to understand the project before answering questions about it.`;
+You have tools to explore the codebase and run commands. Use them proactively to understand the project before answering questions about it.
+
+Formatting requirements:
+- Use markdown for all responses.
+- Always wrap code examples in fenced code blocks with an explicit language tag.
+- Never output bare code lines outside a fenced block.`;
 
 let history: ModelMessage[] = [];
 
@@ -39,6 +44,10 @@ export async function sendMessage(text: string, callbacks: StreamCallbacks) {
       messages: history,
       tools: agentTools,
       stopWhen: stepCountIs(15),
+      experimental_transform: smoothStream({
+        chunking: "line",
+        delayInMs: 8,
+      }),
       onError({ error }) {
         callbacks.onError(
           error instanceof Error ? error.message : String(error),
