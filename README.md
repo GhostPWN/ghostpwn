@@ -47,9 +47,14 @@ cargo run
 
 ## Commands
 
+- `/help` shows all commands
+- `/model` shows active provider/model
+- `/models` lists providers and suggested models
+- `/models <provider> [model]` switches active provider/model in-session
+- `/connect` shows provider connection status
+- `/connect <provider> <api_key>` connects a key in-memory for this session
 - `/clear` resets in-memory conversation
-- `/model` shows current provider/model
-- `/quit` exits the TUI
+- `/quit` or `/exit` exits the TUI
 - `Ctrl+C` exits immediately
 - Status bar includes `AUTO-SCROLL ON/OFF` indicator
 
@@ -78,6 +83,7 @@ cargo run
 - The runtime expects model responses as JSON envelopes.
 - Assistant text is streamed from provider responses and incrementally rendered in TUI.
 - Tool command execution is constrained to the workspace root.
+- Keys passed via `/connect` are kept in memory only (not persisted to `.env`).
 
 ---
 

@@ -3,10 +3,10 @@ mod google;
 mod openai;
 mod sse;
 
-use anyhow::Result;
+use anyhow::{Result, anyhow};
 use async_trait::async_trait;
 
-use crate::config::{Config, ProviderKind};
+use crate::config::{ProviderKeys, ProviderKind};
 use crate::models::ConversationMessage;
 
 pub use anthropic::AnthropicProvider;
@@ -24,21 +24,43 @@ pub trait Provider: Send + Sync {
     ) -> Result<String>;
 }
 
-pub fn build_provider(config: &Config) -> Result<Box<dyn Provider>> {
-    let provider: Box<dyn Provider> = match config.provider {
-        ProviderKind::Anthropic => Box::new(AnthropicProvider::new(
-            config.api_key.clone(),
-            config.model.clone(),
-        )),
-        ProviderKind::OpenAi => Box::new(OpenAiProvider::new(
-            config.api_key.clone(),
-            config.model.clone(),
-        )),
-        ProviderKind::Google => Box::new(GoogleProvider::new(
-            config.api_key.clone(),
-            config.model.clone(),
-        )),
+pub fn build_provider(
+    provider: ProviderKind,
+    model: String,
+    keys: &ProviderKeys,
+) -> Box<dyn Provider> {
+    let Some(api_key) = keys.get(provider) else {
+        return Box::new(DisconnectedProvider { provider, model });
     };
 
-    Ok(provider)
+    match provider {
+        ProviderKind::Anthropic => Box::new(AnthropicProvider::new(api_key.to_string(), model)),
+        ProviderKind::OpenAi => Box::new(OpenAiProvider::new(api_key.to_string(), model)),
+        ProviderKind::Google => Box::new(GoogleProvider::new(api_key.to_string(), model)),
+    }
+}
+
+struct DisconnectedProvider {
+    provider: ProviderKind,
+    model: String,
+}
+
+#[async_trait]
+impl Provider for DisconnectedProvider {
+    fn display_name(&self) -> String {
+        format!("{} / {} (disconnected)", self.provider.as_str(), self.model)
+    }
+
+    async fn stream_complete(
+        &self,
+        _system: &str,
+        _messages: &[ConversationMessage],
+        _on_delta: &mut (dyn FnMut(String) + Send),
+    ) -> Result<String> {
+        Err(anyhow!(
+            "No API key connected for {}. Use /connect {} <api_key>",
+            self.provider.as_str(),
+            self.provider.as_str()
+        ))
+    }
 }
