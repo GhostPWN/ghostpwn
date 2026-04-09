@@ -1,0 +1,150 @@
+<svg height="400" width="400" viewBox="0 0 400 400" xmlns="http://www.w3.org/2000/svg">
+  <defs>
+    <filter height="200%" width="200%" y="-50%" x="-50%" id="glow">
+      <feGaussianBlur result="blur" stdDeviation="6"></feGaussianBlur>
+      <feComposite operator="over" in2="blur" in="SourceGraphic"></feComposite>
+    </filter>
+    <filter height="200%" width="200%" y="-50%" x="-50%" id="outerGlow">
+      <feGaussianBlur result="blur" stdDeviation="12"></feGaussianBlur>
+      <feFlood result="color" flood-opacity="0.6" flood-color="#a855f7"></feFlood>
+      <feComposite result="glow" operator="in" in2="blur" in="color"></feComposite>
+      <feMerge>
+        <feMergeNode in="glow"></feMergeNode>
+        <feMergeNode in="SourceGraphic"></feMergeNode>
+      </feMerge>
+    </filter>
+    <pattern height="4" width="400" patternUnits="userSpaceOnUse" id="scanlines">
+      <rect fill="rgba(0,0,0,0.3)" height="2" width="400"></rect>
+    </pattern>
+    <clipPath id="ghostClip">
+      
+    </clipPath>
+  </defs>
+  <style>
+    @keyframes float {
+      0%, 100% { transform: translateY(0px); }
+      50% { transform: translateY(-8px); }
+    }
+    @keyframes pulseGlow {
+      0%, 100% { opacity: 0.4; }
+      50% { opacity: 0.8; }
+    }
+    @keyframes eyeFlicker {
+      0%, 90%, 100% { opacity: 1; }
+      92%, 98% { opacity: 0.3; }
+    }
+    @keyframes scanMove {
+      0% { transform: translateY(0); }
+      100% { transform: translateY(4px); }
+    }
+    @keyframes glitchShift {
+      0%, 94%, 100% { transform: translate(0,0); }
+      95% { transform: translate(2px, 0); }
+      96% { transform: translate(-2px, 1px); }
+      97% { transform: translate(1px, -1px); }
+    }
+    .ghost-group {
+      animation: float 3s ease-in-out infinite, glitchShift 8s steps(1) infinite;
+      transform-origin: 200px 200px;
+    }
+    .glow-aura {
+      animation: pulseGlow 3s ease-in-out infinite;
+    }
+    .eyes {
+      animation: eyeFlicker 4s steps(1) infinite;
+    }
+    .scanline-overlay {
+      animation: scanMove 0.15s linear infinite;
+    }
+  </style>
+  <g class="ghost-group">
+    <defs>
+      <path d="M 132,84 h 136 v 12 h 12 v 12 h 12 v 12 h 12 v 12 h 12 v 168
+        h -24 v -24 h -24 v 24 h -24 v -24 h -24 v 24 h -24 v -24 h -24 v 24 h -24 v -24 h -24 v 24
+        h -24 v -168 h 12 v -12 h 12 v -12 h 12 v -12 z" id="ghostShape"></path>
+    </defs>
+    <g filter="url(#glow)">
+      <rect opacity="0.9" fill="#7c3aed" height="12" width="136" y="84" x="132"></rect>
+      <rect opacity="0.9" fill="#7c3aed" height="12" width="160" y="96" x="120"></rect>
+      <rect opacity="0.85" fill="#7c3aed" height="12" width="184" y="108" x="108"></rect>
+      <rect opacity="0.9" fill="#6d28d9" height="12" width="208" y="120" x="96"></rect>
+      <rect opacity="0.85" fill="#6d28d9" height="12" width="208" y="132" x="96"></rect>
+      <rect opacity="0.8" fill="#7c3aed" height="12" width="208" y="144" x="96"></rect>
+      <rect opacity="0.85" fill="#6d28d9" height="12" width="208" y="156" x="96"></rect>
+      <rect opacity="0.8" fill="#7c3aed" height="12" width="208" y="168" x="96"></rect>
+      <rect opacity="0.85" fill="#6d28d9" height="12" width="208" y="180" x="96"></rect>
+      <rect opacity="0.8" fill="#7c3aed" height="12" width="208" y="192" x="96"></rect>
+      <rect opacity="0.85" fill="#6d28d9" height="12" width="208" y="204" x="96"></rect>
+      <rect opacity="0.8" fill="#7c3aed" height="12" width="208" y="216" x="96"></rect>
+      <rect opacity="0.85" fill="#6d28d9" height="12" width="208" y="228" x="96"></rect>
+      <rect opacity="0.8" fill="#7c3aed" height="12" width="208" y="240" x="96"></rect>
+      <rect opacity="0.85" fill="#6d28d9" height="12" width="208" y="252" x="96"></rect>
+      <rect opacity="0.8" fill="#7c3aed" height="12" width="208" y="264" x="96"></rect>
+      <rect opacity="0.8" fill="#6d28d9" height="12" width="24" y="276" x="96"></rect>
+      <rect opacity="0.8" fill="#6d28d9" height="12" width="24" y="276" x="144"></rect>
+      <rect opacity="0.8" fill="#6d28d9" height="12" width="24" y="276" x="192"></rect>
+      <rect opacity="0.8" fill="#6d28d9" height="12" width="24" y="276" x="240"></rect>
+      <rect opacity="0.8" fill="#6d28d9" height="12" width="24" y="276" x="280"></rect>
+      <rect opacity="0.75" fill="#6d28d9" height="12" width="24" y="288" x="96"></rect>
+      <rect opacity="0.75" fill="#6d28d9" height="12" width="24" y="288" x="144"></rect>
+      <rect opacity="0.75" fill="#6d28d9" height="12" width="24" y="288" x="192"></rect>
+      <rect opacity="0.75" fill="#6d28d9" height="12" width="24" y="288" x="240"></rect>
+      <rect opacity="0.75" fill="#6d28d9" height="12" width="24" y="288" x="280"></rect>
+      <g class="eyes">
+        <rect opacity="0.95" fill="#c4b5fd" height="36" width="36" y="156" x="144"></rect>
+        <rect opacity="0.9" fill="#1e1b4b" height="12" width="12" y="168" x="156"></rect>
+        <rect opacity="0.95" fill="#c4b5fd" height="36" width="36" y="156" x="228"></rect>
+        <rect opacity="0.9" fill="#1e1b4b" height="12" width="12" y="168" x="240"></rect>
+      </g>
+      <rect opacity="0.5" fill="#c4b5fd" height="12" width="12" y="228" x="168"></rect>
+      <rect opacity="0.4" fill="#c4b5fd" height="12" width="48" y="240" x="180"></rect>
+      <rect opacity="0.5" fill="#c4b5fd" height="12" width="12" y="228" x="228"></rect>
+    </g>
+    <g clip-path="url(#ghostClip)">
+      <rect fill="url(#scanlines)" height="400" width="400" y="0" x="0" class="scanline-overlay"></rect>
+    </g>
+    <g opacity="0.3">
+      <rect fill="#e9d5ff" height="2" width="136" y="84" x="132"></rect>
+      <rect fill="#e9d5ff" height="12" width="2" y="96" x="120"></rect>
+      <rect fill="#e9d5ff" height="168" width="2" y="120" x="96"></rect>
+    </g>
+    <g fill="#c4b5fd" opacity="0.15">
+      <rect height="4" width="4" y="132" x="108"></rect>
+      <rect height="4" width="4" y="108" x="180"></rect>
+      <rect height="4" width="4" y="144" x="252"></rect>
+      <rect height="4" width="4" y="204" x="132"></rect>
+      <rect height="4" width="4" y="228" x="264"></rect>
+      <rect height="4" width="4" y="252" x="156"></rect>
+      <rect height="4" width="4" y="192" x="216"></rect>
+      <rect height="4" width="4" y="168" x="120"></rect>
+      <rect height="4" width="4" y="204" x="276"></rect>
+      <rect height="4" width="4" y="132" x="192"></rect>
+    </g>
+  </g>
+  <g opacity="0.4">
+    <circle fill="#a855f7" r="1.5" cy="100" cx="60">
+      
+      
+    </circle>
+    <circle fill="#c084fc" r="1" cy="150" cx="340">
+      
+      
+    </circle>
+    <circle fill="#a855f7" r="1.5" cy="300" cx="80">
+      
+      
+    </circle>
+    <circle fill="#c084fc" r="1" cy="320" cx="320">
+      
+      
+    </circle>
+    <circle fill="#7c3aed" r="1" cy="200" cx="50">
+      
+      
+    </circle>
+    <circle fill="#7c3aed" r="1.5" cy="250" cx="350">
+      
+      
+    </circle>
+  </g>
+</svg>
