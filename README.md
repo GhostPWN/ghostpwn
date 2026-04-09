@@ -1,5 +1,5 @@
 <p align="center">
-  <img src="ghostpwn-logo.svg" alt="GhostPwn" width="200">
+  <img src="logo.svg" alt="GhostPwn" width="200">
 </p>
 
 <h1 align="center">GhostPWN</h1>
