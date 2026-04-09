@@ -4,6 +4,7 @@ use tokio::sync::mpsc::UnboundedSender;
 use crate::config::{ProviderKeys, ProviderKind};
 use crate::models::{AgentEvent, ConversationMessage, ModelEnvelope, ToolCall};
 use crate::providers::{Provider, build_provider};
+use crate::secrets::SecretStore;
 use crate::tools::ToolRuntime;
 
 const MAX_STEPS: usize = 15;
@@ -29,6 +30,7 @@ pub struct Agent {
     provider_kind: ProviderKind,
     model: String,
     provider_keys: ProviderKeys,
+    secret_store: SecretStore,
     provider: Box<dyn Provider>,
     tools: ToolRuntime,
     history: Vec<ConversationMessage>,
@@ -39,6 +41,7 @@ impl Agent {
         provider_kind: ProviderKind,
         model: String,
         provider_keys: ProviderKeys,
+        secret_store: SecretStore,
         tools: ToolRuntime,
     ) -> Self {
         let provider = build_provider(provider_kind, model.clone(), &provider_keys);
@@ -47,6 +50,7 @@ impl Agent {
             provider_kind,
             model,
             provider_keys,
+            secret_store,
             provider,
             tools,
             history: Vec::new(),
@@ -111,6 +115,8 @@ impl Agent {
     }
 
     pub fn connect_key(&mut self, provider: ProviderKind, api_key: String) -> String {
+        let save_result = self.secret_store.save_key(provider, &api_key);
+
         self.provider_keys.set(provider, api_key);
 
         if self.provider_kind == provider {
@@ -118,10 +124,65 @@ impl Agent {
                 build_provider(self.provider_kind, self.model.clone(), &self.provider_keys);
         }
 
-        format!(
-            "Connected {} (key stored in memory for this session).",
-            provider.as_str()
-        )
+        match save_result {
+            Ok(report) => {
+                if report.keychain_saved {
+                    format!(
+                        "Connected {} (persisted to {}).",
+                        provider.as_str(),
+                        self.secret_store.backend_name()
+                    )
+                } else if let Some(err) = report.keychain_error {
+                    format!(
+                        "Connected {} and persisted to .env, but keychain save failed: {}",
+                        provider.as_str(),
+                        err
+                    )
+                } else {
+                    format!("Connected {} (persisted to .env).", provider.as_str())
+                }
+            }
+            Err(err) => format!(
+                "Connected {} for this session, but persistence failed: {}",
+                provider.as_str(),
+                err
+            ),
+        }
+    }
+
+    pub fn disconnect_key(&mut self, provider: ProviderKind) -> String {
+        let delete_result = self.secret_store.delete_key(provider);
+        self.provider_keys.clear(provider);
+
+        if self.provider_kind == provider {
+            self.provider =
+                build_provider(self.provider_kind, self.model.clone(), &self.provider_keys);
+        }
+
+        match delete_result {
+            Ok(report) => {
+                if report.keychain_saved {
+                    format!(
+                        "Disconnected {} and removed key from {}.",
+                        provider.as_str(),
+                        self.secret_store.backend_name()
+                    )
+                } else if let Some(err) = report.keychain_error {
+                    format!(
+                        "Disconnected {} and removed key from .env, but keychain removal failed: {}",
+                        provider.as_str(),
+                        err
+                    )
+                } else {
+                    format!("Disconnected {}.", provider.as_str())
+                }
+            }
+            Err(err) => format!(
+                "Disconnected {} for this session, but key removal failed: {}",
+                provider.as_str(),
+                err
+            ),
+        }
     }
 
     pub fn connection_overview(&self) -> String {
@@ -149,6 +210,10 @@ impl Agent {
         lines.push(String::new());
         lines.push("Usage: /connect <provider> <api_key>".to_string());
         lines.push("Example: /connect openai sk-...".to_string());
+        lines.push(format!(
+            "Persistence backend: {}",
+            self.secret_store.backend_name()
+        ));
         lines.join("\n")
     }
 

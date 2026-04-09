@@ -3,6 +3,8 @@ use std::path::PathBuf;
 
 use anyhow::Result;
 
+use crate::secrets::SecretStore;
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum ProviderKind {
     Anthropic,
@@ -69,12 +71,22 @@ pub struct ProviderKeys {
 }
 
 impl ProviderKeys {
-    pub fn from_env() -> Self {
-        Self {
+    pub fn from_env_and_store(secret_store: &SecretStore) -> Self {
+        let mut keys = Self {
             anthropic: read_env("ANTHROPIC_API_KEY"),
             openai: read_env("OPENAI_API_KEY"),
             google: read_env("GOOGLE_GENERATIVE_AI_API_KEY"),
+        };
+
+        for provider in ProviderKind::all() {
+            if keys.get(*provider).is_none()
+                && let Some(stored) = secret_store.load_key(*provider)
+            {
+                keys.set(*provider, stored);
+            }
         }
+
+        keys
     }
 
     pub fn get(&self, provider: ProviderKind) -> Option<&str> {
@@ -95,6 +107,16 @@ impl ProviderKeys {
         *target = Some(value);
     }
 
+    pub fn clear(&mut self, provider: ProviderKind) {
+        let target = match provider {
+            ProviderKind::Anthropic => &mut self.anthropic,
+            ProviderKind::OpenAi => &mut self.openai,
+            ProviderKind::Google => &mut self.google,
+        };
+
+        *target = None;
+    }
+
     pub fn is_connected(&self, provider: ProviderKind) -> bool {
         self.get(provider).is_some()
     }
@@ -111,8 +133,9 @@ pub struct Config {
 impl Config {
     pub fn load() -> Result<Self> {
         let _ = dotenvy::dotenv();
+        let secret_store = SecretStore::new();
 
-        let provider_keys = ProviderKeys::from_env();
+        let provider_keys = ProviderKeys::from_env_and_store(&secret_store);
 
         let provider = env::var("GHOSTPWN_PROVIDER")
             .ok()

@@ -52,7 +52,8 @@ cargo run
 - `/models` lists providers and suggested models
 - `/models <provider> [model]` switches active provider/model in-session
 - `/connect` shows provider connection status
-- `/connect <provider> <api_key>` connects a key in-memory for this session
+- `/connect <provider> <api_key>` connects and persists key to `.env` (+ keychain when available)
+- `/disconnect <provider>` disconnects and removes key from `.env` (+ keychain when available)
 - `/clear` resets in-memory conversation
 - `/quit` or `/exit` exits the TUI
 - `Ctrl+C` exits immediately
@@ -67,6 +68,7 @@ cargo run
   - `OPENAI_API_KEY`
   - `GOOGLE_GENERATIVE_AI_API_KEY`
 - `GHOSTPWN_WORKSPACE`: optional root path used by tools as a hard safety boundary
+- API keys are loaded from `.env`; if missing there, keychain entries under service `ghostpwn-rust` are also checked
 
 ## Architecture
 
@@ -83,7 +85,7 @@ cargo run
 - The runtime expects model responses as JSON envelopes.
 - Assistant text is streamed from provider responses and incrementally rendered in TUI.
 - Tool command execution is constrained to the workspace root.
-- Keys passed via `/connect` are kept in memory only (not persisted to `.env`).
+- `/connect` persists API keys to `.env` for restart persistence and also attempts OS keychain storage.
 
 ---
 
