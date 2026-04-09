@@ -10,6 +10,7 @@ pub enum ProviderKind {
     Anthropic,
     OpenAi,
     Google,
+    Copilot,
 }
 
 impl ProviderKind {
@@ -18,6 +19,7 @@ impl ProviderKind {
             "anthropic" => Some(Self::Anthropic),
             "openai" => Some(Self::OpenAi),
             "google" => Some(Self::Google),
+            "copilot" => Some(Self::Copilot),
             _ => None,
         }
     }
@@ -27,6 +29,7 @@ impl ProviderKind {
             Self::Anthropic => "anthropic",
             Self::OpenAi => "openai",
             Self::Google => "google",
+            Self::Copilot => "copilot",
         }
     }
 
@@ -35,6 +38,7 @@ impl ProviderKind {
             Self::Anthropic => "ANTHROPIC_API_KEY",
             Self::OpenAi => "OPENAI_API_KEY",
             Self::Google => "GOOGLE_GENERATIVE_AI_API_KEY",
+            Self::Copilot => "GITHUB_COPILOT_TOKEN",
         }
     }
 
@@ -43,6 +47,7 @@ impl ProviderKind {
             Self::Anthropic => "claude-3-7-sonnet-latest",
             Self::OpenAi => "gpt-4.1-mini",
             Self::Google => "gemini-2.5-flash",
+            Self::Copilot => "gpt-4o",
         }
     }
 
@@ -55,11 +60,12 @@ impl ProviderKind {
             ],
             Self::OpenAi => &["gpt-4.1-mini", "gpt-4.1", "gpt-4o-mini"],
             Self::Google => &["gemini-2.5-flash", "gemini-2.5-pro", "gemini-2.0-flash"],
+            Self::Copilot => &["gpt-4o", "claude-3.5-sonnet", "o1"],
         }
     }
 
     pub fn all() -> &'static [Self] {
-        &[Self::Anthropic, Self::OpenAi, Self::Google]
+        &[Self::Anthropic, Self::OpenAi, Self::Google, Self::Copilot]
     }
 }
 
@@ -68,6 +74,7 @@ pub struct ProviderKeys {
     anthropic: Option<String>,
     openai: Option<String>,
     google: Option<String>,
+    copilot: Option<String>,
 }
 
 impl ProviderKeys {
@@ -76,6 +83,7 @@ impl ProviderKeys {
             anthropic: read_env("ANTHROPIC_API_KEY"),
             openai: read_env("OPENAI_API_KEY"),
             google: read_env("GOOGLE_GENERATIVE_AI_API_KEY"),
+            copilot: read_env("GITHUB_COPILOT_TOKEN"),
         };
 
         for provider in ProviderKind::all() {
@@ -94,6 +102,7 @@ impl ProviderKeys {
             ProviderKind::Anthropic => self.anthropic.as_deref(),
             ProviderKind::OpenAi => self.openai.as_deref(),
             ProviderKind::Google => self.google.as_deref(),
+            ProviderKind::Copilot => self.copilot.as_deref(),
         }
     }
 
@@ -102,6 +111,7 @@ impl ProviderKeys {
             ProviderKind::Anthropic => &mut self.anthropic,
             ProviderKind::OpenAi => &mut self.openai,
             ProviderKind::Google => &mut self.google,
+            ProviderKind::Copilot => &mut self.copilot,
         };
 
         *target = Some(value);
@@ -112,6 +122,7 @@ impl ProviderKeys {
             ProviderKind::Anthropic => &mut self.anthropic,
             ProviderKind::OpenAi => &mut self.openai,
             ProviderKind::Google => &mut self.google,
+            ProviderKind::Copilot => &mut self.copilot,
         };
 
         *target = None;
