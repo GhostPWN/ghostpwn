@@ -22,6 +22,7 @@ use tokio::sync::mpsc::{UnboundedReceiver, UnboundedSender, unbounded_channel};
 use crate::agent::Agent;
 use crate::config::ProviderKind;
 use crate::models::AgentEvent;
+use crate::providers::copilot;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum UiRole {
@@ -49,6 +50,10 @@ const COMMANDS: &[CommandSpec] = &[
     CommandSpec {
         name: "/models",
         description: "List/switch provider models",
+    },
+    CommandSpec {
+        name: "/copilot",
+        description: "Authenticate via GitHub Copilot OAuth",
     },
     CommandSpec {
         name: "/connect",
@@ -418,7 +423,7 @@ async fn handle_submit(
             let Some(provider) = ProviderKind::parse(parts[1]) else {
                 state.push_message(
                     UiRole::Error,
-                    "Invalid provider. Use: anthropic | openai | google".to_string(),
+                    "Invalid provider. Use: anthropic | openai | google | copilot".to_string(),
                 );
                 return;
             };
@@ -449,7 +454,7 @@ async fn handle_submit(
         let Some(provider) = ProviderKind::parse(parts[1]) else {
             state.push_message(
                 UiRole::Error,
-                "Invalid provider. Use: anthropic | openai | google".to_string(),
+                "Invalid provider. Use: anthropic | openai | google | copilot".to_string(),
             );
             return;
         };
@@ -458,6 +463,33 @@ async fn handle_submit(
         let response = locked.disconnect_key(provider);
         state.provider_name = locked.provider_name();
         state.push_message(UiRole::Assistant, response);
+        return;
+    }
+
+    if text == "/copilot" {
+        state.push_message(
+            UiRole::Assistant,
+            "Starting GitHub Copilot authorization...".to_string(),
+        );
+        state.is_streaming = true;
+        state.streaming_content.clear();
+        state.tool_status.clear();
+
+        let tx = event_tx.clone();
+        let handle = Arc::clone(agent);
+
+        tokio::spawn(async move {
+            match copilot_device_flow(tx.clone(), handle).await {
+                Ok(()) => {}
+                Err(err) => {
+                    let _ = tx.send(AgentEvent::Error(format!(
+                        "Copilot authorization failed: {}",
+                        err
+                    )));
+                    let _ = tx.send(AgentEvent::Done);
+                }
+            }
+        });
         return;
     }
 
@@ -480,7 +512,7 @@ async fn handle_submit(
         let Some(provider) = ProviderKind::parse(parts[1]) else {
             state.push_message(
                 UiRole::Error,
-                "Invalid provider. Use: anthropic | openai | google".to_string(),
+                "Invalid provider. Use: anthropic | openai | google | copilot".to_string(),
             );
             return;
         };
@@ -801,4 +833,55 @@ fn completion_hint(state: &UiState) -> Option<(&'static str, &'static str)> {
 
     let suffix = &active.name[query.len()..];
     Some((suffix, active.description))
+}
+
+async fn copilot_device_flow(
+    events: UnboundedSender<AgentEvent>,
+    agent: Arc<Mutex<Agent>>,
+) -> Result<()> {
+    let auth = copilot::authorize().await?;
+
+    let _ = events.send(AgentEvent::AssistantDelta(format!(
+        "Open {}  and enter code:  {}\nWaiting for authorization...",
+        auth.verification_uri, auth.user_code
+    )));
+
+    let deadline = std::time::Instant::now()
+        + std::time::Duration::from_secs(auth.expires_in);
+    let interval = std::time::Duration::from_secs(auth.interval);
+
+    loop {
+        tokio::time::sleep(interval).await;
+
+        if std::time::Instant::now() > deadline {
+            let _ = events.send(AgentEvent::Error(
+                "Authorization timed out. Try /copilot again.".to_string(),
+            ));
+            let _ = events.send(AgentEvent::Done);
+            return Ok(());
+        }
+
+        match copilot::poll_authorization(&auth.device_code).await? {
+            copilot::PollResult::Success(refresh_token) => {
+                let mut locked = agent.lock().await;
+                let msg = locked.connect_key(ProviderKind::Copilot, refresh_token);
+                let switch_msg = locked.switch_model(ProviderKind::Copilot, None);
+
+                let _ = events.send(AgentEvent::AssistantDelta(format!(
+                    "\n{}\n{}",
+                    msg, switch_msg
+                )));
+                let _ = events.send(AgentEvent::Done);
+                return Ok(());
+            }
+            copilot::PollResult::Pending => continue,
+            copilot::PollResult::Failed => {
+                let _ = events.send(AgentEvent::Error(
+                    "Authorization denied or expired.".to_string(),
+                ));
+                let _ = events.send(AgentEvent::Done);
+                return Ok(());
+            }
+        }
+    }
 }

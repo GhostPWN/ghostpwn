@@ -1,4 +1,5 @@
 mod anthropic;
+pub mod copilot;
 mod google;
 mod openai;
 mod sse;
@@ -10,6 +11,7 @@ use crate::config::{ProviderKeys, ProviderKind};
 use crate::models::ConversationMessage;
 
 pub use anthropic::AnthropicProvider;
+pub use copilot::CopilotProvider;
 pub use google::GoogleProvider;
 pub use openai::OpenAiProvider;
 
@@ -37,6 +39,7 @@ pub fn build_provider(
         ProviderKind::Anthropic => Box::new(AnthropicProvider::new(api_key.to_string(), model)),
         ProviderKind::OpenAi => Box::new(OpenAiProvider::new(api_key.to_string(), model)),
         ProviderKind::Google => Box::new(GoogleProvider::new(api_key.to_string(), model)),
+        ProviderKind::Copilot => Box::new(CopilotProvider::new(api_key.to_string(), model)),
     }
 }
 
