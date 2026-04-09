@@ -1,8 +1,9 @@
 use anyhow::Result;
 use tokio::sync::mpsc::UnboundedSender;
 
+use crate::config::{ProviderKeys, ProviderKind};
 use crate::models::{AgentEvent, ConversationMessage, ModelEnvelope, ToolCall};
-use crate::providers::Provider;
+use crate::providers::{Provider, build_provider};
 use crate::tools::ToolRuntime;
 
 const MAX_STEPS: usize = 15;
@@ -25,14 +26,27 @@ Rules:
 "#;
 
 pub struct Agent {
+    provider_kind: ProviderKind,
+    model: String,
+    provider_keys: ProviderKeys,
     provider: Box<dyn Provider>,
     tools: ToolRuntime,
     history: Vec<ConversationMessage>,
 }
 
 impl Agent {
-    pub fn new(provider: Box<dyn Provider>, tools: ToolRuntime) -> Self {
+    pub fn new(
+        provider_kind: ProviderKind,
+        model: String,
+        provider_keys: ProviderKeys,
+        tools: ToolRuntime,
+    ) -> Self {
+        let provider = build_provider(provider_kind, model.clone(), &provider_keys);
+
         Self {
+            provider_kind,
+            model,
+            provider_keys,
             provider,
             tools,
             history: Vec::new(),
@@ -45,6 +59,97 @@ impl Agent {
 
     pub fn clear_history(&mut self) {
         self.history.clear();
+    }
+
+    pub fn list_models_overview(&self) -> String {
+        let mut out = Vec::<String>::new();
+        out.push(format!(
+            "Current: {} / {}{}",
+            self.provider_kind.as_str(),
+            self.model,
+            if self.provider_keys.is_connected(self.provider_kind) {
+                ""
+            } else {
+                " (disconnected)"
+            }
+        ));
+        out.push(String::new());
+        out.push("Providers and suggested models:".to_string());
+
+        for provider in ProviderKind::all() {
+            let connected = if self.provider_keys.is_connected(*provider) {
+                "connected"
+            } else {
+                "disconnected"
+            };
+            out.push(format!("- {} ({})", provider.as_str(), connected));
+            for model in provider.suggested_models() {
+                out.push(format!("  - {}", model));
+            }
+        }
+
+        out.push(String::new());
+        out.push("Usage: /models <provider> [model]".to_string());
+        out.join("\n")
+    }
+
+    pub fn switch_model(&mut self, provider: ProviderKind, model: Option<String>) -> String {
+        self.provider_kind = provider;
+        self.model = model.unwrap_or_else(|| provider.default_model().to_string());
+        self.provider = build_provider(self.provider_kind, self.model.clone(), &self.provider_keys);
+
+        format!(
+            "Switched to {} / {}{}",
+            self.provider_kind.as_str(),
+            self.model,
+            if self.provider_keys.is_connected(self.provider_kind) {
+                ""
+            } else {
+                " (disconnected: run /connect)"
+            }
+        )
+    }
+
+    pub fn connect_key(&mut self, provider: ProviderKind, api_key: String) -> String {
+        self.provider_keys.set(provider, api_key);
+
+        if self.provider_kind == provider {
+            self.provider =
+                build_provider(self.provider_kind, self.model.clone(), &self.provider_keys);
+        }
+
+        format!(
+            "Connected {} (key stored in memory for this session).",
+            provider.as_str()
+        )
+    }
+
+    pub fn connection_overview(&self) -> String {
+        let mut lines = vec![
+            "Connection status:".to_string(),
+            format_status_line(
+                self.provider_kind,
+                self.provider_keys.is_connected(self.provider_kind),
+                true,
+            ),
+        ];
+
+        for provider in ProviderKind::all() {
+            if *provider == self.provider_kind {
+                continue;
+            }
+
+            lines.push(format_status_line(
+                *provider,
+                self.provider_keys.is_connected(*provider),
+                false,
+            ));
+        }
+
+        lines.push(String::new());
+        lines.push("Usage: /connect <provider> <api_key>".to_string());
+        lines.push("Example: /connect openai sk-...".to_string());
+        lines.join("\n")
     }
 
     pub async fn handle_user_input(
@@ -113,6 +218,26 @@ impl Agent {
         let _ = events.send(AgentEvent::Error("step limit reached".to_string()));
         let _ = events.send(AgentEvent::Done);
         Ok(())
+    }
+}
+
+fn format_status_line(provider: ProviderKind, connected: bool, current: bool) -> String {
+    let status = if connected {
+        "connected"
+    } else {
+        "disconnected"
+    };
+    let env_var = provider.env_key();
+
+    if current {
+        format!(
+            "- {}: {} (active, key: {})",
+            provider.as_str(),
+            status,
+            env_var
+        )
+    } else {
+        format!("- {}: {} (key: {})", provider.as_str(), status, env_var)
     }
 }
 

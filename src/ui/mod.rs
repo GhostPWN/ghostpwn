@@ -20,6 +20,7 @@ use tokio::sync::Mutex;
 use tokio::sync::mpsc::{UnboundedReceiver, UnboundedSender, unbounded_channel};
 
 use crate::agent::Agent;
+use crate::config::ProviderKind;
 use crate::models::AgentEvent;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -47,11 +48,11 @@ const COMMANDS: &[CommandSpec] = &[
     },
     CommandSpec {
         name: "/models",
-        description: "List available providers",
+        description: "List/switch provider models",
     },
     CommandSpec {
         name: "/connect",
-        description: "Connect profile (placeholder)",
+        description: "Connect provider API key",
     },
     CommandSpec {
         name: "/clear",
@@ -395,26 +396,82 @@ async fn handle_submit(
     }
 
     if text == "/model" {
-        state.push_message(
-            UiRole::Assistant,
-            format!("Provider: {}", state.provider_name),
-        );
+        let provider_name = {
+            let locked = agent.lock().await;
+            locked.provider_name()
+        };
+        state.provider_name = provider_name.clone();
+        state.push_message(UiRole::Assistant, format!("Provider: {}", provider_name));
         return;
     }
 
-    if text == "/models" {
-        state.push_message(
-            UiRole::Assistant,
-            "Available providers:\n- anthropic\n- openai\n- google\n\nSet GHOSTPWN_PROVIDER in .env and restart.".to_string(),
-        );
+    if text.starts_with("/models") {
+        let parts = text.split_whitespace().collect::<Vec<&str>>();
+        let response = if parts.len() == 1 {
+            let locked = agent.lock().await;
+            locked.list_models_overview()
+        } else {
+            let Some(provider) = ProviderKind::parse(parts[1]) else {
+                state.push_message(
+                    UiRole::Error,
+                    "Invalid provider. Use: anthropic | openai | google".to_string(),
+                );
+                return;
+            };
+
+            let model = if parts.len() > 2 {
+                Some(parts[2..].join(" "))
+            } else {
+                None
+            };
+
+            let mut locked = agent.lock().await;
+            let response = locked.switch_model(provider, model);
+            state.provider_name = locked.provider_name();
+            response
+        };
+
+        state.push_message(UiRole::Assistant, response);
         return;
     }
 
-    if text == "/connect" {
-        state.push_message(
-            UiRole::Assistant,
-            "`/connect` is reserved for future remote profiles. For now, configure provider keys in .env and use `/models` + `/model`.".to_string(),
-        );
+    if text.starts_with("/connect") {
+        let parts = text.split_whitespace().collect::<Vec<&str>>();
+        if parts.len() == 1 {
+            let locked = agent.lock().await;
+            state.push_message(UiRole::Assistant, locked.connection_overview());
+            return;
+        }
+
+        if parts.len() < 3 {
+            state.push_message(
+                UiRole::Error,
+                "Usage: /connect <provider> <api_key>".to_string(),
+            );
+            return;
+        }
+
+        let Some(provider) = ProviderKind::parse(parts[1]) else {
+            state.push_message(
+                UiRole::Error,
+                "Invalid provider. Use: anthropic | openai | google".to_string(),
+            );
+            return;
+        };
+
+        let api_key = parts[2..].join(" ");
+        if api_key.len() < 8 {
+            state.push_message(
+                UiRole::Error,
+                "API key looks too short. Usage: /connect <provider> <api_key>".to_string(),
+            );
+            return;
+        }
+
+        let mut locked = agent.lock().await;
+        let response = locked.connect_key(provider, api_key);
+        state.provider_name = locked.provider_name();
+        state.push_message(UiRole::Assistant, response);
         return;
     }
 
