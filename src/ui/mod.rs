@@ -55,6 +55,10 @@ const COMMANDS: &[CommandSpec] = &[
         description: "Connect provider API key",
     },
     CommandSpec {
+        name: "/disconnect",
+        description: "Disconnect provider API key",
+    },
+    CommandSpec {
         name: "/clear",
         description: "Clear current chat",
     },
@@ -431,6 +435,28 @@ async fn handle_submit(
             response
         };
 
+        state.push_message(UiRole::Assistant, response);
+        return;
+    }
+
+    if text.starts_with("/disconnect") {
+        let parts = text.split_whitespace().collect::<Vec<&str>>();
+        if parts.len() != 2 {
+            state.push_message(UiRole::Error, "Usage: /disconnect <provider>".to_string());
+            return;
+        }
+
+        let Some(provider) = ProviderKind::parse(parts[1]) else {
+            state.push_message(
+                UiRole::Error,
+                "Invalid provider. Use: anthropic | openai | google".to_string(),
+            );
+            return;
+        };
+
+        let mut locked = agent.lock().await;
+        let response = locked.disconnect_key(provider);
+        state.provider_name = locked.provider_name();
         state.push_message(UiRole::Assistant, response);
         return;
     }
