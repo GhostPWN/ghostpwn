@@ -52,12 +52,8 @@ const COMMANDS: &[CommandSpec] = &[
         description: "List/switch provider models",
     },
     CommandSpec {
-        name: "/copilot",
-        description: "Authenticate via GitHub Copilot OAuth",
-    },
-    CommandSpec {
         name: "/connect",
-        description: "Connect provider API key",
+        description: "Connect provider API key or /connect github",
     },
     CommandSpec {
         name: "/disconnect",
@@ -423,7 +419,7 @@ async fn handle_submit(
             let Some(provider) = ProviderKind::parse(parts[1]) else {
                 state.push_message(
                     UiRole::Error,
-                    "Invalid provider. Use: anthropic | openai | google | copilot".to_string(),
+                    "Invalid provider. Use: anthropic | openai | google | github".to_string(),
                 );
                 return;
             };
@@ -466,33 +462,6 @@ async fn handle_submit(
         return;
     }
 
-    if text == "/copilot" {
-        state.push_message(
-            UiRole::Assistant,
-            "Starting GitHub Copilot authorization...".to_string(),
-        );
-        state.is_streaming = true;
-        state.streaming_content.clear();
-        state.tool_status.clear();
-
-        let tx = event_tx.clone();
-        let handle = Arc::clone(agent);
-
-        tokio::spawn(async move {
-            match copilot_device_flow(tx.clone(), handle).await {
-                Ok(()) => {}
-                Err(err) => {
-                    let _ = tx.send(AgentEvent::Error(format!(
-                        "Copilot authorization failed: {}",
-                        err
-                    )));
-                    let _ = tx.send(AgentEvent::Done);
-                }
-            }
-        });
-        return;
-    }
-
     if text.starts_with("/connect") {
         let parts = text.split_whitespace().collect::<Vec<&str>>();
         if parts.len() == 1 {
@@ -501,21 +470,53 @@ async fn handle_submit(
             return;
         }
 
-        if parts.len() < 3 {
-            state.push_message(
-                UiRole::Error,
-                "Usage: /connect <provider> <api_key>".to_string(),
-            );
-            return;
-        }
-
         let Some(provider) = ProviderKind::parse(parts[1]) else {
             state.push_message(
                 UiRole::Error,
-                "Invalid provider. Use: anthropic | openai | google | copilot".to_string(),
+                "Invalid provider. Use: anthropic | openai | google | github".to_string(),
             );
             return;
         };
+
+        if provider == ProviderKind::Copilot
+            && (parts.len() == 2
+                || parts.get(2) == Some(&"oauth")
+                || parts.get(2) == Some(&"device"))
+        {
+            state.push_message(
+                UiRole::Assistant,
+                "Starting GitHub Copilot OAuth...".to_string(),
+            );
+            state.is_streaming = true;
+            state.streaming_content.clear();
+            state.tool_status.clear();
+
+            let tx = event_tx.clone();
+            let handle = Arc::clone(agent);
+
+            tokio::spawn(async move {
+                match copilot_device_flow(tx.clone(), handle).await {
+                    Ok(()) => {}
+                    Err(err) => {
+                        let _ = tx.send(AgentEvent::Error(format!(
+                            "Copilot authorization failed: {}",
+                            err
+                        )));
+                        let _ = tx.send(AgentEvent::Done);
+                    }
+                }
+            });
+            return;
+        }
+
+        if parts.len() < 3 {
+            state.push_message(
+                UiRole::Error,
+                "Usage: /connect <provider> <api_key>\nFor GitHub Copilot, use: /connect github"
+                    .to_string(),
+            );
+            return;
+        }
 
         let api_key = parts[2..].join(" ");
         if api_key.len() < 8 {
@@ -846,8 +847,7 @@ async fn copilot_device_flow(
         auth.verification_uri, auth.user_code
     )));
 
-    let deadline = std::time::Instant::now()
-        + std::time::Duration::from_secs(auth.expires_in);
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(auth.expires_in);
     let interval = std::time::Duration::from_secs(auth.interval);
 
     loop {
