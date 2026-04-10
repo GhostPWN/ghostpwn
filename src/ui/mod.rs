@@ -44,10 +44,6 @@ const COMMANDS: &[CommandSpec] = &[
         description: "Show available commands",
     },
     CommandSpec {
-        name: "/model",
-        description: "Show current model",
-    },
-    CommandSpec {
         name: "/models",
         description: "List/switch provider models",
     },
@@ -400,16 +396,6 @@ async fn handle_submit(
         return;
     }
 
-    if text == "/model" {
-        let provider_name = {
-            let locked = agent.lock().await;
-            locked.provider_name()
-        };
-        state.provider_name = provider_name.clone();
-        state.push_message(UiRole::Assistant, format!("Provider: {}", provider_name));
-        return;
-    }
-
     if text.starts_with("/models") {
         let parts = text.split_whitespace().collect::<Vec<&str>>();
         let response = if parts.len() == 1 {
@@ -612,7 +598,7 @@ fn render(frame: &mut Frame, state: &UiState) {
 
         let footer = Layout::vertical([Constraint::Fill(1), Constraint::Length(1)]).split(root[0]);
         let hint = Paragraph::new(Line::styled(
-            "Type your prompt and press Enter | /help /models /connect /quit | Scroll: MouseWheel Up/Down PgUp/PgDn Home/End",
+            "Type your prompt and press Enter | /help /connect /quit | Scroll: MouseWheel Up/Down PgUp/PgDn Home/End",
             Style::default().fg(Color::DarkGray),
         ))
         .alignment(Alignment::Center);
