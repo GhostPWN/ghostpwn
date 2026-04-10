@@ -671,7 +671,7 @@ fn render(frame: &mut Frame, state: &UiState) {
     } else {
         let mut spans = vec![
             Span::styled("> ", Style::default().fg(Color::Green).bold()),
-            Span::styled(state.input.clone(), Style::default().fg(Color::White)),
+            Span::styled(state.input.clone(), Style::default().fg(Color::Reset)),
         ];
 
         if let Some((suffix, description)) = completion_hint(state)
@@ -688,12 +688,12 @@ fn render(frame: &mut Frame, state: &UiState) {
             ));
         }
 
-        spans.push(Span::styled("_", Style::default().fg(Color::White)));
+        spans.push(Span::styled("_", Style::default().fg(Color::Reset)));
         Line::from(spans)
     };
 
     let input_widget = Paragraph::new(input_line)
-        .style(Style::default().fg(Color::White))
+        .style(Style::default().fg(Color::Reset))
         .block(Block::default().borders(Borders::ALL).title("Input"))
         .wrap(Wrap { trim: false });
     frame.render_widget(input_widget, root[2]);
@@ -750,10 +750,10 @@ fn build_transcript_lines(state: &UiState) -> Vec<Line<'static>> {
 
 fn styled_content_lines(content: &str, role: UiRole) -> Vec<Line<'static>> {
     let color = match role {
-        UiRole::User => Color::White,
-        UiRole::Assistant => Color::White,
-        UiRole::Tool => Color::LightMagenta,
-        UiRole::Error => Color::LightRed,
+        UiRole::User => Color::Reset,
+        UiRole::Assistant => Color::Reset,
+        UiRole::Tool => Color::Magenta,
+        UiRole::Error => Color::Red,
     };
 
     if content.is_empty() {
@@ -787,15 +787,15 @@ fn styled_assistant_lines(content: &str) -> Vec<Line<'static>> {
         }
 
         let style = if in_code_block {
-            Style::default().fg(Color::LightYellow)
+            Style::default().fg(Color::Yellow)
         } else if trimmed.starts_with('#') {
-            Style::default().fg(Color::LightCyan).bold()
+            Style::default().fg(Color::Cyan).bold()
         } else if trimmed.starts_with("- ") || trimmed.starts_with("* ") {
-            Style::default().fg(Color::White)
+            Style::default().fg(Color::Reset)
         } else if trimmed.starts_with('>') {
             Style::default().fg(Color::DarkGray).italic()
         } else {
-            Style::default().fg(Color::White)
+            Style::default().fg(Color::Reset)
         };
 
         out.push(Line::styled(line.to_string(), style));
