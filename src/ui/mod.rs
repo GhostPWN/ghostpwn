@@ -60,10 +60,6 @@ const COMMANDS: &[CommandSpec] = &[
         description: "Clear current chat",
     },
     CommandSpec {
-        name: "/quit",
-        description: "Exit the app",
-    },
-    CommandSpec {
         name: "/exit",
         description: "Exit the app",
     },
@@ -379,7 +375,7 @@ async fn handle_submit(
         return;
     }
 
-    if text == "/quit" || text == "/exit" {
+    if text == "/exit" {
         state.should_quit = true;
         return;
     }
