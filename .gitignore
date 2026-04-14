@@ -1,6 +1,7 @@
 /target
 .env*
 /test
+.DS_Store
 
 # AGENTS
 CLAUDE.md
