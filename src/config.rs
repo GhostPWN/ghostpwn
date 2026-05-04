@@ -19,7 +19,7 @@ impl ProviderKind {
             "anthropic" => Some(Self::Anthropic),
             "openai" => Some(Self::OpenAi),
             "google" => Some(Self::Google),
-            "copilot" => Some(Self::Copilot),
+            "copilot" | "github" => Some(Self::Copilot),
             _ => None,
         }
     }

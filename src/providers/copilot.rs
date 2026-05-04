@@ -187,10 +187,10 @@ impl CopilotProvider {
             .unwrap()
             .as_secs();
 
-        if let Some(cached) = cache.as_ref() {
-            if now < cached.expires_at.saturating_sub(60) {
-                return Ok((cached.access_token.clone(), cached.api_base.clone()));
-            }
+        if let Some(cached) = cache.as_ref()
+            && now < cached.expires_at.saturating_sub(60)
+        {
+            return Ok((cached.access_token.clone(), cached.api_base.clone()));
         }
 
         let data = fetch_copilot_token(&self.client, &self.refresh_token).await?;
@@ -280,11 +280,10 @@ impl Provider for CopilotProvider {
                 .and_then(|v| v.get("delta"))
                 .and_then(|v| v.get("content"))
                 .and_then(|v| v.as_str())
+                && !text.is_empty()
             {
-                if !text.is_empty() {
-                    full.push_str(text);
-                    on_delta(text.to_string());
-                }
+                full.push_str(text);
+                on_delta(text.to_string());
             }
 
             Ok(true)

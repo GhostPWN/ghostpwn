@@ -396,7 +396,7 @@ dependencies = [
 ]
 
 [[package]]
-name = "ghostpwn-rust"
+name = "ghostpwn"
 version = "0.1.0"
 dependencies = [
  "anyhow",

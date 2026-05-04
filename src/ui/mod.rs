@@ -36,9 +36,7 @@ pub(super) mod palette {
     pub const STEEL: Color = Color::Rgb(58, 62, 82);
 }
 
-const SPINNER: &[&str] = &[
-    "⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏",
-];
+const SPINNER: &[&str] = &["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"];
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum UiRole {
@@ -60,20 +58,12 @@ const COMMANDS: &[CommandSpec] = &[
         description: "Show available commands",
     },
     CommandSpec {
-        name: "/model",
-        description: "Show current model",
-    },
-    CommandSpec {
         name: "/models",
         description: "List/switch provider models",
     },
     CommandSpec {
-        name: "/copilot",
-        description: "Authenticate via GitHub Copilot OAuth",
-    },
-    CommandSpec {
         name: "/connect",
-        description: "Connect provider API key",
+        description: "Connect provider API key or /connect github",
     },
     CommandSpec {
         name: "/disconnect",
@@ -82,10 +72,6 @@ const COMMANDS: &[CommandSpec] = &[
     CommandSpec {
         name: "/clear",
         description: "Clear current chat",
-    },
-    CommandSpec {
-        name: "/quit",
-        description: "Exit the app",
     },
     CommandSpec {
         name: "/exit",
@@ -406,7 +392,7 @@ async fn handle_submit(
         return;
     }
 
-    if text == "/quit" || text == "/exit" {
+    if text == "/exit" {
         state.should_quit = true;
         return;
     }
@@ -423,16 +409,6 @@ async fn handle_submit(
         return;
     }
 
-    if text == "/model" {
-        let provider_name = {
-            let locked = agent.lock().await;
-            locked.provider_name()
-        };
-        state.provider_name = provider_name.clone();
-        state.push_message(UiRole::Assistant, format!("Provider: {}", provider_name));
-        return;
-    }
-
     if text.starts_with("/models") {
         let parts = text.split_whitespace().collect::<Vec<&str>>();
         let response = if parts.len() == 1 {
@@ -442,7 +418,7 @@ async fn handle_submit(
             let Some(provider) = ProviderKind::parse(parts[1]) else {
                 state.push_message(
                     UiRole::Error,
-                    "Invalid provider. Use: anthropic | openai | google | copilot".to_string(),
+                    "Invalid provider. Use: anthropic | openai | google | github".to_string(),
                 );
                 return;
             };
@@ -485,33 +461,6 @@ async fn handle_submit(
         return;
     }
 
-    if text == "/copilot" {
-        state.push_message(
-            UiRole::Assistant,
-            "Starting GitHub Copilot authorization...".to_string(),
-        );
-        state.is_streaming = true;
-        state.streaming_content.clear();
-        state.tool_status.clear();
-
-        let tx = event_tx.clone();
-        let handle = Arc::clone(agent);
-
-        tokio::spawn(async move {
-            match copilot_device_flow(tx.clone(), handle).await {
-                Ok(()) => {}
-                Err(err) => {
-                    let _ = tx.send(AgentEvent::Error(format!(
-                        "Copilot authorization failed: {}",
-                        err
-                    )));
-                    let _ = tx.send(AgentEvent::Done);
-                }
-            }
-        });
-        return;
-    }
-
     if text.starts_with("/connect") {
         let parts = text.split_whitespace().collect::<Vec<&str>>();
         if parts.len() == 1 {
@@ -520,21 +469,53 @@ async fn handle_submit(
             return;
         }
 
-        if parts.len() < 3 {
-            state.push_message(
-                UiRole::Error,
-                "Usage: /connect <provider> <api_key>".to_string(),
-            );
-            return;
-        }
-
         let Some(provider) = ProviderKind::parse(parts[1]) else {
             state.push_message(
                 UiRole::Error,
-                "Invalid provider. Use: anthropic | openai | google | copilot".to_string(),
+                "Invalid provider. Use: anthropic | openai | google | github".to_string(),
             );
             return;
         };
+
+        if provider == ProviderKind::Copilot
+            && (parts.len() == 2
+                || parts.get(2) == Some(&"oauth")
+                || parts.get(2) == Some(&"device"))
+        {
+            state.push_message(
+                UiRole::Assistant,
+                "Starting GitHub Copilot OAuth...".to_string(),
+            );
+            state.is_streaming = true;
+            state.streaming_content.clear();
+            state.tool_status.clear();
+
+            let tx = event_tx.clone();
+            let handle = Arc::clone(agent);
+
+            tokio::spawn(async move {
+                match copilot_device_flow(tx.clone(), handle).await {
+                    Ok(()) => {}
+                    Err(err) => {
+                        let _ = tx.send(AgentEvent::Error(format!(
+                            "Copilot authorization failed: {}",
+                            err
+                        )));
+                        let _ = tx.send(AgentEvent::Done);
+                    }
+                }
+            });
+            return;
+        }
+
+        if parts.len() < 3 {
+            state.push_message(
+                UiRole::Error,
+                "Usage: /connect <provider> <api_key>\nFor GitHub Copilot, use: /connect github"
+                    .to_string(),
+            );
+            return;
+        }
 
         let api_key = parts[2..].join(" ");
         if api_key.len() < 8 {
@@ -666,10 +647,7 @@ fn render_header(frame: &mut Frame, area: Rect, state: &UiState) {
         Span::raw(" "),
         Span::styled("▸", Style::default().fg(palette::STEEL)),
     ]);
-    frame.render_widget(
-        Paragraph::new(center).alignment(Alignment::Center),
-        cols[1],
-    );
+    frame.render_widget(Paragraph::new(center).alignment(Alignment::Center), cols[1]);
 
     let (dot_color, label) = if state.is_streaming {
         (palette::EMBER, "TRANSMITTING")
@@ -805,8 +783,8 @@ fn render_status(frame: &mut Frame, area: Rect, state: &UiState) {
         Span::styled(" quit ", Style::default().fg(palette::ASH)),
     ]);
 
-    let cols = Layout::horizontal([Constraint::Percentage(50), Constraint::Percentage(50)])
-        .split(area);
+    let cols =
+        Layout::horizontal([Constraint::Percentage(50), Constraint::Percentage(50)]).split(area);
     frame.render_widget(Paragraph::new(left), cols[0]);
     frame.render_widget(Paragraph::new(right).alignment(Alignment::Right), cols[1]);
 }
@@ -869,14 +847,8 @@ fn render_input(frame: &mut Frame, area: Rect, state: &UiState) {
                 Style::default().fg(palette::ASH).italic(),
             ));
         } else if state.input.is_empty() {
-            spans.push(Span::styled(
-                "  try  ",
-                Style::default().fg(palette::STEEL),
-            ));
-            spans.push(Span::styled(
-                "/help",
-                Style::default().fg(palette::ASH),
-            ));
+            spans.push(Span::styled("  try  ", Style::default().fg(palette::STEEL)));
+            spans.push(Span::styled("/help", Style::default().fg(palette::ASH)));
             spans.push(Span::styled(
                 "  or describe a target…",
                 Style::default().fg(palette::STEEL).italic(),
@@ -928,10 +900,7 @@ fn build_transcript_lines(state: &UiState) -> Vec<Line<'static>> {
                 Style::default().fg(palette::EMBER).bold(),
             ),
             Span::raw(" "),
-            Span::styled(
-                "streaming",
-                Style::default().fg(palette::ASH).italic(),
-            ),
+            Span::styled("streaming", Style::default().fg(palette::ASH).italic()),
         ]));
         for cl in styled_assistant_lines(&state.streaming_content) {
             let mut spans = vec![Span::styled("│ ", Style::default().fg(palette::ION))];
@@ -1050,8 +1019,7 @@ async fn copilot_device_flow(
         auth.verification_uri, auth.user_code
     )));
 
-    let deadline = std::time::Instant::now()
-        + std::time::Duration::from_secs(auth.expires_in);
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(auth.expires_in);
     let interval = std::time::Duration::from_secs(auth.interval);
 
     loop {
