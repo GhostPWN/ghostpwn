@@ -1,79 +1,134 @@
 use ratatui::{
     Frame,
     layout::{Alignment, Constraint, Layout, Rect},
-    style::{Color, Modifier, Style},
+    style::{Modifier, Style},
     text::{Line, Span},
     widgets::Paragraph,
 };
 
-const LOGO_FG: Color = Color::Magenta;
-const SUBTITLE_FG: Color = Color::Gray;
+use super::palette;
 
 const GHOST: &[&str] = &[
-    "            \u{2588}\u{2588}\u{2588}\u{2588}\u{2588}\u{2588}\u{2588}\u{2588}\u{2588}\u{2588}\u{2588}\u{2588}\u{2588}\u{2588}\u{2588}\u{2588}          ",
-    "          \u{2588}\u{2588}\u{2591}\u{2591}\u{2591}\u{2591}\u{2591}\u{2591}\u{2591}\u{2591}\u{2591}\u{2591}\u{2591}\u{2591}\u{2591}\u{2591}\u{2588}\u{2588}          ",
-    "        \u{2588}\u{2588}\u{2591}\u{2591}\u{2591}\u{2591}\u{2591}\u{2591}\u{2591}\u{2591}\u{2591}\u{2591}\u{2591}\u{2591}\u{2591}\u{2591}\u{2591}\u{2591}\u{2588}\u{2588}        ",
-    "      \u{2588}\u{2588}\u{2591}\u{2591}\u{2591}\u{2591}\u{2591}\u{2591}\u{2591}\u{2591}\u{2591}\u{2591}\u{2591}\u{2591}\u{2591}\u{2591}\u{2591}\u{2591}\u{2591}\u{2591}\u{2588}\u{2588}      ",
-    "      \u{2588}\u{2588}\u{2591}\u{2591}\u{2591}\u{2591}\u{2591}\u{2591}\u{2591}\u{2591}\u{2591}\u{2591}\u{2591}\u{2591}\u{2591}\u{2591}\u{2591}\u{2591}\u{2591}\u{2591}\u{2588}\u{2588}      ",
-    "      \u{2588}\u{2588}\u{2591}\u{2591}\u{2591}\u{2591}\u{2588}\u{2588}\u{2588}\u{2588}\u{2591}\u{2591}\u{2591}\u{2591}\u{2591}\u{2591}\u{2588}\u{2588}\u{2588}\u{2588}\u{2591}\u{2591}\u{2591}\u{2591}\u{2588}\u{2588}      ",
-    "      \u{2588}\u{2588}\u{2591}\u{2591}\u{2591}\u{2591}\u{2588}\u{2593}\u{2593}\u{2588}\u{2591}\u{2591}\u{2591}\u{2591}\u{2591}\u{2591}\u{2588}\u{2593}\u{2593}\u{2588}\u{2591}\u{2591}\u{2591}\u{2591}\u{2588}\u{2588}      ",
-    "      \u{2588}\u{2588}\u{2591}\u{2591}\u{2591}\u{2591}\u{2588}\u{2588}\u{2588}\u{2588}\u{2591}\u{2591}\u{2591}\u{2591}\u{2591}\u{2591}\u{2588}\u{2588}\u{2588}\u{2588}\u{2591}\u{2591}\u{2591}\u{2591}\u{2588}\u{2588}      ",
-    "      \u{2588}\u{2588}\u{2591}\u{2591}\u{2591}\u{2591}\u{2591}\u{2591}\u{2591}\u{2591}\u{2591}\u{2591}\u{2591}\u{2591}\u{2591}\u{2591}\u{2591}\u{2591}\u{2591}\u{2591}\u{2588}\u{2588}      ",
-    "      \u{2588}\u{2588}\u{2591}\u{2591}\u{2591}\u{2591}\u{2591}\u{2591}\u{2591}\u{2591}\u{2591}\u{2591}\u{2591}\u{2591}\u{2591}\u{2591}\u{2591}\u{2591}\u{2591}\u{2591}\u{2588}\u{2588}      ",
-    "      \u{2588}\u{2588}\u{2591}\u{2591}\u{2591}\u{2591}\u{2591}\u{2591}\u{2592}\u{2592}\u{2591}\u{2591}\u{2591}\u{2591}\u{2591}\u{2591}\u{2592}\u{2592}\u{2591}\u{2591}\u{2591}\u{2591}\u{2591}\u{2591}\u{2588}\u{2588}      ",
-    "      \u{2588}\u{2588}\u{2591}\u{2591}\u{2591}\u{2591}\u{2591}\u{2591}\u{2591}\u{2591}\u{2592}\u{2592}\u{2592}\u{2592}\u{2592}\u{2592}\u{2591}\u{2591}\u{2591}\u{2591}\u{2591}\u{2591}\u{2591}\u{2591}\u{2588}\u{2588}      ",
-    "      \u{2588}\u{2588}\u{2591}\u{2591}\u{2591}\u{2591}\u{2591}\u{2591}\u{2591}\u{2591}\u{2591}\u{2591}\u{2591}\u{2591}\u{2591}\u{2591}\u{2591}\u{2591}\u{2591}\u{2591}\u{2588}\u{2588}      ",
-    "      \u{2588}\u{2588}\u{2591}\u{2591}\u{2588}\u{2588}  \u{2588}\u{2588}\u{2591}\u{2591}\u{2588}\u{2588}  \u{2588}\u{2588}\u{2591}\u{2591}\u{2588}\u{2588}  \u{2588}\u{2588}      ",
-    "      \u{2588}\u{2588}  \u{2588}\u{2588}  \u{2588}\u{2588}  \u{2588}\u{2588}  \u{2588}\u{2588}  \u{2588}\u{2588}  \u{2588}\u{2588}      ",
+    "            ██████████████████            ",
+    "          ██░░░░░░░░░░░░░░░░░░██          ",
+    "        ██░░░░░░░░░░░░░░░░░░░░░░██        ",
+    "      ██░░░░░░░░░░░░░░░░░░░░░░░░░░██      ",
+    "      ██░░░░░░░░░░░░░░░░░░░░░░░░░░██      ",
+    "      ██░░░░░░████░░░░░░████░░░░░░██      ",
+    "      ██░░░░░░█▓▓█░░░░░░█▓▓█░░░░░░██      ",
+    "      ██░░░░░░████░░░░░░████░░░░░░██      ",
+    "      ██░░░░░░░░░░░░░░░░░░░░░░░░░░██      ",
+    "      ██░░░░░░░░░░░░░░░░░░░░░░░░░░██      ",
+    "      ██░░░░░░░░▒▒░░░░░░▒▒░░░░░░░░██      ",
+    "      ██░░░░░░░░░░▒▒▒▒▒▒░░░░░░░░░░██      ",
+    "      ██░░░░░░░░░░░░░░░░░░░░░░░░░░██      ",
+    "      ██░░██  ██░░██  ██░░██  ██░░██      ",
+    "      ██  ██  ██  ██  ██  ██  ██  ██      ",
 ];
 
 const TITLE: &[&str] = &[
-    "  \u{2584}\u{2588}\u{2588}\u{2588}\u{2588}  \u{2588}\u{2588}\u{2591} \u{2588}\u{2588}  \u{2592}\u{2588}\u{2588}\u{2588}\u{2588}\u{2588}    \u{2588}\u{2588}\u{2588}\u{2588}\u{2588}\u{2588} \u{2584}\u{2584}\u{2584}\u{2588}\u{2588}\u{2588}\u{2588}\u{2588}\u{2593} \u{2588}\u{2588}\u{2593}\u{2588}\u{2588}\u{2588}   \u{2588}     \u{2588}\u{2591} \u{2588}\u{2588}\u{2588}\u{2584}    \u{2588} ",
-    " \u{2588}\u{2588}\u{2592} \u{2580}\u{2588}\u{2592}\u{2593}\u{2588}\u{2588}\u{2591} \u{2588}\u{2588}\u{2592}\u{2592}\u{2588}\u{2588}\u{2592}  \u{2588}\u{2588}\u{2592}\u{2592}\u{2588}\u{2588}    \u{2592} \u{2593}  \u{2588}\u{2588}\u{2592} \u{2593}\u{2592}\u{2593}\u{2588}\u{2588}\u{2591}  \u{2588}\u{2588}\u{2592}\u{2593}\u{2588}\u{2591} \u{2588} \u{2591}\u{2588}\u{2591} \u{2588}\u{2588} \u{2580}\u{2588}   \u{2588} ",
-    "\u{2592}\u{2588}\u{2588}\u{2591}\u{2584}\u{2584}\u{2584}\u{2591}\u{2592}\u{2588}\u{2588}\u{2580}\u{2580}\u{2588}\u{2588}\u{2591}\u{2592}\u{2588}\u{2588}\u{2591}  \u{2588}\u{2588}\u{2592}\u{2591} \u{2593}\u{2588}\u{2588}\u{2584}   \u{2592} \u{2593}\u{2588}\u{2588}\u{2591} \u{2592}\u{2591}\u{2593}\u{2588}\u{2588}\u{2591} \u{2588}\u{2588}\u{2593}\u{2592}\u{2592}\u{2588}\u{2591} \u{2588} \u{2591}\u{2588} \u{2593}\u{2588}\u{2588}  \u{2580}\u{2588} \u{2588}\u{2588}\u{2592}",
-    "\u{2591}\u{2593}\u{2588}  \u{2588}\u{2588}\u{2593}\u{2591}\u{2593}\u{2588} \u{2591}\u{2588}\u{2588} \u{2592}\u{2588}\u{2588}   \u{2588}\u{2588}\u{2591}  \u{2592}   \u{2588}\u{2588}\u{2592}\u{2591} \u{2593}\u{2588}\u{2588}\u{2593} \u{2591} \u{2592}\u{2588}\u{2588}\u{2584}\u{2588}\u{2593}\u{2592} \u{2592}\u{2591}\u{2588}\u{2591} \u{2588} \u{2591}\u{2588} \u{2593}\u{2588}\u{2588}\u{2592}  \u{2590}\u{258c}\u{2588}\u{2588}\u{2592}",
-    "\u{2591}\u{2592}\u{2593}\u{2588}\u{2588}\u{2588}\u{2580}\u{2592}\u{2591}\u{2593}\u{2588}\u{2592}\u{2591}\u{2588}\u{2588}\u{2593}\u{2591} \u{2588}\u{2588}\u{2588}\u{2588}\u{2593}\u{2592}\u{2591}\u{2592}\u{2588}\u{2588}\u{2588}\u{2588}\u{2588}\u{2588}\u{2592}\u{2592}  \u{2592}\u{2588}\u{2588}\u{2592} \u{2591} \u{2592}\u{2588}\u{2588}\u{2592} \u{2591}  \u{2591}\u{2591}\u{2588}\u{2588}\u{2592}\u{2588}\u{2588}\u{2593} \u{2592}\u{2588}\u{2588}\u{2591}   \u{2593}\u{2588}\u{2588}\u{2591}",
-    " \u{2591}\u{2592}   \u{2592}  \u{2592} \u{2591}\u{2591}\u{2592}\u{2591}\u{2592}\u{2591} \u{2592}\u{2591}\u{2592}\u{2591}\u{2592}\u{2591} \u{2592} \u{2592}\u{2593}\u{2592} \u{2592} \u{2591}  \u{2592} \u{2591}\u{2591}   \u{2592}\u{2593}\u{2592}\u{2591} \u{2591}  \u{2591}\u{2591} \u{2593}\u{2591}\u{2592} \u{2592}  \u{2591} \u{2592}\u{2591}   \u{2592} \u{2592} ",
-    "  \u{2591}   \u{2591}  \u{2592} \u{2591}\u{2592}\u{2591} \u{2591}  \u{2591} \u{2592} \u{2592}\u{2591} \u{2591} \u{2591}\u{2592}  \u{2591} \u{2591}    \u{2591}    \u{2591}\u{2592} \u{2591}       \u{2592} \u{2591} \u{2591}  \u{2591} \u{2591}\u{2591}   \u{2591} \u{2592}\u{2591}",
-    "\u{2591} \u{2591}   \u{2591}  \u{2591}  \u{2591}\u{2591} \u{2591}\u{2591} \u{2591} \u{2591} \u{2592}  \u{2591}  \u{2591}  \u{2591}    \u{2591}      \u{2591}\u{2591}         \u{2591}   \u{2591}     \u{2591}   \u{2591} \u{2591} ",
-    "      \u{2591}  \u{2591}  \u{2591}  \u{2591}    \u{2591} \u{2591}        \u{2591}                        \u{2591}             \u{2591} ",
+    "  ▄████  ██░ ██  ▒█████    ██████ ▄▄▄█████▓ ██▓██   █     █░ ███▄    █ ",
+    " ██▒ ▀█▒▓██░ ██▒▒██▒  ██▒▒██    ▒ ▓  ██▒ ▓▒▓██▒▓█░ █ ░█░ ██ ▀█   █ ",
+    "▒██░▄▄▄░▒██▀▀██░▒██░  ██▒░ ▓██▄   ▒ ▓██░ ▒░▒██▒▒█░ █ ░█ ▓██  ▀█ ██▒",
+    "░▓█  ██▓░▓█ ░██ ▒██   ██░  ▒   ██▒░ ▓██▓ ░ ░██░░█░ █ ░█ ▓██▒  ▐▌██▒",
+    "░▒▓███▀▒░▓█▒░██▓░ ████▓▒░▒██████▒▒  ▒██▒ ░ ░██░░░██▒██▓ ▒██░   ▓██░",
+    " ░▒   ▒  ▒ ░░▒░▒░ ▒░▒░▒░ ▒ ▒▓▒ ▒ ░  ▒ ░░   ░▓  ░ ▓░▒ ▒  ░ ▒░   ▒ ▒ ",
+    "  ░   ░  ▒ ░▒░ ░  ░ ▒ ▒░ ░ ░▒  ░ ░    ░     ▒ ░  ▒ ░ ░  ░ ░░   ░ ▒░",
+    "░ ░   ░  ░  ░░ ░░ ░ ░ ▒  ░  ░  ░    ░       ▒ ░  ░   ░     ░   ░ ░ ",
+    "      ░  ░  ░  ░    ░ ░        ░            ░      ░             ░ ",
 ];
 
 pub fn render(frame: &mut Frame, area: Rect) {
     let vertical = Layout::vertical([
         Constraint::Fill(1),
         Constraint::Length(GHOST.len() as u16),
-        Constraint::Length(1), // spacer
+        Constraint::Length(1),
         Constraint::Length(TITLE.len() as u16),
-        Constraint::Length(1), // spacer
-        Constraint::Length(1), // subtitle
-        Constraint::Fill(1),
+        Constraint::Length(1),
+        Constraint::Length(1),
+        Constraint::Length(2),
+        Constraint::Length(1),
+        Constraint::Fill(2),
     ])
     .split(area);
 
     let ghost_lines: Vec<Line<'_>> = GHOST
         .iter()
-        .map(|line| Line::from(Span::styled(*line, Style::new().fg(LOGO_FG))))
+        .map(|line| Line::from(Span::styled(*line, Style::new().fg(palette::PLASMA))))
         .collect();
-    let ghost = Paragraph::new(ghost_lines).alignment(Alignment::Center);
-    frame.render_widget(ghost, vertical[1]);
+    frame.render_widget(
+        Paragraph::new(ghost_lines).alignment(Alignment::Center),
+        vertical[1],
+    );
 
     let title_lines: Vec<Line<'_>> = TITLE
         .iter()
         .map(|line| {
             Line::from(Span::styled(
                 *line,
-                Style::new().fg(LOGO_FG).add_modifier(Modifier::BOLD),
+                Style::new()
+                    .fg(palette::PHOSPHOR)
+                    .add_modifier(Modifier::BOLD),
             ))
         })
         .collect();
-    let title = Paragraph::new(title_lines).alignment(Alignment::Center);
-    frame.render_widget(title, vertical[3]);
+    frame.render_widget(
+        Paragraph::new(title_lines).alignment(Alignment::Center),
+        vertical[3],
+    );
 
-    let subtitle = Paragraph::new(Line::from(Span::styled(
-        "autonomous web penetration testing",
-        Style::new().fg(SUBTITLE_FG).add_modifier(Modifier::DIM),
-    )))
-    .alignment(Alignment::Center);
-    frame.render_widget(subtitle, vertical[5]);
+    let tagline = Line::from(vec![
+        Span::styled("◂ ", Style::new().fg(palette::STEEL)),
+        Span::styled(
+            "autonomous",
+            Style::new().fg(palette::ION).add_modifier(Modifier::BOLD),
+        ),
+        Span::styled("  ·  ", Style::new().fg(palette::STEEL)),
+        Span::styled(
+            "web penetration",
+            Style::new().fg(palette::ION).add_modifier(Modifier::BOLD),
+        ),
+        Span::styled("  ·  ", Style::new().fg(palette::STEEL)),
+        Span::styled(
+            "research lab",
+            Style::new().fg(palette::ION).add_modifier(Modifier::BOLD),
+        ),
+        Span::styled(" ▸", Style::new().fg(palette::STEEL)),
+    ]);
+    frame.render_widget(
+        Paragraph::new(tagline).alignment(Alignment::Center),
+        vertical[5],
+    );
+
+    render_chips(frame, vertical[7]);
+}
+
+fn render_chips(frame: &mut Frame, area: Rect) {
+    let chips: [(&str, &str); 3] = [
+        ("/copilot", "connect github copilot"),
+        ("/models", "browse available models"),
+        ("/help", "see every command"),
+    ];
+
+    let mut spans: Vec<Span<'_>> = Vec::new();
+    for (i, (cmd, desc)) in chips.iter().enumerate() {
+        if i > 0 {
+            spans.push(Span::styled("   ", Style::new().fg(palette::STEEL)));
+        }
+        spans.push(Span::styled("[ ", Style::new().fg(palette::STEEL)));
+        spans.push(Span::styled(
+            *cmd,
+            Style::new()
+                .fg(palette::PHOSPHOR)
+                .add_modifier(Modifier::BOLD),
+        ));
+        spans.push(Span::styled("  ", Style::new()));
+        spans.push(Span::styled(*desc, Style::new().fg(palette::ASH)));
+        spans.push(Span::styled(" ]", Style::new().fg(palette::STEEL)));
+    }
+
+    frame.render_widget(
+        Paragraph::new(Line::from(spans)).alignment(Alignment::Center),
+        area,
+    );
 }

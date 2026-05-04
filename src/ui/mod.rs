@@ -15,7 +15,7 @@ use crossterm::terminal::{
 };
 use ratatui::backend::CrosstermBackend;
 use ratatui::prelude::*;
-use ratatui::widgets::{Block, Borders, Paragraph, Wrap};
+use ratatui::widgets::{Block, BorderType, Borders, Padding, Paragraph, Wrap};
 use tokio::sync::Mutex;
 use tokio::sync::mpsc::{UnboundedReceiver, UnboundedSender, unbounded_channel};
 
@@ -23,6 +23,20 @@ use crate::agent::Agent;
 use crate::config::ProviderKind;
 use crate::models::AgentEvent;
 use crate::providers::copilot;
+
+pub(super) mod palette {
+    use ratatui::style::Color;
+    pub const PHOSPHOR: Color = Color::Rgb(120, 255, 170);
+    pub const BONE: Color = Color::Rgb(232, 232, 220);
+    pub const ASH: Color = Color::Rgb(118, 122, 140);
+    pub const ION: Color = Color::Rgb(80, 230, 220);
+    pub const PLASMA: Color = Color::Rgb(255, 80, 170);
+    pub const EMBER: Color = Color::Rgb(255, 140, 70);
+    pub const BLOOD: Color = Color::Rgb(255, 90, 100);
+    pub const STEEL: Color = Color::Rgb(58, 62, 82);
+}
+
+const SPINNER: &[&str] = &["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"];
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum UiRole {
@@ -83,6 +97,7 @@ struct UiState {
     auto_scroll: bool,
     completion_matches: Vec<&'static CommandSpec>,
     completion_index: usize,
+    tick: u64,
 }
 
 impl UiState {
@@ -99,6 +114,7 @@ impl UiState {
             auto_scroll: true,
             completion_matches: Vec::new(),
             completion_index: 0,
+            tick: 0,
         }
     }
 
@@ -266,6 +282,7 @@ async fn ui_loop<B: Backend>(
             apply_agent_event(state, ev);
         }
 
+        state.tick = state.tick.wrapping_add(1);
         state.refresh_completions();
 
         let line_count = transcript_line_count(state);
@@ -579,82 +596,242 @@ fn render(frame: &mut Frame, state: &UiState) {
     let root = Layout::default()
         .direction(Direction::Vertical)
         .constraints([
+            Constraint::Length(3),
             Constraint::Min(1),
             Constraint::Length(1),
             Constraint::Length(3),
         ])
         .split(frame.area());
 
-    let transcript = build_transcript_lines(state);
-    let messages = if transcript.is_empty() {
-        let home_block = Block::default().borders(Borders::ALL).title("GhostPWN");
-        let home_inner = home_block.inner(root[0]);
-        frame.render_widget(home_block, root[0]);
-        logo::render(frame, home_inner);
+    render_header(frame, root[0], state);
+    render_transcript(frame, root[1], state);
+    render_status(frame, root[2], state);
+    render_input(frame, root[3], state);
+}
 
-        let footer = Layout::vertical([Constraint::Fill(1), Constraint::Length(1)]).split(root[0]);
-        let hint = Paragraph::new(Line::styled(
-            "Type your prompt and press Enter | /help /connect /quit | Scroll: MouseWheel Up/Down PgUp/PgDn Home/End",
-            Style::default().fg(Color::DarkGray),
-        ))
-        .alignment(Alignment::Center);
-        frame.render_widget(hint, footer[1]);
+fn render_header(frame: &mut Frame, area: Rect, state: &UiState) {
+    let block = Block::default()
+        .borders(Borders::ALL)
+        .border_type(BorderType::Rounded)
+        .border_style(Style::default().fg(palette::STEEL))
+        .padding(Padding::horizontal(1));
+    let inner = block.inner(area);
+    frame.render_widget(block, area);
 
-        None
+    let cols = Layout::horizontal([
+        Constraint::Length(16),
+        Constraint::Min(1),
+        Constraint::Length(20),
+    ])
+    .split(inner);
+
+    let brand = Line::from(vec![
+        Span::styled("◈ ", Style::default().fg(palette::PLASMA).bold()),
+        Span::styled("GHOSTPWN", Style::default().fg(palette::PHOSPHOR).bold()),
+        Span::styled(" v0.1", Style::default().fg(palette::STEEL)),
+    ]);
+    frame.render_widget(Paragraph::new(brand), cols[0]);
+
+    let center = Line::from(vec![
+        Span::styled(
+            "autonomous web pentest",
+            Style::default().fg(palette::ASH).italic(),
+        ),
+        Span::raw("   "),
+        Span::styled("◂", Style::default().fg(palette::STEEL)),
+        Span::raw(" "),
+        Span::styled(
+            state.provider_name.clone(),
+            Style::default().fg(palette::ION).bold(),
+        ),
+        Span::raw(" "),
+        Span::styled("▸", Style::default().fg(palette::STEEL)),
+    ]);
+    frame.render_widget(Paragraph::new(center).alignment(Alignment::Center), cols[1]);
+
+    let (dot_color, label) = if state.is_streaming {
+        (palette::EMBER, "TRANSMITTING")
     } else {
-        Some(
-            Paragraph::new(transcript)
-                .block(Block::default().borders(Borders::ALL).title("GhostPWN"))
-                .scroll((state.scroll_offset, 0))
-                .wrap(Wrap { trim: false }),
-        )
+        (palette::PHOSPHOR, "READY")
     };
+    let right = Line::from(vec![
+        Span::styled("● ", Style::default().fg(dot_color).bold()),
+        Span::styled(label, Style::default().fg(palette::BONE).bold()),
+    ]);
+    frame.render_widget(Paragraph::new(right).alignment(Alignment::Right), cols[2]);
+}
 
-    if let Some(messages) = messages {
-        frame.render_widget(messages, root[0]);
-    }
+fn render_transcript(frame: &mut Frame, area: Rect, state: &UiState) {
+    let is_home = state.messages.is_empty() && state.streaming_content.is_empty();
 
-    let status = if state.is_streaming {
-        if state.tool_status.is_empty() {
-            format!("{}  |  streaming...", state.provider_name)
-        } else {
-            format!("{}  |  {}", state.provider_name, state.tool_status)
-        }
-    } else {
-        state.provider_name.clone()
-    };
-
-    let auto_label = if state.auto_scroll {
-        " AUTO-SCROLL ON "
-    } else {
-        " AUTO-SCROLL OFF "
-    };
-
-    let auto_style = if state.auto_scroll {
-        Style::default().fg(Color::Black).bg(Color::Green).bold()
-    } else {
-        Style::default().fg(Color::Black).bg(Color::Yellow).bold()
-    };
-
-    let status_line = Line::from(vec![
-        Span::styled(auto_label, auto_style),
-        Span::raw("  "),
-        Span::styled(status, Style::default().fg(Color::Cyan)),
+    let title = Line::from(vec![
+        Span::styled("  ", Style::default()),
+        Span::styled("▸ ", Style::default().fg(palette::PLASMA)),
+        Span::styled(
+            if is_home { "home" } else { "transcript" },
+            Style::default().fg(palette::BONE).bold(),
+        ),
+        Span::styled(" ─", Style::default().fg(palette::STEEL)),
     ]);
 
-    let status_widget =
-        Paragraph::new(status_line).block(Block::default().borders(Borders::LEFT | Borders::RIGHT));
-    frame.render_widget(status_widget, root[1]);
+    let block = Block::default()
+        .borders(Borders::ALL)
+        .border_type(BorderType::Rounded)
+        .border_style(Style::default().fg(palette::STEEL))
+        .title(title)
+        .padding(Padding::new(2, 2, 1, 0));
 
-    let input_line = if state.is_streaming {
-        Line::styled(
-            "waiting for model response...",
-            Style::default().fg(Color::DarkGray),
-        )
+    if is_home {
+        let inner = block.inner(area);
+        frame.render_widget(block, area);
+        logo::render(frame, inner);
+        return;
+    }
+
+    let inner = block.inner(area);
+    let lines = build_transcript_lines(state);
+    let line_count = lines.len() as u16;
+    let visible = inner.height;
+    let max_scroll = line_count.saturating_sub(visible);
+    let scroll = state.scroll_offset.min(max_scroll);
+
+    let paragraph = Paragraph::new(lines)
+        .block(block)
+        .scroll((scroll, 0))
+        .wrap(Wrap { trim: false });
+    frame.render_widget(paragraph, area);
+
+    if line_count > visible {
+        render_scrollbar(frame, area, scroll, line_count, visible);
+    }
+}
+
+fn render_scrollbar(frame: &mut Frame, area: Rect, offset: u16, total: u16, visible: u16) {
+    if area.height < 4 || area.width < 3 {
+        return;
+    }
+    let track_x = area.x + area.width - 2;
+    let track_y = area.y + 1;
+    let track_h = area.height.saturating_sub(2);
+    if track_h == 0 {
+        return;
+    }
+
+    let scrollable = total.saturating_sub(visible) as f32;
+    let ratio = if scrollable > 0.0 {
+        offset as f32 / scrollable
     } else {
+        0.0
+    };
+    let thumb_h = (((visible as f32 / total as f32) * track_h as f32).round() as u16).max(1);
+    let thumb_h = thumb_h.min(track_h);
+    let thumb_y = track_y + (((track_h - thumb_h) as f32) * ratio).round() as u16;
+
+    let buf = frame.buffer_mut();
+    for y in track_y..track_y + track_h {
+        let cell = &mut buf[(track_x, y)];
+        cell.set_char('▏')
+            .set_style(Style::default().fg(palette::STEEL));
+    }
+    for y in thumb_y..thumb_y + thumb_h {
+        let cell = &mut buf[(track_x, y)];
+        cell.set_char('▐')
+            .set_style(Style::default().fg(palette::PLASMA));
+    }
+}
+
+fn render_status(frame: &mut Frame, area: Rect, state: &UiState) {
+    let frame_idx = (state.tick / 2) as usize % SPINNER.len();
+    let (glyph, glyph_color, state_text) = if state.is_streaming {
+        let text = if state.tool_status.is_empty() {
+            "streaming response".to_string()
+        } else {
+            state.tool_status.clone()
+        };
+        (SPINNER[frame_idx], palette::EMBER, text)
+    } else {
+        ("◆", palette::PHOSPHOR, "ready".to_string())
+    };
+
+    let scroll_info = {
+        let total = transcript_line_count(state);
+        if state.auto_scroll || total == 0 {
+            "◉ live".to_string()
+        } else {
+            let pct = ((state.scroll_offset as u32 + 1) * 100 / total as u32).min(100);
+            format!("◯ {pct}%")
+        }
+    };
+
+    let left = Line::from(vec![
+        Span::raw(" "),
+        Span::styled(format!("{glyph} "), Style::default().fg(glyph_color).bold()),
+        Span::styled(state_text, Style::default().fg(palette::BONE)),
+        Span::raw("   "),
+        Span::styled("⌁ ", Style::default().fg(palette::STEEL)),
+        Span::styled(scroll_info, Style::default().fg(palette::ASH)),
+    ]);
+
+    let right = Line::from(vec![
+        Span::styled("tab", Style::default().fg(palette::PHOSPHOR).bold()),
+        Span::styled(" complete ", Style::default().fg(palette::ASH)),
+        Span::styled("·", Style::default().fg(palette::STEEL)),
+        Span::styled(" ↵", Style::default().fg(palette::PHOSPHOR).bold()),
+        Span::styled(" send ", Style::default().fg(palette::ASH)),
+        Span::styled("·", Style::default().fg(palette::STEEL)),
+        Span::styled(" ^c", Style::default().fg(palette::PHOSPHOR).bold()),
+        Span::styled(" quit ", Style::default().fg(palette::ASH)),
+    ]);
+
+    let cols =
+        Layout::horizontal([Constraint::Percentage(50), Constraint::Percentage(50)]).split(area);
+    frame.render_widget(Paragraph::new(left), cols[0]);
+    frame.render_widget(Paragraph::new(right).alignment(Alignment::Right), cols[1]);
+}
+
+fn render_input(frame: &mut Frame, area: Rect, state: &UiState) {
+    let (border_color, title_color) = if state.is_streaming {
+        (palette::STEEL, palette::ASH)
+    } else {
+        (palette::PHOSPHOR, palette::PHOSPHOR)
+    };
+
+    let title = Line::from(vec![
+        Span::styled("  ", Style::default()),
+        Span::styled("▸ ", Style::default().fg(palette::PLASMA)),
+        Span::styled("prompt", Style::default().fg(title_color).bold()),
+        Span::styled(" ─", Style::default().fg(palette::STEEL)),
+    ]);
+
+    let block = Block::default()
+        .borders(Borders::ALL)
+        .border_type(BorderType::Rounded)
+        .border_style(Style::default().fg(border_color))
+        .title(title)
+        .padding(Padding::horizontal(1));
+
+    let line = if state.is_streaming {
+        let idx = (state.tick / 2) as usize % SPINNER.len();
+        Line::from(vec![
+            Span::styled(
+                format!("{} ", SPINNER[idx]),
+                Style::default().fg(palette::EMBER).bold(),
+            ),
+            Span::styled(
+                "channel open · awaiting model",
+                Style::default().fg(palette::ASH).italic(),
+            ),
+        ])
+    } else {
+        let caret = if (state.tick / 8).is_multiple_of(2) {
+            "▌"
+        } else {
+            " "
+        };
         let mut spans = vec![
-            Span::styled("> ", Style::default().fg(Color::Green).bold()),
-            Span::styled(state.input.clone(), Style::default().fg(Color::Reset)),
+            Span::styled("❯ ", Style::default().fg(palette::PHOSPHOR).bold()),
+            Span::styled(state.input.clone(), Style::default().fg(palette::BONE)),
+            Span::styled(caret.to_string(), Style::default().fg(palette::PHOSPHOR)),
         ];
 
         if let Some((suffix, description)) = completion_hint(state)
@@ -662,81 +839,94 @@ fn render(frame: &mut Frame, state: &UiState) {
         {
             spans.push(Span::styled(
                 suffix.to_string(),
-                Style::default().fg(Color::DarkGray),
+                Style::default().fg(palette::STEEL),
             ));
-            spans.push(Span::raw("  "));
+            spans.push(Span::raw("    "));
             spans.push(Span::styled(
-                format!("{} (Tab)", description),
-                Style::default().fg(Color::DarkGray).italic(),
+                format!("↹ {description}"),
+                Style::default().fg(palette::ASH).italic(),
+            ));
+        } else if state.input.is_empty() {
+            spans.push(Span::styled("  try  ", Style::default().fg(palette::STEEL)));
+            spans.push(Span::styled("/help", Style::default().fg(palette::ASH)));
+            spans.push(Span::styled(
+                "  or describe a target…",
+                Style::default().fg(palette::STEEL).italic(),
             ));
         }
 
-        spans.push(Span::styled("_", Style::default().fg(Color::Reset)));
         Line::from(spans)
     };
 
-    let input_widget = Paragraph::new(input_line)
-        .style(Style::default().fg(Color::Reset))
-        .block(Block::default().borders(Borders::ALL).title("Input"))
-        .wrap(Wrap { trim: false });
-    frame.render_widget(input_widget, root[2]);
+    let para = Paragraph::new(line).block(block).wrap(Wrap { trim: false });
+    frame.render_widget(para, area);
 }
 
 fn build_transcript_lines(state: &UiState) -> Vec<Line<'static>> {
     let mut lines = Vec::<Line<'static>>::new();
 
     for msg in &state.messages {
-        match msg.role {
-            UiRole::User => {
-                lines.push(Line::styled(
-                    "You",
-                    Style::default().fg(Color::Green).bold(),
-                ));
-                lines.extend(styled_content_lines(&msg.content, UiRole::User));
-            }
-            UiRole::Assistant => {
-                lines.push(Line::styled(
-                    "GhostPWN",
-                    Style::default().fg(Color::Cyan).bold(),
-                ));
-                lines.extend(styled_assistant_lines(&msg.content));
-            }
-            UiRole::Tool => {
-                lines.push(Line::styled(
-                    "Tool",
-                    Style::default().fg(Color::Magenta).bold(),
-                ));
-                lines.extend(styled_content_lines(&msg.content, UiRole::Tool));
-            }
-            UiRole::Error => {
-                lines.push(Line::styled(
-                    "Error",
-                    Style::default().fg(Color::Red).bold(),
-                ));
-                lines.extend(styled_content_lines(&msg.content, UiRole::Error));
-            }
+        let (marker, label, accent) = role_chrome(msg.role);
+
+        lines.push(Line::from(vec![
+            Span::styled(format!("{marker} "), Style::default().fg(accent).bold()),
+            Span::styled(label, Style::default().fg(accent).bold()),
+        ]));
+
+        let body = match msg.role {
+            UiRole::Assistant => styled_assistant_lines(&msg.content),
+            _ => styled_content_lines(&msg.content, msg.role),
+        };
+
+        for cl in body {
+            let mut spans = vec![Span::styled("│ ", Style::default().fg(accent))];
+            spans.extend(cl.spans);
+            lines.push(Line::from(spans));
         }
 
         lines.push(Line::from(""));
     }
 
     if !state.streaming_content.is_empty() {
-        lines.push(Line::styled(
-            "GhostPWN (streaming)",
-            Style::default().fg(Color::Cyan).bold(),
-        ));
-        lines.extend(styled_assistant_lines(&state.streaming_content));
+        let idx = (state.tick / 2) as usize % SPINNER.len();
+        lines.push(Line::from(vec![
+            Span::styled("◆ ", Style::default().fg(palette::ION).bold()),
+            Span::styled("ghostpwn", Style::default().fg(palette::ION).bold()),
+            Span::raw("  "),
+            Span::styled("·", Style::default().fg(palette::STEEL)),
+            Span::raw("  "),
+            Span::styled(
+                SPINNER[idx].to_string(),
+                Style::default().fg(palette::EMBER).bold(),
+            ),
+            Span::raw(" "),
+            Span::styled("streaming", Style::default().fg(palette::ASH).italic()),
+        ]));
+        for cl in styled_assistant_lines(&state.streaming_content) {
+            let mut spans = vec![Span::styled("│ ", Style::default().fg(palette::ION))];
+            spans.extend(cl.spans);
+            lines.push(Line::from(spans));
+        }
     }
 
     lines
 }
 
+fn role_chrome(role: UiRole) -> (&'static str, &'static str, Color) {
+    match role {
+        UiRole::User => ("❯", "you", palette::PHOSPHOR),
+        UiRole::Assistant => ("◆", "ghostpwn", palette::ION),
+        UiRole::Tool => ("⚙", "tool", palette::PLASMA),
+        UiRole::Error => ("✖", "error", palette::BLOOD),
+    }
+}
+
 fn styled_content_lines(content: &str, role: UiRole) -> Vec<Line<'static>> {
     let color = match role {
-        UiRole::User => Color::Reset,
-        UiRole::Assistant => Color::Reset,
-        UiRole::Tool => Color::Magenta,
-        UiRole::Error => Color::Red,
+        UiRole::User => palette::BONE,
+        UiRole::Assistant => palette::BONE,
+        UiRole::Tool => palette::BONE,
+        UiRole::Error => palette::BLOOD,
     };
 
     if content.is_empty() {
@@ -764,21 +954,21 @@ fn styled_assistant_lines(content: &str) -> Vec<Line<'static>> {
             in_code_block = !in_code_block;
             out.push(Line::styled(
                 line.to_string(),
-                Style::default().fg(Color::Yellow).bold(),
+                Style::default().fg(palette::EMBER).dim(),
             ));
             continue;
         }
 
         let style = if in_code_block {
-            Style::default().fg(Color::Yellow)
+            Style::default().fg(palette::PHOSPHOR)
         } else if trimmed.starts_with('#') {
-            Style::default().fg(Color::Cyan).bold()
+            Style::default().fg(palette::ION).bold()
         } else if trimmed.starts_with("- ") || trimmed.starts_with("* ") {
-            Style::default().fg(Color::Reset)
+            Style::default().fg(palette::BONE)
         } else if trimmed.starts_with('>') {
-            Style::default().fg(Color::DarkGray).italic()
+            Style::default().fg(palette::ASH).italic()
         } else {
-            Style::default().fg(Color::Reset)
+            Style::default().fg(palette::BONE)
         };
 
         out.push(Line::styled(line.to_string(), style));
@@ -792,7 +982,7 @@ fn transcript_line_count(state: &UiState) -> u16 {
 }
 
 fn message_visible_lines(total_height: u16) -> u16 {
-    total_height.saturating_sub(1 + 3 + 2)
+    total_height.saturating_sub(3 + 1 + 3 + 3)
 }
 
 fn max_scroll(line_count: u16, visible_lines: u16) -> u16 {
