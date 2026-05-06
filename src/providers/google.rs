@@ -30,6 +30,23 @@ impl Provider for GoogleProvider {
         format!("google / {}", self.model)
     }
 
+    async fn list_models(&self) -> Result<Vec<String>> {
+        let url = format!(
+            "https://generativelanguage.googleapis.com/v1beta/models?key={}",
+            self.api_key
+        );
+
+        let response = self.client.get(url).send().await?;
+        if !response.status().is_success() {
+            let status = response.status();
+            let body = response.text().await.unwrap_or_default();
+            return Err(anyhow!("Google models API error {}: {}", status, body));
+        }
+
+        let body: Value = response.json().await?;
+        Ok(parse_gemini_models(&body))
+    }
+
     async fn stream_complete(
         &self,
         system: &str,
@@ -144,4 +161,23 @@ fn map_messages(history: &[ConversationMessage]) -> Vec<Value> {
             }),
         })
         .collect()
+}
+
+fn parse_gemini_models(body: &Value) -> Vec<String> {
+    let mut out = body
+        .get("models")
+        .and_then(|v| v.as_array())
+        .map(|arr| {
+            arr.iter()
+                .filter_map(|model| model.get("name").and_then(|v| v.as_str()))
+                .filter_map(|name| name.strip_prefix("models/"))
+                .filter(|id| id.contains("gemini"))
+                .map(ToString::to_string)
+                .collect::<Vec<String>>()
+        })
+        .unwrap_or_default();
+
+    out.sort();
+    out.dedup();
+    out
 }

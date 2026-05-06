@@ -78,7 +78,7 @@ impl Agent {
             }
         ));
         out.push(String::new());
-        out.push("Providers and suggested models:".to_string());
+        out.push("Providers:".to_string());
 
         for provider in ProviderKind::all() {
             let connected = if self.provider_keys.is_connected(*provider) {
@@ -87,14 +87,61 @@ impl Agent {
                 "disconnected"
             };
             out.push(format!("- {} ({})", provider.as_str(), connected));
-            for model in provider.suggested_models() {
-                out.push(format!("  - {}", model));
-            }
         }
 
         out.push(String::new());
-        out.push("Usage: /models <provider> [model]".to_string());
+        out.push("Use /models <provider> to list available models".to_string());
+        out.push("Use /models <provider> <model> to switch model".to_string());
         out.join("\n")
+    }
+
+    pub async fn list_provider_models(&mut self, provider: ProviderKind) -> String {
+        if !self.provider_keys.is_connected(provider) {
+            let usage = if provider == ProviderKind::Copilot {
+                "/connect github"
+            } else {
+                "/connect <provider> <api_key>"
+            };
+            return format!(
+                "{} is disconnected. Run {} first.",
+                provider.as_str(),
+                usage
+            );
+        }
+
+        let temp_provider = build_provider(provider, "temp".to_string(), &self.provider_keys);
+        match temp_provider.list_models().await {
+            Ok(models) if !models.is_empty() => {
+                let mut out = Vec::<String>::new();
+                let mut models = models
+                    .into_iter()
+                    .map(|model| normalize_model_name(&model))
+                    .filter(|model| !model.is_empty())
+                    .collect::<Vec<String>>();
+                models.sort();
+                models.dedup();
+
+                out.push(format!(
+                    "Available models for {} ({}):",
+                    provider.as_str(),
+                    models.len()
+                ));
+
+                for model in models {
+                    out.push(format!("- {}", model));
+                }
+
+                out.push(String::new());
+                out.push(format!("Usage: /models {} <model>", provider.as_str()));
+                out.join("\n")
+            }
+            Ok(_) => format!(
+                "No models returned for {}. You can still set one manually with /models {} <model>.",
+                provider.as_str(),
+                provider.as_str()
+            ),
+            Err(err) => format!("Failed to fetch {} models: {}", provider.as_str(), err),
+        }
     }
 
     pub fn switch_model(&mut self, provider: ProviderKind, model: Option<String>) -> String {
@@ -306,6 +353,14 @@ fn format_status_line(provider: ProviderKind, connected: bool, current: bool) ->
     }
 }
 
+fn normalize_model_name(model: &str) -> String {
+    let trimmed = model.trim();
+    trimmed
+        .strip_prefix("models/")
+        .unwrap_or(trimmed)
+        .to_string()
+}
+
 fn parse_envelope(raw: &str) -> ModelEnvelope {
     if let Some(env) = try_parse_envelope(raw) {
         return env;
@@ -451,6 +506,8 @@ fn extract_partial_assistant_value(raw: &str) -> Option<String> {
 mod tests {
     use super::{AssistantStreamExtractor, extract_partial_assistant_value, parse_envelope};
 
+    use super::normalize_model_name;
+
     #[test]
     fn parse_envelope_reads_json_block() {
         let raw = "```json\n{\"assistant\":\"ok\",\"tool_calls\":[]}\n```";
@@ -475,5 +532,14 @@ mod tests {
         assert_eq!(first.as_deref(), Some("hel"));
         assert_eq!(second.as_deref(), Some("lo"));
         assert_eq!(extractor.finish_with("hello"), None);
+    }
+
+    #[test]
+    fn normalize_model_name_strips_common_prefix_and_whitespace() {
+        assert_eq!(
+            normalize_model_name(" models/gemini-2.5-pro  "),
+            "gemini-2.5-pro"
+        );
+        assert_eq!(normalize_model_name("gpt-4o"), "gpt-4o");
     }
 }

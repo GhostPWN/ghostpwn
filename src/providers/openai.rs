@@ -30,6 +30,24 @@ impl Provider for OpenAiProvider {
         format!("openai / {}", self.model)
     }
 
+    async fn list_models(&self) -> Result<Vec<String>> {
+        let response = self
+            .client
+            .get("https://api.openai.com/v1/models")
+            .bearer_auth(&self.api_key)
+            .send()
+            .await?;
+
+        if !response.status().is_success() {
+            let status = response.status();
+            let body = response.text().await.unwrap_or_default();
+            return Err(anyhow!("OpenAI models API error {}: {}", status, body));
+        }
+
+        let body: Value = response.json().await?;
+        Ok(parse_chat_models(&body))
+    }
+
     async fn stream_complete(
         &self,
         system: &str,
@@ -152,4 +170,31 @@ fn extract_content_text(content: Option<&Value>) -> Option<String> {
     }
 
     None
+}
+
+fn parse_chat_models(body: &Value) -> Vec<String> {
+    let mut out = body
+        .get("data")
+        .and_then(|v| v.as_array())
+        .map(|arr| {
+            arr.iter()
+                .filter_map(|item| item.get("id").and_then(|v| v.as_str()))
+                .filter(|id| is_chat_model_id(id))
+                .map(ToString::to_string)
+                .collect::<Vec<String>>()
+        })
+        .unwrap_or_default();
+
+    out.sort();
+    out.dedup();
+    out
+}
+
+fn is_chat_model_id(id: &str) -> bool {
+    let id = id.to_ascii_lowercase();
+    id.starts_with("gpt-")
+        || id.starts_with("chatgpt-")
+        || id.starts_with("o1")
+        || id.starts_with("o3")
+        || id.starts_with("o4")
 }

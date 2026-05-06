@@ -11,6 +11,7 @@ pub enum ProviderKind {
     OpenAi,
     Google,
     Copilot,
+    Ollama,
 }
 
 impl ProviderKind {
@@ -20,6 +21,7 @@ impl ProviderKind {
             "openai" => Some(Self::OpenAi),
             "google" => Some(Self::Google),
             "copilot" | "github" => Some(Self::Copilot),
+            "ollama" | "local" => Some(Self::Ollama),
             _ => None,
         }
     }
@@ -30,6 +32,7 @@ impl ProviderKind {
             Self::OpenAi => "openai",
             Self::Google => "google",
             Self::Copilot => "copilot",
+            Self::Ollama => "ollama",
         }
     }
 
@@ -39,6 +42,7 @@ impl ProviderKind {
             Self::OpenAi => "OPENAI_API_KEY",
             Self::Google => "GOOGLE_GENERATIVE_AI_API_KEY",
             Self::Copilot => "GITHUB_COPILOT_TOKEN",
+            Self::Ollama => "IGNORE",
         }
     }
 
@@ -48,24 +52,18 @@ impl ProviderKind {
             Self::OpenAi => "gpt-4.1-mini",
             Self::Google => "gemini-2.5-flash",
             Self::Copilot => "gpt-4o",
-        }
-    }
-
-    pub fn suggested_models(self) -> &'static [&'static str] {
-        match self {
-            Self::Anthropic => &[
-                "claude-3-7-sonnet-latest",
-                "claude-3-5-sonnet-latest",
-                "claude-3-5-haiku-latest",
-            ],
-            Self::OpenAi => &["gpt-4.1-mini", "gpt-4.1", "gpt-4o-mini"],
-            Self::Google => &["gemini-2.5-flash", "gemini-2.5-pro", "gemini-2.0-flash"],
-            Self::Copilot => &["gpt-4o", "claude-3.5-sonnet", "o1"],
+            Self::Ollama => "llama3",
         }
     }
 
     pub fn all() -> &'static [Self] {
-        &[Self::Anthropic, Self::OpenAi, Self::Google, Self::Copilot]
+        &[
+            Self::Anthropic,
+            Self::OpenAi,
+            Self::Google,
+            Self::Copilot,
+            Self::Ollama,
+        ]
     }
 }
 
@@ -75,6 +73,8 @@ pub struct ProviderKeys {
     openai: Option<String>,
     google: Option<String>,
     copilot: Option<String>,
+    #[allow(dead_code)]
+    ollama: Option<String>,
 }
 
 impl ProviderKeys {
@@ -84,6 +84,7 @@ impl ProviderKeys {
             openai: read_env("OPENAI_API_KEY"),
             google: read_env("GOOGLE_GENERATIVE_AI_API_KEY"),
             copilot: read_env("GITHUB_COPILOT_TOKEN"),
+            ollama: None,
         };
 
         for provider in ProviderKind::all() {
@@ -103,6 +104,7 @@ impl ProviderKeys {
             ProviderKind::OpenAi => self.openai.as_deref(),
             ProviderKind::Google => self.google.as_deref(),
             ProviderKind::Copilot => self.copilot.as_deref(),
+            ProviderKind::Ollama => None,
         }
     }
 
@@ -112,6 +114,7 @@ impl ProviderKeys {
             ProviderKind::OpenAi => &mut self.openai,
             ProviderKind::Google => &mut self.google,
             ProviderKind::Copilot => &mut self.copilot,
+            ProviderKind::Ollama => &mut self.ollama,
         };
 
         *target = Some(value);
@@ -123,12 +126,16 @@ impl ProviderKeys {
             ProviderKind::OpenAi => &mut self.openai,
             ProviderKind::Google => &mut self.google,
             ProviderKind::Copilot => &mut self.copilot,
+            ProviderKind::Ollama => &mut self.ollama,
         };
 
         *target = None;
     }
 
     pub fn is_connected(&self, provider: ProviderKind) -> bool {
+        if provider == ProviderKind::Ollama {
+            return true;
+        }
         self.get(provider).is_some()
     }
 }

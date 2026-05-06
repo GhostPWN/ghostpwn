@@ -418,10 +418,27 @@ async fn handle_submit(
             let Some(provider) = ProviderKind::parse(parts[1]) else {
                 state.push_message(
                     UiRole::Error,
-                    "Invalid provider. Use: anthropic | openai | google | github".to_string(),
+                    "Invalid provider. Use: anthropic | openai | google | github | ollama"
+                        .to_string(),
                 );
                 return;
             };
+
+            if parts.len() == 2 {
+                state.push_message(
+                    UiRole::Assistant,
+                    "Fetching available models...".to_string(),
+                );
+                let tx = event_tx.clone();
+                let handle = Arc::clone(agent);
+                tokio::spawn(async move {
+                    let mut locked = handle.lock().await;
+                    let response = locked.list_provider_models(provider).await;
+                    let _ = tx.send(AgentEvent::AssistantDelta(response));
+                    let _ = tx.send(AgentEvent::Done);
+                });
+                return;
+            }
 
             let model = if parts.len() > 2 {
                 Some(parts[2..].join(" "))
@@ -449,7 +466,7 @@ async fn handle_submit(
         let Some(provider) = ProviderKind::parse(parts[1]) else {
             state.push_message(
                 UiRole::Error,
-                "Invalid provider. Use: anthropic | openai | google | copilot".to_string(),
+                "Invalid provider. Use: anthropic | openai | google | github | ollama".to_string(),
             );
             return;
         };
@@ -472,7 +489,7 @@ async fn handle_submit(
         let Some(provider) = ProviderKind::parse(parts[1]) else {
             state.push_message(
                 UiRole::Error,
-                "Invalid provider. Use: anthropic | openai | google | github".to_string(),
+                "Invalid provider. Use: anthropic | openai | google | github | ollama".to_string(),
             );
             return;
         };
@@ -508,10 +525,23 @@ async fn handle_submit(
             return;
         }
 
+        if provider == ProviderKind::Ollama {
+            let model = if parts.len() > 2 {
+                parts[2..].join(" ")
+            } else {
+                "llama3".to_string()
+            };
+            let mut locked = agent.lock().await;
+            let response = locked.switch_model(ProviderKind::Ollama, Some(model));
+            state.provider_name = locked.provider_name();
+            state.push_message(UiRole::Assistant, response);
+            return;
+        }
+
         if parts.len() < 3 {
             state.push_message(
                 UiRole::Error,
-                "Usage: /connect <provider> <api_key>\nFor GitHub Copilot, use: /connect github"
+                "Usage: /connect <provider> <api_key>\nFor GitHub, use: /connect github\nFor Ollama, use: /connect ollama [model]"
                     .to_string(),
             );
             return;
@@ -1027,7 +1057,7 @@ async fn copilot_device_flow(
 
         if std::time::Instant::now() > deadline {
             let _ = events.send(AgentEvent::Error(
-                "Authorization timed out. Try /copilot again.".to_string(),
+                "Authorization timed out. Try /connect github again.".to_string(),
             ));
             let _ = events.send(AgentEvent::Done);
             return Ok(());

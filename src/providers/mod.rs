@@ -1,6 +1,7 @@
 mod anthropic;
 pub mod copilot;
 mod google;
+mod ollama;
 mod openai;
 mod sse;
 
@@ -13,6 +14,7 @@ use crate::models::ConversationMessage;
 pub use anthropic::AnthropicProvider;
 pub use copilot::CopilotProvider;
 pub use google::GoogleProvider;
+pub use ollama::OllamaProvider;
 pub use openai::OpenAiProvider;
 
 #[async_trait]
@@ -24,6 +26,9 @@ pub trait Provider: Send + Sync {
         messages: &[ConversationMessage],
         on_delta: &mut (dyn FnMut(String) + Send),
     ) -> Result<String>;
+    async fn list_models(&self) -> Result<Vec<String>> {
+        Ok(vec![])
+    }
 }
 
 pub fn build_provider(
@@ -31,15 +36,23 @@ pub fn build_provider(
     model: String,
     keys: &ProviderKeys,
 ) -> Box<dyn Provider> {
-    let Some(api_key) = keys.get(provider) else {
-        return Box::new(DisconnectedProvider { provider, model });
-    };
-
     match provider {
-        ProviderKind::Anthropic => Box::new(AnthropicProvider::new(api_key.to_string(), model)),
-        ProviderKind::OpenAi => Box::new(OpenAiProvider::new(api_key.to_string(), model)),
-        ProviderKind::Google => Box::new(GoogleProvider::new(api_key.to_string(), model)),
-        ProviderKind::Copilot => Box::new(CopilotProvider::new(api_key.to_string(), model)),
+        ProviderKind::Ollama => Box::new(OllamaProvider::new(model)),
+        _ => {
+            let Some(api_key) = keys.get(provider) else {
+                return Box::new(DisconnectedProvider { provider, model });
+            };
+
+            match provider {
+                ProviderKind::Anthropic => {
+                    Box::new(AnthropicProvider::new(api_key.to_string(), model))
+                }
+                ProviderKind::OpenAi => Box::new(OpenAiProvider::new(api_key.to_string(), model)),
+                ProviderKind::Google => Box::new(GoogleProvider::new(api_key.to_string(), model)),
+                ProviderKind::Copilot => Box::new(CopilotProvider::new(api_key.to_string(), model)),
+                ProviderKind::Ollama => Box::new(OllamaProvider::new(model)),
+            }
+        }
     }
 }
 
@@ -52,6 +65,10 @@ struct DisconnectedProvider {
 impl Provider for DisconnectedProvider {
     fn display_name(&self) -> String {
         format!("{} / {} (disconnected)", self.provider.as_str(), self.model)
+    }
+
+    async fn list_models(&self) -> Result<Vec<String>> {
+        Ok(vec![])
     }
 
     async fn stream_complete(

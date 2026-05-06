@@ -30,6 +30,25 @@ impl Provider for AnthropicProvider {
         format!("anthropic / {}", self.model)
     }
 
+    async fn list_models(&self) -> Result<Vec<String>> {
+        let response = self
+            .client
+            .get("https://api.anthropic.com/v1/models")
+            .header("x-api-key", &self.api_key)
+            .header("anthropic-version", "2023-06-01")
+            .send()
+            .await?;
+
+        if !response.status().is_success() {
+            let status = response.status();
+            let body = response.text().await.unwrap_or_default();
+            return Err(anyhow!("Anthropic models API error {}: {}", status, body));
+        }
+
+        let body: Value = response.json().await?;
+        Ok(parse_claude_models(&body))
+    }
+
     async fn stream_complete(
         &self,
         system: &str,
@@ -138,4 +157,22 @@ fn map_messages(history: &[ConversationMessage]) -> Vec<Value> {
             }),
         })
         .collect()
+}
+
+fn parse_claude_models(body: &Value) -> Vec<String> {
+    let mut out = body
+        .get("data")
+        .and_then(|v| v.as_array())
+        .map(|arr| {
+            arr.iter()
+                .filter_map(|item| item.get("id").and_then(|v| v.as_str()))
+                .filter(|id| id.starts_with("claude-"))
+                .map(ToString::to_string)
+                .collect::<Vec<String>>()
+        })
+        .unwrap_or_default();
+
+    out.sort();
+    out.dedup();
+    out
 }

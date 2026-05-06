@@ -3,6 +3,7 @@ use std::time::{SystemTime, UNIX_EPOCH};
 use anyhow::{Result, anyhow};
 use async_trait::async_trait;
 use reqwest::Client;
+use reqwest::StatusCode;
 use reqwest::header::CONTENT_TYPE;
 use serde::Deserialize;
 use serde_json::{Value, json};
@@ -205,12 +206,114 @@ impl CopilotProvider {
 
         Ok((token, api_base))
     }
+
+    async fn stream_complete_responses(
+        &self,
+        token: &str,
+        api_base: &str,
+        system: &str,
+        messages: &[ConversationMessage],
+        on_delta: &mut (dyn FnMut(String) + Send),
+    ) -> Result<String> {
+        let payload = json!({
+            "model": self.model,
+            "temperature": 0.2,
+            "stream": true,
+            "input": map_messages(system, messages),
+        });
+
+        let response = self
+            .client
+            .post(format!("{}/responses", api_base))
+            .header("User-Agent", USER_AGENT_VALUE)
+            .header("Editor-Version", EDITOR_VERSION)
+            .header("Editor-Plugin-Version", PLUGIN_VERSION)
+            .header("Copilot-Integration-Id", INTEGRATION_ID)
+            .bearer_auth(token)
+            .json(&payload)
+            .send()
+            .await?;
+
+        if !response.status().is_success() {
+            let status = response.status();
+            let body = response.text().await.unwrap_or_default();
+            return Err(anyhow!("Copilot Responses API error {}: {}", status, body));
+        }
+
+        let is_sse = response
+            .headers()
+            .get(CONTENT_TYPE)
+            .and_then(|v| v.to_str().ok())
+            .map(|v| v.contains("text/event-stream"))
+            .unwrap_or(false);
+
+        if !is_sse {
+            let body: Value = response.json().await?;
+            let out = extract_responses_content(&body).unwrap_or_default();
+            if !out.is_empty() {
+                on_delta(out.clone());
+            }
+            return Ok(out);
+        }
+
+        let mut full = String::new();
+        consume_sse(response, |data| {
+            if data.trim() == "[DONE]" {
+                return Ok(false);
+            }
+
+            let chunk: Value = match serde_json::from_str(data) {
+                Ok(v) => v,
+                Err(_) => return Ok(true),
+            };
+
+            if chunk
+                .get("type")
+                .and_then(|v| v.as_str())
+                .is_some_and(|t| t == "response.output_text.delta")
+                && let Some(delta) = chunk.get("delta").and_then(|v| v.as_str())
+                && !delta.is_empty()
+            {
+                full.push_str(delta);
+                on_delta(delta.to_string());
+            }
+
+            Ok(true)
+        })
+        .await?;
+
+        Ok(full)
+    }
 }
 
 #[async_trait]
 impl Provider for CopilotProvider {
     fn display_name(&self) -> String {
         format!("copilot / {}", self.model)
+    }
+
+    async fn list_models(&self) -> Result<Vec<String>> {
+        let (token, api_base) = self.ensure_token().await?;
+
+        let response = self
+            .client
+            .get(format!("{}/models", api_base))
+            .header("User-Agent", USER_AGENT_VALUE)
+            .header("Editor-Version", EDITOR_VERSION)
+            .header("Editor-Plugin-Version", PLUGIN_VERSION)
+            .header("Copilot-Integration-Id", INTEGRATION_ID)
+            .bearer_auth(&token)
+            .send()
+            .await?;
+
+        if !response.status().is_success() {
+            let status = response.status();
+            let body = response.text().await.unwrap_or_default();
+            return Err(anyhow!("Failed to fetch models {}: {}", status, body));
+        }
+
+        let body: Value = response.json().await?;
+        Ok(parse_models_for_chat_completions(&body))
     }
 
     async fn stream_complete(
@@ -243,6 +346,13 @@ impl Provider for CopilotProvider {
         if !response.status().is_success() {
             let status = response.status();
             let body = response.text().await.unwrap_or_default();
+
+            if status == StatusCode::BAD_REQUEST && is_unsupported_chat_model_error(&body) {
+                return self
+                    .stream_complete_responses(&token, &api_base, system, messages, on_delta)
+                    .await;
+            }
+
             return Err(anyhow!("Copilot API error {}: {}", status, body));
         }
 
@@ -322,4 +432,241 @@ fn extract_content(body: &Value) -> Option<String> {
         .get("content")?
         .as_str()
         .map(|s| s.to_string())
+}
+
+fn extract_responses_content(body: &Value) -> Option<String> {
+    if let Some(text) = body.get("output_text").and_then(|v| v.as_str()) {
+        return Some(text.to_string());
+    }
+
+    let mut out = String::new();
+    let output_items = body.get("output")?.as_array()?;
+    for item in output_items {
+        let contents = item.get("content").and_then(|v| v.as_array());
+        let Some(contents) = contents else {
+            continue;
+        };
+
+        for content in contents {
+            if let Some(text) = content.get("text").and_then(|v| v.as_str()) {
+                out.push_str(text);
+            }
+        }
+    }
+
+    if out.is_empty() { None } else { Some(out) }
+}
+
+fn parse_models_for_chat_completions(body: &Value) -> Vec<String> {
+    let Some(models) = extract_model_entries(body) else {
+        return Vec::new();
+    };
+
+    let mut out = Vec::<String>::new();
+
+    for model in models {
+        let Some(id) = model_id(model) else {
+            continue;
+        };
+
+        out.push(id);
+    }
+
+    dedup_preserve_order(&mut out);
+    out
+}
+
+fn extract_model_entries(body: &Value) -> Option<&[Value]> {
+    if let Some(arr) = body.get("models").and_then(|v| v.as_array()) {
+        return Some(arr);
+    }
+    if let Some(arr) = body.get("data").and_then(|v| v.as_array()) {
+        return Some(arr);
+    }
+    body.as_array().map(Vec::as_slice)
+}
+
+fn model_id(model: &Value) -> Option<String> {
+    for key in ["id", "name", "model", "model_id"] {
+        let Some(raw) = model.get(key).and_then(|v| v.as_str()) else {
+            continue;
+        };
+
+        if let Some(normalized) = normalize_model_id(raw) {
+            return Some(normalized);
+        }
+    }
+
+    None
+}
+
+fn normalize_model_id(raw: &str) -> Option<String> {
+    let mut id = raw.trim();
+    if id.is_empty() {
+        return None;
+    }
+
+    if let Some(stripped) = id.strip_prefix("models/") {
+        id = stripped;
+    }
+
+    if let Some((_, suffix)) = id.rsplit_once("/models/") {
+        id = suffix;
+    }
+
+    let lower = id.to_ascii_lowercase();
+    if lower == "routers"
+        || lower.ends_with("/routers")
+        || lower.starts_with("accounts/")
+        || lower.contains("/routers/")
+    {
+        return None;
+    }
+
+    if id.contains('/') {
+        return None;
+    }
+
+    if let Some(canonical) = canonical_copilot_model_id(id) {
+        return Some(canonical.to_string());
+    }
+
+    Some(id.to_string())
+}
+
+fn canonical_copilot_model_id(value: &str) -> Option<&'static str> {
+    let key = model_alias_key(value);
+    match key.as_str() {
+        "gpt41" => Some("gpt-4.1"),
+        "gpt4o" => Some("gpt-4o"),
+        "gpt5mini" => Some("gpt-5-mini"),
+        "gpt51" => Some("gpt-5.1"),
+        "gpt52" => Some("gpt-5.2"),
+        "gpt52codex" => Some("gpt-5.2-codex"),
+        "gpt53codex" => Some("gpt-5.3-codex"),
+        "gpt54" => Some("gpt-5.4"),
+        "gpt54mini" => Some("gpt-5.4-mini"),
+        "claudehaiku45" => Some("claude-haiku-4.5"),
+        "claudeopus45" => Some("claude-opus-4.5"),
+        "claudeopus46" => Some("claude-opus-4.6"),
+        "claudeopus46fastmodepreview" => Some("claude-opus-4.6-fast-mode-preview"),
+        "claudesonnet4" => Some("claude-sonnet-4"),
+        "claudesonnet45" => Some("claude-sonnet-4.5"),
+        "claudesonnet46" => Some("claude-sonnet-4.6"),
+        "gemini25pro" => Some("gemini-2.5-pro"),
+        "gemini3flash" => Some("gemini-3-flash"),
+        "gemini31pro" => Some("gemini-3.1-pro"),
+        "grokcodefast1" => Some("grok-code-fast-1"),
+        "raptormini" => Some("raptor-mini"),
+        "goldeneye" => Some("goldeneye"),
+        _ => None,
+    }
+}
+
+fn model_alias_key(value: &str) -> String {
+    value
+        .chars()
+        .filter(|c| c.is_ascii_alphanumeric())
+        .flat_map(char::to_lowercase)
+        .collect()
+}
+
+fn dedup_preserve_order(values: &mut Vec<String>) {
+    let mut seen = std::collections::HashSet::<String>::new();
+    values.retain(|value| seen.insert(value.clone()));
+}
+
+fn is_unsupported_chat_model_error(body: &str) -> bool {
+    if body.contains("unsupported_api_for_model") || body.contains("/chat/completions") {
+        return true;
+    }
+
+    let Ok(json) = serde_json::from_str::<Value>(body) else {
+        return false;
+    };
+
+    let code = json
+        .get("error")
+        .and_then(|e| e.get("code"))
+        .and_then(|v| v.as_str());
+    let message = json
+        .get("error")
+        .and_then(|e| e.get("message"))
+        .and_then(|v| v.as_str())
+        .unwrap_or_default()
+        .to_ascii_lowercase();
+
+    code == Some("unsupported_api_for_model") || message.contains("/chat/completions")
+}
+
+#[cfg(test)]
+mod tests {
+    use serde_json::json;
+
+    use super::parse_models_for_chat_completions;
+
+    #[test]
+    fn keeps_models_even_when_only_responses_endpoint_is_present() {
+        let body = json!({
+            "data": [
+                { "id": "gpt-4o", "supported_endpoints": ["/chat/completions"] },
+                { "id": "gpt-5", "supported_endpoints": ["/responses"] }
+            ]
+        });
+
+        let models = parse_models_for_chat_completions(&body);
+        assert_eq!(models, vec!["gpt-4o", "gpt-5"]);
+    }
+
+    #[test]
+    fn falls_back_to_unfiltered_when_no_hints_exist() {
+        let body = json!({
+            "models": [
+                { "id": "gpt-4o" },
+                { "name": "gpt-5.3-codex" }
+            ]
+        });
+
+        let models = parse_models_for_chat_completions(&body);
+        assert_eq!(models, vec!["gpt-4o", "gpt-5.3-codex"]);
+    }
+
+    #[test]
+    fn ignores_router_entries_and_keeps_real_models() {
+        let body = json!({
+            "data": [
+                { "id": "accounts/msft/routers" },
+                { "id": "accounts/msft/models/gpt-4.1" },
+                { "name": "gpt-4o" }
+            ]
+        });
+
+        let models = parse_models_for_chat_completions(&body);
+        assert_eq!(models, vec!["gpt-4.1", "gpt-4o"]);
+    }
+
+    #[test]
+    fn canonicalizes_official_display_names() {
+        let body = json!({
+            "models": [
+                { "name": "GPT-5 mini" },
+                { "name": "GPT-5.4 mini" },
+                { "name": "Claude Opus 4.6 (fast mode) (preview)" },
+                { "name": "Gemini 3.1 Pro" },
+                { "name": "Raptor mini" }
+            ]
+        });
+
+        let models = parse_models_for_chat_completions(&body);
+        assert_eq!(
+            models,
+            vec![
+                "gpt-5-mini",
+                "gpt-5.4-mini",
+                "claude-opus-4.6-fast-mode-preview",
+                "gemini-3.1-pro",
+                "raptor-mini"
+            ]
+        );
+    }
 }
