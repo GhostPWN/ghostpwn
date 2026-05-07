@@ -26,14 +26,14 @@ use crate::providers::copilot;
 
 pub(super) mod palette {
     use ratatui::style::Color;
-    pub const PHOSPHOR: Color = Color::Rgb(120, 255, 170);
-    pub const BONE: Color = Color::Rgb(232, 232, 220);
-    pub const ASH: Color = Color::Rgb(118, 122, 140);
-    pub const ION: Color = Color::Rgb(80, 230, 220);
-    pub const PLASMA: Color = Color::Rgb(255, 80, 170);
-    pub const EMBER: Color = Color::Rgb(255, 140, 70);
-    pub const BLOOD: Color = Color::Rgb(255, 90, 100);
-    pub const STEEL: Color = Color::Rgb(58, 62, 82);
+    pub const PHOSPHOR: Color = Color::Rgb(190, 150, 255);
+    pub const BONE: Color = Color::Rgb(240, 235, 250);
+    pub const ASH: Color = Color::Rgb(140, 130, 165);
+    pub const ION: Color = Color::Rgb(160, 115, 235);
+    pub const PLASMA: Color = Color::Rgb(215, 140, 255);
+    pub const EMBER: Color = Color::Rgb(225, 175, 255);
+    pub const BLOOD: Color = Color::Rgb(255, 110, 180);
+    pub const STEEL: Color = Color::Rgb(70, 55, 95);
 }
 
 const SPINNER: &[&str] = &["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"];
@@ -975,7 +975,6 @@ fn render_header(frame: &mut Frame, area: Rect, state: &UiState) {
     let cols = Layout::horizontal([
         Constraint::Length(16),
         Constraint::Min(1),
-        Constraint::Length(20),
     ])
     .split(inner);
 
@@ -1002,37 +1001,15 @@ fn render_header(frame: &mut Frame, area: Rect, state: &UiState) {
         Span::styled("▸", Style::default().fg(palette::STEEL)),
     ]);
     frame.render_widget(Paragraph::new(center).alignment(Alignment::Center), cols[1]);
-
-    let (dot_color, label) = if state.is_streaming {
-        (palette::EMBER, "TRANSMITTING")
-    } else {
-        (palette::PHOSPHOR, "READY")
-    };
-    let right = Line::from(vec![
-        Span::styled("● ", Style::default().fg(dot_color).bold()),
-        Span::styled(label, Style::default().fg(palette::BONE).bold()),
-    ]);
-    frame.render_widget(Paragraph::new(right).alignment(Alignment::Right), cols[2]);
 }
 
 fn render_transcript(frame: &mut Frame, area: Rect, state: &UiState) {
     let is_home = state.messages.is_empty() && state.streaming_content.is_empty();
 
-    let title = Line::from(vec![
-        Span::styled("  ", Style::default()),
-        Span::styled("▸ ", Style::default().fg(palette::PLASMA)),
-        Span::styled(
-            if is_home { "home" } else { "transcript" },
-            Style::default().fg(palette::BONE).bold(),
-        ),
-        Span::styled(" ─", Style::default().fg(palette::STEEL)),
-    ]);
-
     let block = Block::default()
         .borders(Borders::ALL)
         .border_type(BorderType::Rounded)
         .border_style(Style::default().fg(palette::STEEL))
-        .title(title)
         .padding(Padding::new(2, 2, 1, 0));
 
     if is_home {
