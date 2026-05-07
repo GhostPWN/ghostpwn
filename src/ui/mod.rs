@@ -1071,24 +1071,16 @@ fn render_status(frame: &mut Frame, area: Rect, state: &UiState) {
 }
 
 fn render_input(frame: &mut Frame, area: Rect, state: &UiState) {
-    let (border_color, title_color) = if state.is_streaming {
-        (palette::STEEL, palette::ASH)
+    let border_color = if state.is_streaming {
+        palette::STEEL
     } else {
-        (palette::PHOSPHOR, palette::PHOSPHOR)
+        palette::PHOSPHOR
     };
-
-    let title = Line::from(vec![
-        Span::styled("  ", Style::default()),
-        Span::styled("▸ ", Style::default().fg(palette::PLASMA)),
-        Span::styled("prompt", Style::default().fg(title_color).bold()),
-        Span::styled(" ─", Style::default().fg(palette::STEEL)),
-    ]);
 
     let block = Block::default()
         .borders(Borders::ALL)
         .border_type(BorderType::Rounded)
         .border_style(Style::default().fg(border_color))
-        .title(title)
         .padding(Padding::horizontal(1));
 
     let line = if state.is_streaming {
@@ -1147,59 +1139,90 @@ fn build_transcript_lines(state: &UiState) -> Vec<Line<'static>> {
     let mut lines = Vec::<Line<'static>>::new();
 
     for msg in &state.messages {
-        let (marker, label, accent) = role_chrome(msg.role);
-
-        lines.push(Line::from(vec![
-            Span::styled(format!("{marker} "), Style::default().fg(accent).bold()),
-            Span::styled(label, Style::default().fg(accent).bold()),
-        ]));
-
-        let body = match msg.role {
-            UiRole::Assistant => styled_assistant_lines(&msg.content),
-            _ => styled_content_lines(&msg.content, msg.role),
-        };
-
-        for cl in body {
-            let mut spans = vec![Span::styled("│ ", Style::default().fg(accent))];
-            spans.extend(cl.spans);
-            lines.push(Line::from(spans));
-        }
-
+        push_message_lines(&mut lines, msg.role, &msg.content, false);
         lines.push(Line::from(""));
     }
 
     if !state.streaming_content.is_empty() {
-        let idx = (state.tick / 2) as usize % SPINNER.len();
-        lines.push(Line::from(vec![
-            Span::styled("◆ ", Style::default().fg(palette::ION).bold()),
-            Span::styled("ghostpwn", Style::default().fg(palette::ION).bold()),
-            Span::raw("  "),
-            Span::styled("·", Style::default().fg(palette::STEEL)),
-            Span::raw("  "),
-            Span::styled(
-                SPINNER[idx].to_string(),
-                Style::default().fg(palette::EMBER).bold(),
-            ),
-            Span::raw(" "),
-            Span::styled("streaming", Style::default().fg(palette::ASH).italic()),
-        ]));
-        for cl in styled_assistant_lines(&state.streaming_content) {
-            let mut spans = vec![Span::styled("│ ", Style::default().fg(palette::ION))];
-            spans.extend(cl.spans);
-            lines.push(Line::from(spans));
-        }
+        push_message_lines(
+            &mut lines,
+            UiRole::Assistant,
+            &state.streaming_content,
+            true,
+        );
     }
 
     lines
 }
 
-fn role_chrome(role: UiRole) -> (&'static str, &'static str, Color) {
-    match role {
-        UiRole::User => ("❯", "you", palette::PHOSPHOR),
-        UiRole::Assistant => ("◆", "ghostpwn", palette::ION),
-        UiRole::Tool => ("⚙", "tool", palette::PLASMA),
-        UiRole::Error => ("✖", "error", palette::BLOOD),
+fn push_message_lines(
+    lines: &mut Vec<Line<'static>>,
+    role: UiRole,
+    content: &str,
+    streaming: bool,
+) {
+    let (bullet, bullet_color) = match role {
+        UiRole::User => ("›", palette::ASH),
+        UiRole::Assistant => ("●", palette::PHOSPHOR),
+        UiRole::Tool => ("●", palette::PLASMA),
+        UiRole::Error => ("●", palette::BLOOD),
+    };
+
+    let body = match role {
+        UiRole::Assistant => styled_assistant_lines(content),
+        UiRole::Tool => tool_call_lines(content),
+        _ => styled_content_lines(content, role),
+    };
+
+    let bullet_span = Span::styled(format!("{bullet} "), Style::default().fg(bullet_color).bold());
+
+    let mut iter = body.into_iter();
+    if let Some(first) = iter.next() {
+        let mut spans = vec![bullet_span];
+        spans.extend(first.spans);
+        lines.push(Line::from(spans));
+    } else {
+        lines.push(Line::from(vec![bullet_span]));
     }
+
+    for cl in iter {
+        let mut spans = vec![Span::raw("  ")];
+        spans.extend(cl.spans);
+        lines.push(Line::from(spans));
+    }
+
+    if streaming {
+        lines.push(Line::from(vec![
+            Span::raw("  "),
+            Span::styled("…", Style::default().fg(palette::ASH).italic()),
+        ]));
+    }
+}
+
+fn tool_call_lines(content: &str) -> Vec<Line<'static>> {
+    if content.is_empty() {
+        return vec![Line::from("")];
+    }
+    let mut out = Vec::<Line<'static>>::new();
+    let mut first = true;
+    for line in content.lines() {
+        if first {
+            out.push(Line::styled(
+                line.to_string(),
+                Style::default().fg(palette::BONE).bold(),
+            ));
+            first = false;
+        } else {
+            let mut spans = vec![
+                Span::styled("⎿ ", Style::default().fg(palette::STEEL)),
+                Span::styled(line.to_string(), Style::default().fg(palette::ASH)),
+            ];
+            // keep spans length consistent
+            spans.shrink_to_fit();
+            out.push(Line::from(spans));
+        }
+    }
+    out
 }
 
 fn styled_content_lines(content: &str, role: UiRole) -> Vec<Line<'static>> {
