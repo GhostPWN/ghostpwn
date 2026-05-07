@@ -717,6 +717,15 @@ async fn handle_selector_key(
                     (selector.model_index + 1).min(selector.models.len().saturating_sub(1));
             }
         }
+        KeyCode::PageUp => {
+            selector.model_index = selector.model_index.saturating_sub(10);
+        }
+        KeyCode::PageDown => {
+            if !selector.models.is_empty() {
+                selector.model_index =
+                    (selector.model_index + 10).min(selector.models.len().saturating_sub(1));
+            }
+        }
         KeyCode::Enter => {
             let provider = selector.providers[selector.provider_index];
             let model = selector.models.get(selector.model_index).cloned();
@@ -888,10 +897,18 @@ fn render_selector(frame: &mut Frame, state: &UiState) {
             Style::default().fg(palette::ASH),
         )])]
     } else {
+        let visible = rows[1].height.max(1) as usize;
+        let start = selector
+            .model_index
+            .saturating_add(1)
+            .saturating_sub(visible);
+
         selector
             .models
             .iter()
             .enumerate()
+            .skip(start)
+            .take(visible)
             .map(|(idx, model)| {
                 let selected = idx == selector.model_index;
                 Line::from(vec![
@@ -921,6 +938,8 @@ fn render_selector(frame: &mut Frame, state: &UiState) {
         Span::styled(" provider  ", Style::default().fg(palette::ASH)),
         Span::styled("↑/↓", Style::default().fg(palette::PHOSPHOR).bold()),
         Span::styled(" model  ", Style::default().fg(palette::ASH)),
+        Span::styled("pgup/pgdn", Style::default().fg(palette::PHOSPHOR).bold()),
+        Span::styled(" jump  ", Style::default().fg(palette::ASH)),
         Span::styled("enter", Style::default().fg(palette::PHOSPHOR).bold()),
         Span::styled(" switch  ", Style::default().fg(palette::ASH)),
         Span::styled("esc", Style::default().fg(palette::PHOSPHOR).bold()),
