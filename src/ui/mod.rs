@@ -1312,19 +1312,28 @@ fn styled_assistant_lines(content: &str) -> Vec<Line<'static>> {
 
         if let Some(rest) = trimmed.strip_prefix("# ") {
             let mut spans = vec![Span::raw(leading.clone())];
-            spans.extend(render_inline(rest, Style::default().fg(palette::ION).bold()));
+            spans.extend(render_inline(
+                rest,
+                Style::default().fg(palette::ION).bold(),
+            ));
             out.push(Line::from(spans));
             continue;
         }
         if let Some(rest) = trimmed.strip_prefix("## ") {
             let mut spans = vec![Span::raw(leading.clone())];
-            spans.extend(render_inline(rest, Style::default().fg(palette::ION).bold()));
+            spans.extend(render_inline(
+                rest,
+                Style::default().fg(palette::ION).bold(),
+            ));
             out.push(Line::from(spans));
             continue;
         }
         if let Some(rest) = trimmed.strip_prefix("### ") {
             let mut spans = vec![Span::raw(leading.clone())];
-            spans.extend(render_inline(rest, Style::default().fg(palette::PLASMA).bold()));
+            spans.extend(render_inline(
+                rest,
+                Style::default().fg(palette::PLASMA).bold(),
+            ));
             out.push(Line::from(spans));
             continue;
         }
@@ -1376,38 +1385,40 @@ fn render_inline(text: &str, base: Style) -> Vec<Span<'static>> {
     };
 
     while i < bytes.len() {
-        if bytes[i] == b'*' && i + 1 < bytes.len() && bytes[i + 1] == b'*' {
-            if let Some(end) = find_marker(text, i + 2, "**") {
-                flush(&mut spans, &mut buf);
-                spans.push(Span::styled(
-                    text[i + 2..end].to_string(),
-                    base.add_modifier(Modifier::BOLD),
-                ));
-                i = end + 2;
-                continue;
-            }
+        if bytes[i] == b'*'
+            && i + 1 < bytes.len()
+            && bytes[i + 1] == b'*'
+            && let Some(end) = find_marker(text, i + 2, "**")
+        {
+            flush(&mut spans, &mut buf);
+            spans.push(Span::styled(
+                text[i + 2..end].to_string(),
+                base.add_modifier(Modifier::BOLD),
+            ));
+            i = end + 2;
+            continue;
         }
-        if bytes[i] == b'`' {
-            if let Some(end) = find_marker(text, i + 1, "`") {
-                flush(&mut spans, &mut buf);
-                spans.push(Span::styled(
-                    text[i + 1..end].to_string(),
-                    Style::default().fg(palette::PLASMA),
-                ));
-                i = end + 1;
-                continue;
-            }
+        if bytes[i] == b'`'
+            && let Some(end) = find_marker(text, i + 1, "`")
+        {
+            flush(&mut spans, &mut buf);
+            spans.push(Span::styled(
+                text[i + 1..end].to_string(),
+                Style::default().fg(palette::PLASMA),
+            ));
+            i = end + 1;
+            continue;
         }
-        if bytes[i] == b'*' {
-            if let Some(end) = find_marker(text, i + 1, "*") {
-                flush(&mut spans, &mut buf);
-                spans.push(Span::styled(
-                    text[i + 1..end].to_string(),
-                    base.add_modifier(Modifier::ITALIC),
-                ));
-                i = end + 1;
-                continue;
-            }
+        if bytes[i] == b'*'
+            && let Some(end) = find_marker(text, i + 1, "*")
+        {
+            flush(&mut spans, &mut buf);
+            spans.push(Span::styled(
+                text[i + 1..end].to_string(),
+                base.add_modifier(Modifier::ITALIC),
+            ));
+            i = end + 1;
+            continue;
         }
         let ch = text[i..].chars().next().unwrap();
         buf.push(ch);
