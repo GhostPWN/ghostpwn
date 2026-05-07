@@ -1260,6 +1260,7 @@ fn styled_assistant_lines(content: &str) -> Vec<Line<'static>> {
 
     for line in content.lines() {
         let trimmed = line.trim_start();
+        let leading: String = line.chars().take_while(|c| c.is_whitespace()).collect();
 
         if trimmed.starts_with("```") {
             if in_code_block {
@@ -1271,37 +1272,153 @@ fn styled_assistant_lines(content: &str) -> Vec<Line<'static>> {
             }
             out.push(Line::styled(
                 line.to_string(),
-                Style::default().fg(palette::EMBER).dim(),
+                Style::default().fg(palette::STEEL).dim(),
             ));
             continue;
         }
 
-        let style = if in_diff_block && trimmed.starts_with('+') && !trimmed.starts_with("+++") {
-            Style::default().fg(palette::PHOSPHOR)
-        } else if in_diff_block && trimmed.starts_with('-') && !trimmed.starts_with("---") {
-            Style::default().fg(palette::BLOOD)
-        } else if in_diff_block
+        if in_diff_block && trimmed.starts_with('+') && !trimmed.starts_with("+++") {
+            out.push(Line::styled(
+                line.to_string(),
+                Style::default().fg(palette::PHOSPHOR),
+            ));
+            continue;
+        }
+        if in_diff_block && trimmed.starts_with('-') && !trimmed.starts_with("---") {
+            out.push(Line::styled(
+                line.to_string(),
+                Style::default().fg(palette::BLOOD),
+            ));
+            continue;
+        }
+        if in_diff_block
             && (trimmed.starts_with("@@")
                 || trimmed.starts_with("+++")
                 || trimmed.starts_with("---"))
         {
-            Style::default().fg(palette::EMBER).bold()
-        } else if in_code_block {
-            Style::default().fg(palette::PHOSPHOR)
-        } else if trimmed.starts_with('#') {
-            Style::default().fg(palette::ION).bold()
-        } else if trimmed.starts_with("- ") || trimmed.starts_with("* ") {
-            Style::default().fg(palette::BONE)
-        } else if trimmed.starts_with('>') {
-            Style::default().fg(palette::ASH).italic()
-        } else {
-            Style::default().fg(palette::BONE)
-        };
+            out.push(Line::styled(
+                line.to_string(),
+                Style::default().fg(palette::EMBER).bold(),
+            ));
+            continue;
+        }
+        if in_code_block {
+            out.push(Line::styled(
+                line.to_string(),
+                Style::default().fg(palette::PHOSPHOR),
+            ));
+            continue;
+        }
 
-        out.push(Line::styled(line.to_string(), style));
+        if let Some(rest) = trimmed.strip_prefix("# ") {
+            let mut spans = vec![Span::raw(leading.clone())];
+            spans.extend(render_inline(rest, Style::default().fg(palette::ION).bold()));
+            out.push(Line::from(spans));
+            continue;
+        }
+        if let Some(rest) = trimmed.strip_prefix("## ") {
+            let mut spans = vec![Span::raw(leading.clone())];
+            spans.extend(render_inline(rest, Style::default().fg(palette::ION).bold()));
+            out.push(Line::from(spans));
+            continue;
+        }
+        if let Some(rest) = trimmed.strip_prefix("### ") {
+            let mut spans = vec![Span::raw(leading.clone())];
+            spans.extend(render_inline(rest, Style::default().fg(palette::PLASMA).bold()));
+            out.push(Line::from(spans));
+            continue;
+        }
+
+        if let Some(rest) = trimmed
+            .strip_prefix("- ")
+            .or_else(|| trimmed.strip_prefix("* "))
+        {
+            let mut spans = vec![
+                Span::raw(leading.clone()),
+                Span::styled("• ", Style::default().fg(palette::PLASMA)),
+            ];
+            spans.extend(render_inline(rest, Style::default().fg(palette::BONE)));
+            out.push(Line::from(spans));
+            continue;
+        }
+
+        if let Some(rest) = trimmed.strip_prefix("> ") {
+            let mut spans = vec![
+                Span::raw(leading.clone()),
+                Span::styled("│ ", Style::default().fg(palette::STEEL)),
+            ];
+            spans.extend(render_inline(
+                rest,
+                Style::default().fg(palette::ASH).italic(),
+            ));
+            out.push(Line::from(spans));
+            continue;
+        }
+
+        let mut spans = vec![Span::raw(leading.clone())];
+        spans.extend(render_inline(trimmed, Style::default().fg(palette::BONE)));
+        out.push(Line::from(spans));
     }
 
     out
+}
+
+fn render_inline(text: &str, base: Style) -> Vec<Span<'static>> {
+    let mut spans = Vec::<Span<'static>>::new();
+    let bytes = text.as_bytes();
+    let mut i = 0;
+    let mut buf = String::new();
+
+    let flush = |spans: &mut Vec<Span<'static>>, buf: &mut String| {
+        if !buf.is_empty() {
+            spans.push(Span::styled(std::mem::take(buf), base));
+        }
+    };
+
+    while i < bytes.len() {
+        if bytes[i] == b'*' && i + 1 < bytes.len() && bytes[i + 1] == b'*' {
+            if let Some(end) = find_marker(text, i + 2, "**") {
+                flush(&mut spans, &mut buf);
+                spans.push(Span::styled(
+                    text[i + 2..end].to_string(),
+                    base.add_modifier(Modifier::BOLD),
+                ));
+                i = end + 2;
+                continue;
+            }
+        }
+        if bytes[i] == b'`' {
+            if let Some(end) = find_marker(text, i + 1, "`") {
+                flush(&mut spans, &mut buf);
+                spans.push(Span::styled(
+                    text[i + 1..end].to_string(),
+                    Style::default().fg(palette::PLASMA),
+                ));
+                i = end + 1;
+                continue;
+            }
+        }
+        if bytes[i] == b'*' {
+            if let Some(end) = find_marker(text, i + 1, "*") {
+                flush(&mut spans, &mut buf);
+                spans.push(Span::styled(
+                    text[i + 1..end].to_string(),
+                    base.add_modifier(Modifier::ITALIC),
+                ));
+                i = end + 1;
+                continue;
+            }
+        }
+        let ch = text[i..].chars().next().unwrap();
+        buf.push(ch);
+        i += ch.len_utf8();
+    }
+    flush(&mut spans, &mut buf);
+    spans
+}
+
+fn find_marker(text: &str, start: usize, marker: &str) -> Option<usize> {
+    text[start..].find(marker).map(|p| start + p)
 }
 
 fn transcript_line_count(state: &UiState) -> u16 {
