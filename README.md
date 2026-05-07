@@ -40,7 +40,8 @@ The current code base focuses on:
 - GitHub Copilot OAuth with automatic model discovery
 - Keyboard model selector via `/selector`
 - JSON-first agent loop with tool-calling
-- Local tools: `readFile`, `listDirectory`, `searchFiles`, `grep`, `runCommand`, `fileInfo`, `generateDiff`
+- Local tools: `readFile`, `listDirectory`, `searchFiles`, `grep`, `runCommand`, `fileInfo`, `generateDiff`, `writeFile`, `editFile`, `multiEdit`, `applyPatch`, `todoRead`, `todoWrite`, `webFetch`, `webSearch`
+- Claude Code, Codex, and OpenCode-compatible tool aliases for common read/write/edit/shell/search operations
 - Diff rendering for fenced `diff` blocks in assistant output
 - Workspace boundary enforcement for filesystem tools
 - Shell commands run from the configured workspace but are not an OS-level sandbox
@@ -105,6 +106,7 @@ cargo run
 - Assistant text is streamed from provider responses and incrementally rendered in the TUI.
 - Filesystem tools reject paths outside the configured workspace root.
 - `runCommand` uses the configured workspace as its current directory and enforces a bounded timeout; do not treat it as a security sandbox.
+- `webSearch` uses DuckDuckGo HTML results and may fail if the page structure changes or rate limits requests.
 - Provider keys can come from environment variables, `.env`, or the OS keychain.
 - GitHub Copilot is supported through `/connect github` or `/copilot`.
 
