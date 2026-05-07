@@ -811,17 +811,15 @@ fn render(frame: &mut Frame, state: &UiState) {
     let root = Layout::default()
         .direction(Direction::Vertical)
         .constraints([
-            Constraint::Length(3),
             Constraint::Min(1),
             Constraint::Length(1),
             Constraint::Length(3),
         ])
         .split(frame.area());
 
-    render_header(frame, root[0], state);
-    render_transcript(frame, root[1], state);
-    render_status(frame, root[2], state);
-    render_input(frame, root[3], state);
+    render_transcript(frame, root[0], state);
+    render_status(frame, root[1], state);
+    render_input(frame, root[2], state);
     render_selector(frame, state);
 }
 
@@ -963,46 +961,6 @@ fn centered_rect(percent_x: u16, percent_y: u16, area: Rect) -> Rect {
     .split(vertical[1])[1]
 }
 
-fn render_header(frame: &mut Frame, area: Rect, state: &UiState) {
-    let block = Block::default()
-        .borders(Borders::ALL)
-        .border_type(BorderType::Rounded)
-        .border_style(Style::default().fg(palette::STEEL))
-        .padding(Padding::horizontal(1));
-    let inner = block.inner(area);
-    frame.render_widget(block, area);
-
-    let cols = Layout::horizontal([
-        Constraint::Length(16),
-        Constraint::Min(1),
-    ])
-    .split(inner);
-
-    let brand = Line::from(vec![
-        Span::styled("◈ ", Style::default().fg(palette::PLASMA).bold()),
-        Span::styled("GHOSTPWN", Style::default().fg(palette::PHOSPHOR).bold()),
-        Span::styled(" v0.1", Style::default().fg(palette::STEEL)),
-    ]);
-    frame.render_widget(Paragraph::new(brand), cols[0]);
-
-    let center = Line::from(vec![
-        Span::styled(
-            "autonomous web pentest",
-            Style::default().fg(palette::ASH).italic(),
-        ),
-        Span::raw("   "),
-        Span::styled("◂", Style::default().fg(palette::STEEL)),
-        Span::raw(" "),
-        Span::styled(
-            state.provider_name.clone(),
-            Style::default().fg(palette::ION).bold(),
-        ),
-        Span::raw(" "),
-        Span::styled("▸", Style::default().fg(palette::STEEL)),
-    ]);
-    frame.render_widget(Paragraph::new(center).alignment(Alignment::Center), cols[1]);
-}
-
 fn render_transcript(frame: &mut Frame, area: Rect, state: &UiState) {
     let is_home = state.messages.is_empty() && state.streaming_content.is_empty();
 
@@ -1073,35 +1031,27 @@ fn render_scrollbar(frame: &mut Frame, area: Rect, offset: u16, total: u16, visi
 
 fn render_status(frame: &mut Frame, area: Rect, state: &UiState) {
     let frame_idx = (state.tick / 2) as usize % SPINNER.len();
-    let (glyph, glyph_color, state_text) = if state.is_streaming {
+    let mut left_spans = vec![Span::raw(" ")];
+    if state.is_streaming {
         let text = if state.tool_status.is_empty() {
             "streaming response".to_string()
         } else {
             state.tool_status.clone()
         };
-        (SPINNER[frame_idx], palette::EMBER, text)
-    } else {
-        ("◆", palette::PHOSPHOR, "ready".to_string())
-    };
+        left_spans.push(Span::styled(
+            format!("{} ", SPINNER[frame_idx]),
+            Style::default().fg(palette::EMBER).bold(),
+        ));
+        left_spans.push(Span::styled(text, Style::default().fg(palette::BONE)));
+        left_spans.push(Span::raw("   "));
+    }
+    left_spans.push(Span::styled("◆ ", Style::default().fg(palette::PHOSPHOR).bold()));
+    left_spans.push(Span::styled(
+        state.provider_name.clone(),
+        Style::default().fg(palette::ION).bold(),
+    ));
 
-    let scroll_info = {
-        let total = transcript_line_count(state);
-        if state.auto_scroll || total == 0 {
-            "◉ live".to_string()
-        } else {
-            let pct = ((state.scroll_offset as u32 + 1) * 100 / total as u32).min(100);
-            format!("◯ {pct}%")
-        }
-    };
-
-    let left = Line::from(vec![
-        Span::raw(" "),
-        Span::styled(format!("{glyph} "), Style::default().fg(glyph_color).bold()),
-        Span::styled(state_text, Style::default().fg(palette::BONE)),
-        Span::raw("   "),
-        Span::styled("⌁ ", Style::default().fg(palette::STEEL)),
-        Span::styled(scroll_info, Style::default().fg(palette::ASH)),
-    ]);
+    let left = Line::from(left_spans);
 
     let right = Line::from(vec![
         Span::styled("tab", Style::default().fg(palette::PHOSPHOR).bold()),
