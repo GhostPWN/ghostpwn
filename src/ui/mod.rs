@@ -1045,7 +1045,10 @@ fn render_status(frame: &mut Frame, area: Rect, state: &UiState) {
         left_spans.push(Span::styled(text, Style::default().fg(palette::BONE)));
         left_spans.push(Span::raw("   "));
     }
-    left_spans.push(Span::styled("◆ ", Style::default().fg(palette::PHOSPHOR).bold()));
+    left_spans.push(Span::styled(
+        "◆ ",
+        Style::default().fg(palette::PHOSPHOR).bold(),
+    ));
     left_spans.push(Span::styled(
         state.provider_name.clone(),
         Style::default().fg(palette::ION).bold(),
@@ -1174,7 +1177,10 @@ fn push_message_lines(
         _ => styled_content_lines(content, role),
     };
 
-    let bullet_span = Span::styled(format!("{bullet} "), Style::default().fg(bullet_color).bold());
+    let bullet_span = Span::styled(
+        format!("{bullet} "),
+        Style::default().fg(bullet_color).bold(),
+    );
 
     let mut iter = body.into_iter();
     if let Some(first) = iter.next() {
