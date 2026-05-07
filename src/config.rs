@@ -42,7 +42,7 @@ impl ProviderKind {
             Self::OpenAi => "OPENAI_API_KEY",
             Self::Google => "GOOGLE_GENERATIVE_AI_API_KEY",
             Self::Copilot => "GITHUB_COPILOT_TOKEN",
-            Self::Ollama => "IGNORE",
+            Self::Ollama => "OLLAMA_HOST",
         }
     }
 
@@ -87,11 +87,15 @@ impl ProviderKeys {
             ollama: None,
         };
 
-        for provider in ProviderKind::all() {
-            if keys.get(*provider).is_none()
-                && let Some(stored) = secret_store.load_key(*provider)
+        for provider in ProviderKind::all()
+            .iter()
+            .copied()
+            .filter(|provider| *provider != ProviderKind::Ollama)
+        {
+            if keys.get(provider).is_none()
+                && let Some(stored) = secret_store.load_key(provider)
             {
-                keys.set(*provider, stored);
+                keys.set(provider, stored);
             }
         }
 

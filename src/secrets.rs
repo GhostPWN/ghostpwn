@@ -47,6 +47,9 @@ impl SecretStore {
         if value.trim().is_empty() {
             return Err(anyhow!("API key cannot be empty"));
         }
+        if value.contains(['\n', '\r']) {
+            return Err(anyhow!("API key cannot contain newlines"));
+        }
 
         let mut report = SecretMutationReport::default();
 
@@ -115,7 +118,7 @@ fn read_env_key_from_file(path: &PathBuf, key: &str) -> Option<String> {
         if let Some((lhs, rhs)) = trimmed.split_once('=')
             && lhs.trim() == key
         {
-            let value = rhs.trim().to_string();
+            let value = parse_env_value(rhs);
             if !value.is_empty() {
                 return Some(value);
             }
@@ -175,4 +178,51 @@ fn upsert_env_key(path: &PathBuf, key: &str, value: Option<&str>) -> Result<()> 
     }
 
     Ok(())
+}
+
+fn parse_env_value(raw: &str) -> String {
+    let trimmed = raw.trim();
+    if trimmed.len() >= 2 {
+        let bytes = trimmed.as_bytes();
+        let first = bytes[0];
+        let last = bytes[trimmed.len() - 1];
+        if (first == b'"' && last == b'"') || (first == b'\'' && last == b'\'') {
+            return trimmed[1..trimmed.len() - 1].to_string();
+        }
+    }
+
+    trimmed.to_string()
+}
+
+#[cfg(test)]
+mod tests {
+    use std::fs;
+
+    use tempfile::tempdir;
+
+    use super::{read_env_key_from_file, upsert_env_key};
+
+    #[test]
+    fn reads_quoted_env_values_without_quotes() {
+        let dir = tempdir().expect("tempdir");
+        let path = dir.path().join(".env");
+        fs::write(&path, "OPENAI_API_KEY=\"sk-test\"\n").expect("write env");
+
+        assert_eq!(
+            read_env_key_from_file(&path, "OPENAI_API_KEY").as_deref(),
+            Some("sk-test")
+        );
+    }
+
+    #[test]
+    fn upsert_env_key_removes_existing_key() {
+        let dir = tempdir().expect("tempdir");
+        let path = dir.path().join(".env");
+        fs::write(&path, "OPENAI_API_KEY=old\nOTHER=keep\n").expect("write env");
+
+        upsert_env_key(&path, "OPENAI_API_KEY", None).expect("remove key");
+
+        let content = fs::read_to_string(path).expect("read env");
+        assert_eq!(content, "OTHER=keep\n");
+    }
 }

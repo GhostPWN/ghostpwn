@@ -1,4 +1,5 @@
-use std::path::{Path, PathBuf};
+use std::io::ErrorKind;
+use std::path::{Component, Path, PathBuf};
 use std::process::Stdio;
 use std::time::Duration;
 
@@ -12,6 +13,9 @@ use tokio::time::timeout;
 use walkdir::WalkDir;
 
 use crate::models::ToolCall;
+
+const DEFAULT_COMMAND_TIMEOUT_MS: u64 = 30_000;
+const MAX_COMMAND_TIMEOUT_MS: u64 = 120_000;
 
 pub struct ToolRuntime {
     workspace_root: PathBuf,
@@ -249,7 +253,8 @@ impl ToolRuntime {
         let timeout_ms = args
             .get("timeout")
             .and_then(Value::as_u64)
-            .unwrap_or(30_000);
+            .unwrap_or(DEFAULT_COMMAND_TIMEOUT_MS)
+            .clamp(1, MAX_COMMAND_TIMEOUT_MS);
 
         let resolved_cwd = self.resolve_in_workspace(cwd)?;
 
@@ -293,9 +298,21 @@ impl ToolRuntime {
 
     async fn file_info(&self, args: &Value) -> Result<Value> {
         let path = required_str(args, "path")?;
-        let resolved = self.resolve_in_workspace(path)?;
+        let resolved = self.resolve_existing_or_missing_in_workspace(path)?;
 
-        let metadata = fs::metadata(&resolved).await?;
+        let metadata = match fs::metadata(&resolved).await {
+            Ok(v) => v,
+            Err(err) if err.kind() == ErrorKind::NotFound => {
+                return Ok(json!({
+                    "path": resolved.display().to_string(),
+                    "exists": false,
+                    "type": null,
+                    "size": null,
+                    "modified": null,
+                }));
+            }
+            Err(err) => return Err(err.into()),
+        };
         let kind = if metadata.is_dir() {
             "directory"
         } else {
@@ -314,12 +331,7 @@ impl ToolRuntime {
     }
 
     fn resolve_in_workspace(&self, input: &str) -> Result<PathBuf> {
-        let path = Path::new(input);
-        let absolute = if path.is_absolute() {
-            PathBuf::from(path)
-        } else {
-            self.workspace_root.join(path)
-        };
+        let absolute = self.absolute_input_path(input);
 
         let canonical = absolute
             .canonicalize()
@@ -335,6 +347,98 @@ impl ToolRuntime {
 
         Ok(canonical)
     }
+
+    fn resolve_existing_or_missing_in_workspace(&self, input: &str) -> Result<PathBuf> {
+        let absolute = self.absolute_input_path(input);
+
+        match absolute.canonicalize() {
+            Ok(canonical) => {
+                self.ensure_in_workspace(&canonical)?;
+                Ok(canonical)
+            }
+            Err(err) if err.kind() == ErrorKind::NotFound => {
+                reject_parent_dir(input, &self.workspace_root)?;
+                let (ancestor, tail) = nearest_existing_ancestor(&absolute)?;
+                let canonical_ancestor = ancestor.canonicalize().map_err(|err| {
+                    anyhow!("Path '{}' is not accessible: {}", ancestor.display(), err)
+                })?;
+
+                self.ensure_in_workspace(&canonical_ancestor)?;
+                Ok(canonical_ancestor.join(tail))
+            }
+            Err(err) => Err(anyhow!(
+                "Path '{}' is not accessible: {}",
+                absolute.display(),
+                err
+            )),
+        }
+    }
+
+    fn absolute_input_path(&self, input: &str) -> PathBuf {
+        let path = Path::new(input);
+        if path.is_absolute() {
+            PathBuf::from(path)
+        } else {
+            self.workspace_root.join(path)
+        }
+    }
+
+    fn ensure_in_workspace(&self, canonical: &Path) -> Result<()> {
+        if !canonical.starts_with(&self.workspace_root) {
+            return Err(anyhow!(
+                "Path '{}' is outside workspace root '{}'",
+                canonical.display(),
+                self.workspace_root.display()
+            ));
+        }
+
+        Ok(())
+    }
+}
+
+fn reject_parent_dir(input: &str, workspace_root: &Path) -> Result<()> {
+    if Path::new(input)
+        .components()
+        .any(|component| matches!(component, Component::ParentDir))
+    {
+        return Err(anyhow!(
+            "Path '{}' is outside workspace root '{}'",
+            input,
+            workspace_root.display()
+        ));
+    }
+
+    Ok(())
+}
+
+fn nearest_existing_ancestor(path: &Path) -> Result<(PathBuf, PathBuf)> {
+    let mut ancestor = path.to_path_buf();
+    let mut tail = PathBuf::new();
+
+    loop {
+        if ancestor.exists() {
+            return Ok((ancestor, tail));
+        }
+
+        let Some(name) = ancestor.file_name().map(|v| v.to_os_string()) else {
+            break;
+        };
+
+        let mut next_tail = PathBuf::from(name);
+        if !tail.as_os_str().is_empty() {
+            next_tail.push(tail);
+        }
+        tail = next_tail;
+
+        if !ancestor.pop() {
+            break;
+        }
+    }
+
+    Err(anyhow!(
+        "Path '{}' is not accessible: no existing ancestor",
+        path.display()
+    ))
 }
 
 fn required_str<'a>(args: &'a Value, key: &str) -> Result<&'a str> {
@@ -418,5 +522,45 @@ mod tests {
             .expect_err("should reject traversal");
         let msg = err.to_string();
         assert!(msg.contains("outside workspace root"));
+    }
+
+    #[tokio::test]
+    async fn file_info_reports_missing_paths_inside_workspace() {
+        let root = tempdir().expect("tempdir");
+        let workspace = root.path().join("workspace");
+        fs::create_dir_all(&workspace).expect("workspace");
+
+        let tools = ToolRuntime::new(workspace).expect("runtime");
+        let call = ToolCall {
+            name: "fileInfo".to_string(),
+            arguments: json!({
+                "path": "missing.txt"
+            }),
+        };
+
+        let result = tools.execute(&call).await.expect("tool result");
+        assert_eq!(result.get("exists").and_then(|v| v.as_bool()), Some(false));
+        assert!(result.get("type").is_some_and(|v| v.is_null()));
+    }
+
+    #[tokio::test]
+    async fn file_info_rejects_missing_paths_outside_workspace() {
+        let root = tempdir().expect("tempdir");
+        let workspace = root.path().join("workspace");
+        fs::create_dir_all(&workspace).expect("workspace");
+
+        let tools = ToolRuntime::new(workspace).expect("runtime");
+        let call = ToolCall {
+            name: "fileInfo".to_string(),
+            arguments: json!({
+                "path": "../missing.txt"
+            }),
+        };
+
+        let err = tools
+            .execute(&call)
+            .await
+            .expect_err("should reject traversal");
+        assert!(err.to_string().contains("outside workspace root"));
     }
 }

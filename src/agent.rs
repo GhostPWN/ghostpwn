@@ -162,6 +162,11 @@ impl Agent {
     }
 
     pub fn connect_key(&mut self, provider: ProviderKind, api_key: String) -> String {
+        if provider == ProviderKind::Ollama {
+            return "Ollama is local and does not use API keys. Use /connect ollama [model]."
+                .to_string();
+        }
+
         let save_result = self.secret_store.save_key(provider, &api_key);
 
         self.provider_keys.set(provider, api_key);
@@ -198,6 +203,10 @@ impl Agent {
     }
 
     pub fn disconnect_key(&mut self, provider: ProviderKind) -> String {
+        if provider == ProviderKind::Ollama {
+            return "Ollama is local and does not use API keys.".to_string();
+        }
+
         let delete_result = self.secret_store.delete_key(provider);
         self.provider_keys.clear(provider);
 
@@ -256,6 +265,7 @@ impl Agent {
 
         lines.push(String::new());
         lines.push("Usage: /connect <provider> <api_key>".to_string());
+        lines.push("Local models: /connect ollama [model]".to_string());
         lines.push("Example: /connect openai sk-...".to_string());
         lines.push(format!(
             "Persistence backend: {}",
@@ -334,6 +344,13 @@ impl Agent {
 }
 
 fn format_status_line(provider: ProviderKind, connected: bool, current: bool) -> String {
+    if provider == ProviderKind::Ollama {
+        if current {
+            return "- ollama: local (active, no API key)".to_string();
+        }
+        return "- ollama: local (no API key)".to_string();
+    }
+
     let status = if connected {
         "connected"
     } else {

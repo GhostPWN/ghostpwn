@@ -1,4 +1,4 @@
-use anyhow::Result;
+use anyhow::{Result, anyhow};
 use futures_util::StreamExt;
 use reqwest::Response;
 
@@ -7,11 +7,16 @@ pub async fn consume_sse(
     mut on_data: impl FnMut(&str) -> Result<bool>,
 ) -> Result<()> {
     let mut stream = response.bytes_stream();
+    let mut decoder = Utf8StreamDecoder::default();
     let mut buffer = String::new();
 
     while let Some(chunk) = stream.next().await {
         let chunk = chunk?;
-        buffer.push_str(&String::from_utf8_lossy(&chunk));
+        let Some(text) = decoder.push(&chunk)? else {
+            continue;
+        };
+
+        buffer.push_str(&text);
 
         if buffer.contains('\r') {
             buffer = buffer.replace("\r\n", "\n").replace('\r', "\n");
@@ -29,6 +34,8 @@ pub async fn consume_sse(
         }
     }
 
+    decoder.finish()?;
+
     if !buffer.trim().is_empty()
         && let Some(data) = extract_data_lines(buffer.trim())
     {
@@ -36,6 +43,38 @@ pub async fn consume_sse(
     }
 
     Ok(())
+}
+
+#[derive(Default)]
+struct Utf8StreamDecoder {
+    pending: Vec<u8>,
+}
+
+impl Utf8StreamDecoder {
+    fn push(&mut self, chunk: &[u8]) -> Result<Option<String>> {
+        self.pending.extend_from_slice(chunk);
+
+        match std::str::from_utf8(&self.pending) {
+            Ok(text) => {
+                let out = text.to_string();
+                self.pending.clear();
+                Ok(Some(out))
+            }
+            Err(err) if err.error_len().is_none() => Ok(None),
+            Err(err) => Err(anyhow!(
+                "SSE stream contained invalid UTF-8 at byte {}",
+                err.valid_up_to()
+            )),
+        }
+    }
+
+    fn finish(&self) -> Result<()> {
+        if self.pending.is_empty() {
+            Ok(())
+        } else {
+            Err(anyhow!("SSE stream ended with incomplete UTF-8 sequence"))
+        }
+    }
 }
 
 fn extract_data_lines(block: &str) -> Option<String> {
@@ -51,5 +90,38 @@ fn extract_data_lines(block: &str) -> Option<String> {
         None
     } else {
         Some(data_lines.join("\n"))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{Utf8StreamDecoder, extract_data_lines};
+
+    #[test]
+    fn utf8_decoder_waits_for_split_codepoint() {
+        let message = "data: 🌋\n\n";
+        let bytes = message.as_bytes();
+        let split = message.find('🌋').expect("emoji offset") + 2;
+
+        let mut decoder = Utf8StreamDecoder::default();
+        assert!(
+            decoder
+                .push(&bytes[..split])
+                .expect("first chunk")
+                .is_none()
+        );
+        assert_eq!(
+            decoder.push(&bytes[split..]).expect("second chunk"),
+            Some(message.to_string())
+        );
+    }
+
+    #[test]
+    fn data_lines_are_joined_without_event_metadata() {
+        let block = "event: message\ndata: {\"a\":1}\ndata: {\"b\":2}";
+        assert_eq!(
+            extract_data_lines(block).as_deref(),
+            Some("{\"a\":1}\n{\"b\":2}")
+        );
     }
 }

@@ -13,7 +13,7 @@
   <img src="https://img.shields.io/badge/runtime-Rust-000000?style=flat-square" alt="Rust">
   <img src="https://img.shields.io/badge/lang-2024%20Edition-dea584?style=flat-square" alt="Rust 2024 Edition">
   <img src="https://img.shields.io/badge/ui-ratatui%20%2B%20crossterm-4a5568?style=flat-square" alt="ratatui + crossterm">
-  <img src="https://img.shields.io/badge/providers-OpenAI%20%7C%20Anthropic%20%7C%20Google%20%7C%20Copilot-7c3aed?style=flat-square" alt="Providers">
+  <img src="https://img.shields.io/badge/providers-OpenAI%20%7C%20Anthropic%20%7C%20Google%20%7C%20Copilot%20%7C%20Ollama-7c3aed?style=flat-square" alt="Providers">
   <img src="https://img.shields.io/badge/license-MIT-7c3aed?style=flat-square" alt="License">
 </p>
 
@@ -21,10 +21,10 @@
 
 ## Overview
 
-**GhostPWN** is a Rust-based terminal assistant for offensive security research. It uses a `ratatui` + `crossterm` TUI, streams responses from multiple LLM providers, and keeps command execution constrained to a configured workspace boundary.
+**GhostPWN** is a Rust-based terminal assistant for offensive security research. It uses a `ratatui` + `crossterm` TUI, streams responses from multiple LLM providers, and constrains filesystem tools to a configured workspace boundary.
 
 The current code base focuses on:
-- provider support for OpenAI, Anthropic, Google, and GitHub Copilot
+- provider support for OpenAI, Anthropic, Google, GitHub Copilot, and local Ollama
 - in-session provider/model switching
 - local tools for reading files, listing directories, searching, and running commands
 - persistent API key storage via `.env` and OS keychain fallback
@@ -35,11 +35,12 @@ The current code base focuses on:
 #### Features
 
 - `ratatui` + `crossterm` terminal interface
-- Provider adapters for OpenAI, Anthropic, Google, and GitHub Copilot
+- Provider adapters for OpenAI, Anthropic, Google, GitHub Copilot, and Ollama
 - Native streaming support across provider adapters
 - JSON-first agent loop with tool-calling
 - Local tools: `readFile`, `listDirectory`, `searchFiles`, `grep`, `runCommand`, `fileInfo`
-- Workspace boundary enforcement for filesystem and shell tools
+- Workspace boundary enforcement for filesystem tools
+- Shell commands run from the configured workspace but are not an OS-level sandbox
 - Persistent secrets via `.env` and OS keychain
 - Transcript scroll controls: mouse wheel + `Up`, `Down`, `PgUp`, `PgDn`, `Home`, `End`
 
@@ -59,25 +60,27 @@ cargo run
 - `/models <provider> [model]` switches active provider/model in-session
 - `/connect` shows provider connection status
 - `/connect <provider> <api_key>` connects and persists key to `.env` and keychain when available
+- `/connect github` or `/copilot` starts GitHub Copilot device authorization
+- `/connect ollama [model]` switches to local Ollama without an API key
 - `/disconnect <provider>` disconnects and removes key from `.env` and keychain when available
-- `/copilot` starts GitHub Copilot device authorization
 - `/clear` resets in-memory conversation
 - `/quit` or `/exit` exits the TUI
 - `Ctrl+C` exits immediately
-- Status bar includes `AUTO-SCROLL ON/OFF` indicator
+- Status bar shows streaming state and live/manual scroll position
 
 ## Configuration
 
-- `GHOSTPWN_PROVIDER`: `anthropic` | `openai` | `google` | `copilot`
+- `GHOSTPWN_PROVIDER`: `anthropic` | `openai` | `google` | `copilot` | `ollama`
 - `GHOSTPWN_MODEL`: optional model override for the selected provider
 - Provider key env vars:
   - `ANTHROPIC_API_KEY`
   - `OPENAI_API_KEY`
   - `GOOGLE_GENERATIVE_AI_API_KEY`
   - `GITHUB_COPILOT_TOKEN`
-- `GHOSTPWN_WORKSPACE`: optional root path used by tools as a hard safety boundary
+- `GHOSTPWN_WORKSPACE`: optional root path used as the filesystem-tool boundary and command working directory
 - `GHOSTPWN_ENV_FILE`: optional `.env` path override for secret persistence
 - API keys are loaded from environment first, then from `.env`, and finally from OS keychain entries under service `ghostpwn-rust`
+- Ollama uses `http://localhost:11434` and does not require an API key
 
 ## Architecture
 
@@ -94,9 +97,10 @@ cargo run
 
 - The runtime expects model responses as JSON envelopes.
 - Assistant text is streamed from provider responses and incrementally rendered in the TUI.
-- Tool command execution is constrained to the configured workspace root.
+- Filesystem tools reject paths outside the configured workspace root.
+- `runCommand` uses the configured workspace as its current directory and enforces a bounded timeout; do not treat it as a security sandbox.
 - Provider keys can come from environment variables, `.env`, or the OS keychain.
-- GitHub Copilot is supported through a separate `/copilot` device-flow command.
+- GitHub Copilot is supported through `/connect github` or `/copilot`.
 
 ---
 

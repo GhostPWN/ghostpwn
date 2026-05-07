@@ -185,7 +185,7 @@ impl CopilotProvider {
 
         let now = SystemTime::now()
             .duration_since(UNIX_EPOCH)
-            .unwrap()
+            .map_err(|err| anyhow!("system clock is before UNIX_EPOCH: {}", err))?
             .as_secs();
 
         if let Some(cached) = cache.as_ref()

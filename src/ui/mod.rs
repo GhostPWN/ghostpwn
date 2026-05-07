@@ -58,12 +58,20 @@ const COMMANDS: &[CommandSpec] = &[
         description: "Show available commands",
     },
     CommandSpec {
+        name: "/model",
+        description: "Show active provider/model",
+    },
+    CommandSpec {
         name: "/models",
         description: "List/switch provider models",
     },
     CommandSpec {
         name: "/connect",
         description: "Connect provider API key or /connect github",
+    },
+    CommandSpec {
+        name: "/copilot",
+        description: "Start GitHub Copilot OAuth",
     },
     CommandSpec {
         name: "/disconnect",
@@ -75,6 +83,10 @@ const COMMANDS: &[CommandSpec] = &[
     },
     CommandSpec {
         name: "/exit",
+        description: "Exit the app",
+    },
+    CommandSpec {
+        name: "/quit",
         description: "Exit the app",
     },
 ];
@@ -392,7 +404,7 @@ async fn handle_submit(
         return;
     }
 
-    if text == "/exit" {
+    if text == "/exit" || text == "/quit" {
         state.should_quit = true;
         return;
     }
@@ -406,6 +418,12 @@ async fn handle_submit(
 
         let mut locked = agent.lock().await;
         locked.clear_history();
+        return;
+    }
+
+    if text == "/model" {
+        let locked = agent.lock().await;
+        state.push_message(UiRole::Assistant, locked.list_models_overview());
         return;
     }
 
@@ -429,6 +447,9 @@ async fn handle_submit(
                     UiRole::Assistant,
                     "Fetching available models...".to_string(),
                 );
+                state.is_streaming = true;
+                state.streaming_content.clear();
+                state.tool_status.clear();
                 let tx = event_tx.clone();
                 let handle = Arc::clone(agent);
                 tokio::spawn(async move {
@@ -478,8 +499,13 @@ async fn handle_submit(
         return;
     }
 
-    if text.starts_with("/connect") {
-        let parts = text.split_whitespace().collect::<Vec<&str>>();
+    if text == "/copilot" || text.starts_with("/connect") {
+        let connect_text = if text == "/copilot" {
+            "/connect github"
+        } else {
+            text.as_str()
+        };
+        let parts = connect_text.split_whitespace().collect::<Vec<&str>>();
         if parts.len() == 1 {
             let locked = agent.lock().await;
             state.push_message(UiRole::Assistant, locked.connection_overview());
