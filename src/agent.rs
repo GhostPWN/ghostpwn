@@ -113,64 +113,6 @@ impl Agent {
         self.history.clear();
     }
 
-    pub fn list_models_overview(&self) -> String {
-        let mut out = Vec::<String>::new();
-        out.push(format!(
-            "Current: {} / {}{}",
-            self.provider_kind.as_str(),
-            self.model,
-            if self.provider_keys.is_connected(self.provider_kind) {
-                ""
-            } else {
-                " (disconnected)"
-            }
-        ));
-        out.push(String::new());
-        out.push("Providers:".to_string());
-
-        for provider in ProviderKind::all() {
-            let connected = if self.provider_keys.is_connected(*provider) {
-                "connected"
-            } else {
-                "disconnected"
-            };
-            out.push(format!("- {} ({})", provider.as_str(), connected));
-        }
-
-        out.push(String::new());
-        out.push("Use /models <provider> to list available models".to_string());
-        out.push("Use /models <provider> <model> to switch model".to_string());
-        out.join("\n")
-    }
-
-    pub async fn list_provider_models(&mut self, provider: ProviderKind) -> String {
-        match self.fetch_provider_models(provider).await {
-            Ok(models) if !models.is_empty() => {
-                let mut out = Vec::<String>::new();
-                out.push(format!(
-                    "Available models for {} ({}):",
-                    provider.as_str(),
-                    models.len()
-                ));
-
-                for model in models {
-                    out.push(format!("- {}", model));
-                }
-
-                out.push(String::new());
-                out.push(format!("Usage: /models {} <model>", provider.as_str()));
-                out.push("Use /selector for keyboard selection".to_string());
-                out.join("\n")
-            }
-            Ok(_) => format!(
-                "No models returned for {}. You can still set one manually with /models {} <model>.",
-                provider.as_str(),
-                provider.as_str()
-            ),
-            Err(err) => format!("Failed to fetch {} models: {}", provider.as_str(), err),
-        }
-    }
-
     pub async fn fetch_provider_models(&mut self, provider: ProviderKind) -> Result<Vec<String>> {
         if !self.provider_keys.is_connected(provider) {
             let usage = if provider == ProviderKind::Copilot {

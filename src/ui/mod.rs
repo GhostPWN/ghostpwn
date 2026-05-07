@@ -59,14 +59,6 @@ const COMMANDS: &[CommandSpec] = &[
     },
     CommandSpec {
         name: "/model",
-        description: "Show active provider/model",
-    },
-    CommandSpec {
-        name: "/models",
-        description: "List/switch provider models",
-    },
-    CommandSpec {
-        name: "/selector",
         description: "Open keyboard model selector",
     },
     CommandSpec {
@@ -442,63 +434,7 @@ async fn handle_submit(
     }
 
     if text == "/model" {
-        let locked = agent.lock().await;
-        state.push_message(UiRole::Assistant, locked.list_models_overview());
-        return;
-    }
-
-    if text == "/selector" || text == "/select" {
         open_model_selector(state, agent, event_tx).await;
-        return;
-    }
-
-    if text.starts_with("/models") {
-        let parts = text.split_whitespace().collect::<Vec<&str>>();
-        let response = if parts.len() == 1 {
-            let locked = agent.lock().await;
-            locked.list_models_overview()
-        } else {
-            let Some(provider) = ProviderKind::parse(parts[1]) else {
-                state.push_message(
-                    UiRole::Error,
-                    "Invalid provider. Use: anthropic | openai | google | github | ollama"
-                        .to_string(),
-                );
-                return;
-            };
-
-            if parts.len() == 2 {
-                state.push_message(
-                    UiRole::Assistant,
-                    "Fetching available models...".to_string(),
-                );
-                state.is_streaming = true;
-                state.streaming_content.clear();
-                state.tool_status.clear();
-                let tx = event_tx.clone();
-                let handle = Arc::clone(agent);
-                tokio::spawn(async move {
-                    let mut locked = handle.lock().await;
-                    let response = locked.list_provider_models(provider).await;
-                    let _ = tx.send(AgentEvent::AssistantDelta(response));
-                    let _ = tx.send(AgentEvent::Done);
-                });
-                return;
-            }
-
-            let model = if parts.len() > 2 {
-                Some(parts[2..].join(" "))
-            } else {
-                None
-            };
-
-            let mut locked = agent.lock().await;
-            let response = locked.switch_model(provider, model);
-            state.provider_name = locked.provider_name();
-            response
-        };
-
-        state.push_message(UiRole::Assistant, response);
         return;
     }
 
@@ -1502,7 +1438,7 @@ async fn copilot_device_flow(
                             .collect::<Vec<_>>()
                             .join(", ");
                         format!(
-                            "Fetched {} Copilot models. Use /selector or /models github <model>.\n{}",
+                            "Fetched {} Copilot models. Use /model to select one.\n{}",
                             models.len(),
                             preview
                         )

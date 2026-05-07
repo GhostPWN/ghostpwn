@@ -38,7 +38,7 @@ The current code base focuses on:
 - Provider adapters for OpenAI, Anthropic, Google, GitHub Copilot, and Ollama
 - Native streaming support across provider adapters
 - GitHub Copilot OAuth with automatic model discovery
-- Keyboard model selector via `/selector`
+- Keyboard model selector via `/model`
 - JSON-first agent loop with tool-calling
 - Local tools: `readFile`, `listDirectory`, `searchFiles`, `grep`, `runCommand`, `fileInfo`, `generateDiff`, `writeFile`, `editFile`, `multiEdit`, `applyPatch`, `todoRead`, `todoWrite`, `webFetch`, `webSearch`
 - Claude Code, Codex, and OpenCode-compatible tool aliases for common read/write/edit/shell/search operations
@@ -59,11 +59,7 @@ cargo run
 ## Commands
 
 - `/help` shows all commands
-- `/model` shows active provider/model
-- `/models` lists provider connection state and model usage
-- `/models <provider>` fetches available models
-- `/models <provider> <model>` switches active provider/model in-session
-- `/selector` opens the keyboard model selector (`Left`/`Right` provider, `Up`/`Down` model, `Enter` switch, `Esc` close)
+- `/model` opens the keyboard model selector (`Left`/`Right` provider, `Up`/`Down` model, `Enter` switch, `Esc` close)
 - `/connect` shows provider connection status
 - `/connect <provider> <api_key>` connects and persists key to `.env` and keychain when available
 - `/connect github` or `/copilot` starts GitHub Copilot device authorization

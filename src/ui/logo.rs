@@ -106,7 +106,7 @@ pub fn render(frame: &mut Frame, area: Rect) {
 fn render_chips(frame: &mut Frame, area: Rect) {
     let chips: [(&str, &str); 3] = [
         ("/copilot", "connect github copilot"),
-        ("/models", "browse available models"),
+        ("/model", "browse available models"),
         ("/help", "see every command"),
     ];
 
