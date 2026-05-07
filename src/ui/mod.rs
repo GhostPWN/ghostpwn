@@ -15,7 +15,7 @@ use crossterm::terminal::{
 };
 use ratatui::backend::CrosstermBackend;
 use ratatui::prelude::*;
-use ratatui::widgets::{Block, BorderType, Borders, Padding, Paragraph, Wrap};
+use ratatui::widgets::{Block, BorderType, Borders, Clear, Padding, Paragraph, Wrap};
 use tokio::sync::Mutex;
 use tokio::sync::mpsc::{UnboundedReceiver, UnboundedSender, unbounded_channel};
 
@@ -66,6 +66,10 @@ const COMMANDS: &[CommandSpec] = &[
         description: "List/switch provider models",
     },
     CommandSpec {
+        name: "/selector",
+        description: "Open keyboard model selector",
+    },
+    CommandSpec {
         name: "/connect",
         description: "Connect provider API key or /connect github",
     },
@@ -97,6 +101,15 @@ struct UiMessage {
     content: String,
 }
 
+struct ModelSelector {
+    providers: Vec<ProviderKind>,
+    provider_index: usize,
+    models: Vec<String>,
+    model_index: usize,
+    loading: bool,
+    error: Option<String>,
+}
+
 struct UiState {
     provider_name: String,
     input: String,
@@ -109,6 +122,7 @@ struct UiState {
     auto_scroll: bool,
     completion_matches: Vec<&'static CommandSpec>,
     completion_index: usize,
+    selector: Option<ModelSelector>,
     tick: u64,
 }
 
@@ -126,6 +140,7 @@ impl UiState {
             auto_scroll: true,
             completion_matches: Vec::new(),
             completion_index: 0,
+            selector: None,
             tick: 0,
         }
     }
@@ -314,6 +329,11 @@ async fn ui_loop<B: Backend>(
                         continue;
                     }
 
+                    if state.selector.is_some() {
+                        handle_selector_key(key.code, state, agent, event_tx).await;
+                        continue;
+                    }
+
                     if key.code == KeyCode::Char('c')
                         && key.modifiers.contains(KeyModifiers::CONTROL)
                     {
@@ -424,6 +444,11 @@ async fn handle_submit(
     if text == "/model" {
         let locked = agent.lock().await;
         state.push_message(UiRole::Assistant, locked.list_models_overview());
+        return;
+    }
+
+    if text == "/selector" || text == "/select" {
+        open_model_selector(state, agent, event_tx).await;
         return;
     }
 
@@ -624,6 +649,117 @@ async fn handle_submit(
     });
 }
 
+async fn open_model_selector(
+    state: &mut UiState,
+    agent: &Arc<Mutex<Agent>>,
+    event_tx: &UnboundedSender<AgentEvent>,
+) {
+    let current_provider = {
+        let locked = agent.lock().await;
+        locked.current_provider()
+    };
+    let providers = ProviderKind::all().to_vec();
+    let provider_index = providers
+        .iter()
+        .position(|provider| *provider == current_provider)
+        .unwrap_or(0);
+
+    state.selector = Some(ModelSelector {
+        providers,
+        provider_index,
+        models: Vec::new(),
+        model_index: 0,
+        loading: true,
+        error: None,
+    });
+    fetch_selector_models(agent, event_tx, current_provider);
+}
+
+async fn handle_selector_key(
+    key: KeyCode,
+    state: &mut UiState,
+    agent: &Arc<Mutex<Agent>>,
+    event_tx: &UnboundedSender<AgentEvent>,
+) {
+    let Some(selector) = state.selector.as_mut() else {
+        return;
+    };
+
+    match key {
+        KeyCode::Esc => {
+            state.selector = None;
+        }
+        KeyCode::Left | KeyCode::Char('h') => {
+            selector.provider_index = selector.provider_index.saturating_sub(1);
+            selector.model_index = 0;
+            selector.models.clear();
+            selector.error = None;
+            selector.loading = true;
+            let provider = selector.providers[selector.provider_index];
+            fetch_selector_models(agent, event_tx, provider);
+        }
+        KeyCode::Right | KeyCode::Char('l') => {
+            selector.provider_index =
+                (selector.provider_index + 1).min(selector.providers.len().saturating_sub(1));
+            selector.model_index = 0;
+            selector.models.clear();
+            selector.error = None;
+            selector.loading = true;
+            let provider = selector.providers[selector.provider_index];
+            fetch_selector_models(agent, event_tx, provider);
+        }
+        KeyCode::Up | KeyCode::Char('k') => {
+            selector.model_index = selector.model_index.saturating_sub(1);
+        }
+        KeyCode::Down | KeyCode::Char('j') => {
+            if !selector.models.is_empty() {
+                selector.model_index =
+                    (selector.model_index + 1).min(selector.models.len().saturating_sub(1));
+            }
+        }
+        KeyCode::Enter => {
+            let provider = selector.providers[selector.provider_index];
+            let model = selector.models.get(selector.model_index).cloned();
+            if let Some(model) = model {
+                let mut locked = agent.lock().await;
+                let response = locked.switch_model(provider, Some(model));
+                state.provider_name = locked.provider_name();
+                state.selector = None;
+                state.push_message(UiRole::Assistant, response);
+            }
+        }
+        _ => {}
+    }
+}
+
+fn fetch_selector_models(
+    agent: &Arc<Mutex<Agent>>,
+    event_tx: &UnboundedSender<AgentEvent>,
+    provider: ProviderKind,
+) {
+    let tx = event_tx.clone();
+    let handle = Arc::clone(agent);
+    tokio::spawn(async move {
+        let mut locked = handle.lock().await;
+        match locked.fetch_provider_models(provider).await {
+            Ok(models) => {
+                let _ = tx.send(AgentEvent::ModelList {
+                    provider,
+                    models,
+                    error: None,
+                });
+            }
+            Err(err) => {
+                let _ = tx.send(AgentEvent::ModelList {
+                    provider,
+                    models: Vec::new(),
+                    error: Some(err.to_string()),
+                });
+            }
+        }
+    });
+}
+
 fn apply_agent_event(state: &mut UiState, event: AgentEvent) {
     match event {
         AgentEvent::AssistantDelta(delta) => {
@@ -635,6 +771,20 @@ fn apply_agent_event(state: &mut UiState, event: AgentEvent) {
             let tool_line = format!("{}({})", name, args_summary);
             state.tool_status = tool_line.clone();
             state.push_message(UiRole::Tool, tool_line);
+        }
+        AgentEvent::ModelList {
+            provider,
+            models,
+            error,
+        } => {
+            if let Some(selector) = state.selector.as_mut()
+                && selector.providers.get(selector.provider_index) == Some(&provider)
+            {
+                selector.models = models;
+                selector.model_index = 0;
+                selector.loading = false;
+                selector.error = error;
+            }
         }
         AgentEvent::Error(err) => {
             state.flush_streaming_to_messages();
@@ -663,6 +813,135 @@ fn render(frame: &mut Frame, state: &UiState) {
     render_transcript(frame, root[1], state);
     render_status(frame, root[2], state);
     render_input(frame, root[3], state);
+    render_selector(frame, state);
+}
+
+fn render_selector(frame: &mut Frame, state: &UiState) {
+    let Some(selector) = state.selector.as_ref() else {
+        return;
+    };
+
+    let area = centered_rect(72, 70, frame.area());
+    frame.render_widget(Clear, area);
+
+    let block = Block::default()
+        .borders(Borders::ALL)
+        .border_type(BorderType::Rounded)
+        .border_style(Style::default().fg(palette::PHOSPHOR))
+        .title(Line::from(vec![
+            Span::styled("  ", Style::default()),
+            Span::styled("▸ ", Style::default().fg(palette::PLASMA)),
+            Span::styled("model selector", Style::default().fg(palette::BONE).bold()),
+            Span::styled(" ─", Style::default().fg(palette::STEEL)),
+        ]))
+        .padding(Padding::new(2, 2, 1, 1));
+
+    let inner = block.inner(area);
+    frame.render_widget(block, area);
+
+    let rows = Layout::vertical([
+        Constraint::Length(3),
+        Constraint::Min(1),
+        Constraint::Length(1),
+    ])
+    .split(inner);
+
+    let provider_spans = selector
+        .providers
+        .iter()
+        .enumerate()
+        .flat_map(|(idx, provider)| {
+            let selected = idx == selector.provider_index;
+            let style = if selected {
+                Style::default().fg(palette::PHOSPHOR).bold()
+            } else {
+                Style::default().fg(palette::ASH)
+            };
+            vec![
+                Span::styled(
+                    if selected {
+                        format!("‹ {} ›", provider.as_str())
+                    } else {
+                        provider.as_str().to_string()
+                    },
+                    style,
+                ),
+                Span::raw("   "),
+            ]
+        })
+        .collect::<Vec<Span>>();
+    frame.render_widget(Paragraph::new(Line::from(provider_spans)), rows[0]);
+
+    let list_lines = if selector.loading {
+        vec![Line::from(vec![Span::styled(
+            "fetching models...",
+            Style::default().fg(palette::EMBER),
+        )])]
+    } else if let Some(error) = &selector.error {
+        vec![Line::from(vec![Span::styled(
+            error.clone(),
+            Style::default().fg(palette::BLOOD),
+        )])]
+    } else if selector.models.is_empty() {
+        vec![Line::from(vec![Span::styled(
+            "no models returned",
+            Style::default().fg(palette::ASH),
+        )])]
+    } else {
+        selector
+            .models
+            .iter()
+            .enumerate()
+            .map(|(idx, model)| {
+                let selected = idx == selector.model_index;
+                Line::from(vec![
+                    Span::styled(
+                        if selected { "❯ " } else { "  " },
+                        Style::default().fg(palette::PHOSPHOR),
+                    ),
+                    Span::styled(
+                        model.clone(),
+                        if selected {
+                            Style::default().fg(palette::BONE).bold()
+                        } else {
+                            Style::default().fg(palette::ASH)
+                        },
+                    ),
+                ])
+            })
+            .collect()
+    };
+    frame.render_widget(
+        Paragraph::new(list_lines).wrap(Wrap { trim: false }),
+        rows[1],
+    );
+
+    let footer = Line::from(vec![
+        Span::styled("←/→", Style::default().fg(palette::PHOSPHOR).bold()),
+        Span::styled(" provider  ", Style::default().fg(palette::ASH)),
+        Span::styled("↑/↓", Style::default().fg(palette::PHOSPHOR).bold()),
+        Span::styled(" model  ", Style::default().fg(palette::ASH)),
+        Span::styled("enter", Style::default().fg(palette::PHOSPHOR).bold()),
+        Span::styled(" switch  ", Style::default().fg(palette::ASH)),
+        Span::styled("esc", Style::default().fg(palette::PHOSPHOR).bold()),
+        Span::styled(" close", Style::default().fg(palette::ASH)),
+    ]);
+    frame.render_widget(Paragraph::new(footer), rows[2]);
+}
+
+fn centered_rect(percent_x: u16, percent_y: u16, area: Rect) -> Rect {
+    let vertical = Layout::vertical([
+        Constraint::Percentage((100 - percent_y) / 2),
+        Constraint::Percentage(percent_y),
+        Constraint::Percentage((100 - percent_y) / 2),
+    ])
+    .split(area);
+    Layout::horizontal([
+        Constraint::Percentage((100 - percent_x) / 2),
+        Constraint::Percentage(percent_x),
+        Constraint::Percentage((100 - percent_x) / 2),
+    ])
+    .split(vertical[1])[1]
 }
 
 fn render_header(frame: &mut Frame, area: Rect, state: &UiState) {
@@ -1002,12 +1281,19 @@ fn styled_assistant_lines(content: &str) -> Vec<Line<'static>> {
 
     let mut out = Vec::<Line<'static>>::new();
     let mut in_code_block = false;
+    let mut in_diff_block = false;
 
     for line in content.lines() {
         let trimmed = line.trim_start();
 
         if trimmed.starts_with("```") {
-            in_code_block = !in_code_block;
+            if in_code_block {
+                in_code_block = false;
+                in_diff_block = false;
+            } else {
+                in_code_block = true;
+                in_diff_block = trimmed.starts_with("```diff");
+            }
             out.push(Line::styled(
                 line.to_string(),
                 Style::default().fg(palette::EMBER).dim(),
@@ -1015,7 +1301,17 @@ fn styled_assistant_lines(content: &str) -> Vec<Line<'static>> {
             continue;
         }
 
-        let style = if in_code_block {
+        let style = if in_diff_block && trimmed.starts_with('+') && !trimmed.starts_with("+++") {
+            Style::default().fg(palette::PHOSPHOR)
+        } else if in_diff_block && trimmed.starts_with('-') && !trimmed.starts_with("---") {
+            Style::default().fg(palette::BLOOD)
+        } else if in_diff_block
+            && (trimmed.starts_with("@@")
+                || trimmed.starts_with("+++")
+                || trimmed.starts_with("---"))
+        {
+            Style::default().fg(palette::EMBER).bold()
+        } else if in_code_block {
             Style::default().fg(palette::PHOSPHOR)
         } else if trimmed.starts_with('#') {
             Style::default().fg(palette::ION).bold()
@@ -1094,10 +1390,27 @@ async fn copilot_device_flow(
                 let mut locked = agent.lock().await;
                 let msg = locked.connect_key(ProviderKind::Copilot, refresh_token);
                 let switch_msg = locked.switch_model(ProviderKind::Copilot, None);
+                let model_msg = match locked.fetch_provider_models(ProviderKind::Copilot).await {
+                    Ok(models) if !models.is_empty() => {
+                        let preview = models
+                            .iter()
+                            .take(8)
+                            .cloned()
+                            .collect::<Vec<_>>()
+                            .join(", ");
+                        format!(
+                            "Fetched {} Copilot models. Use /selector or /models github <model>.\n{}",
+                            models.len(),
+                            preview
+                        )
+                    }
+                    Ok(_) => "Copilot connected, but no models were returned.".to_string(),
+                    Err(err) => format!("Copilot connected, but model fetch failed: {}", err),
+                };
 
                 let _ = events.send(AgentEvent::AssistantDelta(format!(
-                    "\n{}\n{}",
-                    msg, switch_msg
+                    "\n{}\n{}\n{}",
+                    msg, switch_msg, model_msg
                 )));
                 let _ = events.send(AgentEvent::Done);
                 return Ok(());

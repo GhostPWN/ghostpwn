@@ -37,8 +37,11 @@ The current code base focuses on:
 - `ratatui` + `crossterm` terminal interface
 - Provider adapters for OpenAI, Anthropic, Google, GitHub Copilot, and Ollama
 - Native streaming support across provider adapters
+- GitHub Copilot OAuth with automatic model discovery
+- Keyboard model selector via `/selector`
 - JSON-first agent loop with tool-calling
-- Local tools: `readFile`, `listDirectory`, `searchFiles`, `grep`, `runCommand`, `fileInfo`
+- Local tools: `readFile`, `listDirectory`, `searchFiles`, `grep`, `runCommand`, `fileInfo`, `generateDiff`
+- Diff rendering for fenced `diff` blocks in assistant output
 - Workspace boundary enforcement for filesystem tools
 - Shell commands run from the configured workspace but are not an OS-level sandbox
 - Persistent secrets via `.env` and OS keychain
@@ -56,11 +59,14 @@ cargo run
 
 - `/help` shows all commands
 - `/model` shows active provider/model
-- `/models` lists providers and suggested models
-- `/models <provider> [model]` switches active provider/model in-session
+- `/models` lists provider connection state and model usage
+- `/models <provider>` fetches available models
+- `/models <provider> <model>` switches active provider/model in-session
+- `/selector` opens the keyboard model selector (`Left`/`Right` provider, `Up`/`Down` model, `Enter` switch, `Esc` close)
 - `/connect` shows provider connection status
 - `/connect <provider> <api_key>` connects and persists key to `.env` and keychain when available
 - `/connect github` or `/copilot` starts GitHub Copilot device authorization
+- GitHub Copilot model list is fetched automatically after successful device authorization
 - `/connect ollama [model]` switches to local Ollama without an API key
 - `/disconnect <provider>` disconnects and removes key from `.env` and keychain when available
 - `/clear` resets in-memory conversation

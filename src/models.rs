@@ -55,7 +55,15 @@ pub struct ModelEnvelope {
 #[derive(Debug, Clone)]
 pub enum AgentEvent {
     AssistantDelta(String),
-    ToolCall { name: String, args_summary: String },
+    ToolCall {
+        name: String,
+        args_summary: String,
+    },
+    ModelList {
+        provider: crate::config::ProviderKind,
+        models: Vec<String>,
+        error: Option<String>,
+    },
     Error(String),
     Done,
 }

@@ -44,6 +44,7 @@ impl ToolRuntime {
             "grep" => "pattern",
             "runCommand" => "command",
             "fileInfo" => "path",
+            "generateDiff" => "path",
             _ => "",
         };
 
@@ -69,6 +70,7 @@ impl ToolRuntime {
             "grep" => self.grep(&call.arguments).await,
             "runCommand" => self.run_command(&call.arguments).await,
             "fileInfo" => self.file_info(&call.arguments).await,
+            "generateDiff" => self.generate_diff(&call.arguments).await,
             other => Err(anyhow!("Unknown tool '{}'", other)),
         }
     }
@@ -330,6 +332,19 @@ impl ToolRuntime {
         }))
     }
 
+    async fn generate_diff(&self, args: &Value) -> Result<Value> {
+        let path = required_str(args, "path")?;
+        let proposed = required_str(args, "content")?;
+        let resolved = self.resolve_in_workspace(path)?;
+        let original = fs::read_to_string(&resolved).await?;
+        let diff = unified_diff(path, &original, proposed);
+
+        Ok(json!({
+            "path": resolved.display().to_string(),
+            "diff": diff,
+        }))
+    }
+
     fn resolve_in_workspace(&self, input: &str) -> Result<PathBuf> {
         let absolute = self.absolute_input_path(input);
 
@@ -452,6 +467,59 @@ fn truncate_string(input: &str, max: usize) -> String {
     input.chars().take(max).collect()
 }
 
+fn unified_diff(path: &str, original: &str, proposed: &str) -> String {
+    if original == proposed {
+        return format!("--- a/{path}\n+++ b/{path}\n");
+    }
+
+    let old = original.lines().collect::<Vec<&str>>();
+    let new = proposed.lines().collect::<Vec<&str>>();
+    let mut lcs = vec![vec![0usize; new.len() + 1]; old.len() + 1];
+
+    for i in (0..old.len()).rev() {
+        for j in (0..new.len()).rev() {
+            lcs[i][j] = if old[i] == new[j] {
+                lcs[i + 1][j + 1] + 1
+            } else {
+                lcs[i + 1][j].max(lcs[i][j + 1])
+            };
+        }
+    }
+
+    let mut out = vec![
+        format!("--- a/{path}"),
+        format!("+++ b/{path}"),
+        format!("@@ -1,{} +1,{} @@", old.len(), new.len()),
+    ];
+
+    let mut i = 0;
+    let mut j = 0;
+    while i < old.len() && j < new.len() {
+        if old[i] == new[j] {
+            out.push(format!(" {}", old[i]));
+            i += 1;
+            j += 1;
+        } else if lcs[i + 1][j] >= lcs[i][j + 1] {
+            out.push(format!("-{}", old[i]));
+            i += 1;
+        } else {
+            out.push(format!("+{}", new[j]));
+            j += 1;
+        }
+    }
+
+    while i < old.len() {
+        out.push(format!("-{}", old[i]));
+        i += 1;
+    }
+    while j < new.len() {
+        out.push(format!("+{}", new[j]));
+        j += 1;
+    }
+
+    out.join("\n")
+}
+
 fn chrono_like(time: std::time::SystemTime) -> String {
     let datetime = time
         .duration_since(std::time::UNIX_EPOCH)
@@ -468,6 +536,7 @@ mod tests {
     use tempfile::tempdir;
 
     use super::ToolRuntime;
+    use super::unified_diff;
     use crate::models::ToolCall;
 
     #[tokio::test]
@@ -562,5 +631,36 @@ mod tests {
             .await
             .expect_err("should reject traversal");
         assert!(err.to_string().contains("outside workspace root"));
+    }
+
+    #[tokio::test]
+    async fn generate_diff_returns_unified_patch() {
+        let root = tempdir().expect("tempdir");
+        let workspace = root.path().join("workspace");
+        fs::create_dir_all(&workspace).expect("workspace");
+        fs::write(workspace.join("app.txt"), "one\ntwo\n").expect("write file");
+
+        let tools = ToolRuntime::new(workspace).expect("runtime");
+        let call = ToolCall {
+            name: "generateDiff".to_string(),
+            arguments: json!({
+                "path": "app.txt",
+                "content": "one\nthree\n"
+            }),
+        };
+
+        let result = tools.execute(&call).await.expect("tool result");
+        let diff = result.get("diff").and_then(|v| v.as_str()).unwrap();
+        assert!(diff.contains("--- a/app.txt"));
+        assert!(diff.contains("-two"));
+        assert!(diff.contains("+three"));
+    }
+
+    #[test]
+    fn unified_diff_handles_equal_content() {
+        assert_eq!(
+            unified_diff("same.txt", "same\n", "same\n"),
+            "--- a/same.txt\n+++ b/same.txt\n"
+        );
     }
 }

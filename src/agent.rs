@@ -15,7 +15,7 @@ Always respond with JSON only (no markdown, no extra text) using this schema:
 {
   "assistant": "string",
   "tool_calls": [
-    { "name": "readFile|listDirectory|searchFiles|grep|runCommand|fileInfo", "arguments": { ... } }
+    { "name": "readFile|listDirectory|searchFiles|grep|runCommand|fileInfo|generateDiff", "arguments": { ... } }
   ]
 }
 
@@ -23,6 +23,7 @@ Rules:
 - If no tool is needed, return tool_calls as an empty array.
 - Keep assistant concise and technical.
 - Use tools proactively for repo exploration and command execution.
+- Use generateDiff with {"path":"relative/file","content":"full proposed file content"} before describing non-trivial code edits.
 - Never include secrets in output.
 "#;
 
@@ -61,6 +62,10 @@ impl Agent {
         self.provider.display_name()
     }
 
+    pub fn current_provider(&self) -> ProviderKind {
+        self.provider_kind
+    }
+
     pub fn clear_history(&mut self) {
         self.history.clear();
     }
@@ -96,31 +101,9 @@ impl Agent {
     }
 
     pub async fn list_provider_models(&mut self, provider: ProviderKind) -> String {
-        if !self.provider_keys.is_connected(provider) {
-            let usage = if provider == ProviderKind::Copilot {
-                "/connect github"
-            } else {
-                "/connect <provider> <api_key>"
-            };
-            return format!(
-                "{} is disconnected. Run {} first.",
-                provider.as_str(),
-                usage
-            );
-        }
-
-        let temp_provider = build_provider(provider, "temp".to_string(), &self.provider_keys);
-        match temp_provider.list_models().await {
+        match self.fetch_provider_models(provider).await {
             Ok(models) if !models.is_empty() => {
                 let mut out = Vec::<String>::new();
-                let mut models = models
-                    .into_iter()
-                    .map(|model| normalize_model_name(&model))
-                    .filter(|model| !model.is_empty())
-                    .collect::<Vec<String>>();
-                models.sort();
-                models.dedup();
-
                 out.push(format!(
                     "Available models for {} ({}):",
                     provider.as_str(),
@@ -133,6 +116,7 @@ impl Agent {
 
                 out.push(String::new());
                 out.push(format!("Usage: /models {} <model>", provider.as_str()));
+                out.push("Use /selector for keyboard selection".to_string());
                 out.join("\n")
             }
             Ok(_) => format!(
@@ -142,6 +126,33 @@ impl Agent {
             ),
             Err(err) => format!("Failed to fetch {} models: {}", provider.as_str(), err),
         }
+    }
+
+    pub async fn fetch_provider_models(&mut self, provider: ProviderKind) -> Result<Vec<String>> {
+        if !self.provider_keys.is_connected(provider) {
+            let usage = if provider == ProviderKind::Copilot {
+                "/connect github"
+            } else {
+                "/connect <provider> <api_key>"
+            };
+            return Err(anyhow::anyhow!(
+                "{} is disconnected. Run {} first.",
+                provider.as_str(),
+                usage
+            ));
+        }
+
+        let temp_provider = build_provider(provider, "temp".to_string(), &self.provider_keys);
+        let mut models = temp_provider
+            .list_models()
+            .await?
+            .into_iter()
+            .map(|model| normalize_model_name(&model))
+            .filter(|model| !model.is_empty())
+            .collect::<Vec<String>>();
+        models.sort();
+        models.dedup();
+        Ok(models)
     }
 
     pub fn switch_model(&mut self, provider: ProviderKind, model: Option<String>) -> String {
