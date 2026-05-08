@@ -3,6 +3,7 @@ mod config;
 mod models;
 mod providers;
 mod secrets;
+mod skills;
 mod tools;
 mod ui;
 

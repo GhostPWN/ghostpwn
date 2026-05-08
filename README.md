@@ -40,7 +40,8 @@ The current code base focuses on:
 - GitHub Copilot OAuth with automatic model discovery
 - Keyboard model selector via `/model`
 - JSON-first agent loop with tool-calling
-- Local tools: `readFile`, `listDirectory`, `searchFiles`, `grep`, `runCommand`, `fileInfo`, `generateDiff`, `writeFile`, `editFile`, `multiEdit`, `applyPatch`, `todoRead`, `todoWrite`, `webFetch`, `webSearch`
+- Local tools: `listSkills`, `searchSkills`, `readSkill`, `readFile`, `listDirectory`, `searchFiles`, `grep`, `runCommand`, `fileInfo`, `generateDiff`, `writeFile`, `editFile`, `multiEdit`, `applyPatch`, `todoRead`, `todoWrite`, `webFetch`, `webSearch`
+- Local skills loaded from `src/skills/*/SKILL.md` with automatic skill search/read guidance in the system prompt
 - Claude Code, Codex, and OpenCode-compatible tool aliases for common read/write/edit/shell/search operations
 - Diff rendering for fenced `diff` blocks in assistant output
 - Workspace boundary enforcement for filesystem tools
@@ -90,6 +91,7 @@ cargo run
 - `src/main.rs`: bootstrap and dependency wiring
 - `src/agent.rs`: orchestration loop, tool-execution cycle, and provider/model switching
 - `src/providers/`: model adapters by vendor, including Copilot OAuth support
+- `src/skills.rs`: local skill discovery, search, and read support for `src/skills`
 - `src/tools/mod.rs`: built-in local tool implementations with workspace safety checks
 - `src/ui/mod.rs`: `ratatui` terminal app and command handling
 - `src/config.rs`: environment-based configuration and provider defaults
@@ -99,6 +101,7 @@ cargo run
 ## Notes
 
 - The runtime expects model responses as JSON envelopes.
+- The system prompt requires `searchSkills`/`readSkill` for matching specialized workflows before the agent proceeds.
 - Assistant text is streamed from provider responses and incrementally rendered in the TUI.
 - Filesystem tools reject paths outside the configured workspace root.
 - `runCommand` uses the configured workspace as its current directory and enforces a bounded timeout; do not treat it as a security sandbox.

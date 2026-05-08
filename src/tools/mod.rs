@@ -17,6 +17,7 @@ use tokio::time::timeout;
 use walkdir::WalkDir;
 
 use crate::models::ToolCall;
+use crate::skills::SkillRuntime;
 
 const DEFAULT_COMMAND_TIMEOUT_MS: u64 = 30_000;
 const MAX_COMMAND_TIMEOUT_MS: u64 = 120_000;
@@ -35,6 +36,7 @@ pub struct ToolRuntime {
     workspace_root: PathBuf,
     todos: Mutex<Vec<TodoItem>>,
     http_client: Client,
+    skills: SkillRuntime,
 }
 
 impl ToolRuntime {
@@ -54,14 +56,22 @@ impl ToolRuntime {
             .build()?;
 
         Ok(Self {
+            skills: SkillRuntime::new(&canonical),
             workspace_root: canonical,
             todos: Mutex::new(Vec::new()),
             http_client,
         })
     }
 
+    pub async fn prompt_skill_section(&self) -> String {
+        self.skills.prompt_section().await
+    }
+
     pub fn arg_summary(&self, name: &str, args: &Value) -> String {
         let key = match canonical_tool_name(name) {
+            "listSkills" => "",
+            "searchSkills" => "query",
+            "readSkill" => "name",
             "readFile" => "path",
             "listDirectory" => "path",
             "searchFiles" => "pattern",
@@ -98,6 +108,9 @@ impl ToolRuntime {
 
     pub async fn execute(&self, call: &ToolCall) -> Result<Value> {
         match canonical_tool_name(&call.name) {
+            "listSkills" => self.skills.list_tool().await,
+            "searchSkills" => self.skills.search_tool(&call.arguments).await,
+            "readSkill" => self.skills.read_tool(&call.arguments).await,
             "readFile" => self.read_file(&call.arguments).await,
             "listDirectory" => self.list_directory(&call.arguments).await,
             "searchFiles" => self.search_files(&call.arguments).await,
@@ -793,6 +806,9 @@ enum PatchAction {
 fn canonical_tool_name(name: &str) -> &str {
     match name {
         "Read" | "read" | "readFile" => "readFile",
+        "Skill" | "ReadSkill" | "readSkill" => "readSkill",
+        "ListSkills" | "listSkills" => "listSkills",
+        "SearchSkills" | "searchSkills" => "searchSkills",
         "LS" | "list" | "listDirectory" => "listDirectory",
         "Glob" | "glob" | "searchFiles" => "searchFiles",
         "Grep" | "grep" => "grep",
@@ -1643,6 +1659,46 @@ mod tests {
         let result = tools.execute(&read).await.expect("read todos");
         assert_eq!(result["todos"].as_array().map(Vec::len), Some(2));
         assert_eq!(result["todos"][1]["status"].as_str(), Some("in_progress"));
+    }
+
+    #[tokio::test]
+    async fn skill_tools_search_and_read_local_skills() {
+        let root = tempdir().expect("tempdir");
+        let workspace = root.path().join("workspace");
+        let skill_dir = workspace.join("src/skills/directory-traversal");
+        fs::create_dir_all(&skill_dir).expect("skill dir");
+        fs::write(
+            skill_dir.join("SKILL.md"),
+            "---\nname: directory-traversal\ndescription: Testing path traversal in web applications\n---\n# Workflow\n",
+        )
+        .expect("skill");
+
+        let tools = ToolRuntime::new(workspace).expect("runtime");
+        let search = ToolCall {
+            name: "SearchSkills".to_string(),
+            arguments: json!({
+                "query": "path traversal web app"
+            }),
+        };
+        let result = tools.execute(&search).await.expect("search skills");
+        assert_eq!(
+            result["matches"][0]["name"].as_str(),
+            Some("directory-traversal")
+        );
+
+        let read = ToolCall {
+            name: "readSkill".to_string(),
+            arguments: json!({
+                "name": "directory-traversal"
+            }),
+        };
+        let result = tools.execute(&read).await.expect("read skill");
+        assert_eq!(result["name"].as_str(), Some("directory-traversal"));
+        assert!(
+            result["content"]
+                .as_str()
+                .is_some_and(|v| v.contains("# Workflow"))
+        );
     }
 
     #[tokio::test]
