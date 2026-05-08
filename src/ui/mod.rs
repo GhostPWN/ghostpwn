@@ -906,10 +906,8 @@ fn render_transcript(frame: &mut Frame, area: Rect, state: &UiState) {
     let is_home = state.messages.is_empty() && state.streaming_content.is_empty();
 
     let block = Block::default()
-        .borders(Borders::ALL)
-        .border_type(BorderType::Rounded)
-        .border_style(Style::default().fg(palette::STEEL))
-        .padding(Padding::new(2, 2, 1, 0));
+        .borders(Borders::NONE)
+        .padding(Padding::new(2, 2, 0, 0));
 
     if is_home {
         let inner = block.inner(area);
