@@ -304,8 +304,9 @@ async fn ui_loop<B: Backend>(
         state.tick = state.tick.wrapping_add(1);
         state.refresh_completions();
 
-        let line_count = transcript_line_count(state);
-        let visible_lines = message_visible_lines(terminal.size()?.height);
+        let size = terminal.size()?;
+        let line_count = transcript_line_count(state, transcript_content_width(size.width));
+        let visible_lines = message_visible_lines(size.height);
         state.sync_scroll(line_count, visible_lines);
 
         terminal.draw(|frame| render(frame, state))?;
@@ -332,8 +333,10 @@ async fn ui_loop<B: Backend>(
                         break;
                     }
 
-                    let line_count = transcript_line_count(state);
-                    let visible_lines = message_visible_lines(terminal.size()?.height);
+                    let size = terminal.size()?;
+                    let line_count =
+                        transcript_line_count(state, transcript_content_width(size.width));
+                    let visible_lines = message_visible_lines(size.height);
 
                     match key.code {
                         KeyCode::Enter => {
@@ -385,8 +388,10 @@ async fn ui_loop<B: Backend>(
                     }
                 }
                 Event::Mouse(mouse) => {
-                    let line_count = transcript_line_count(state);
-                    let visible_lines = message_visible_lines(terminal.size()?.height);
+                    let size = terminal.size()?;
+                    let line_count =
+                        transcript_line_count(state, transcript_content_width(size.width));
+                    let visible_lines = message_visible_lines(size.height);
 
                     match mouse.kind {
                         MouseEventKind::ScrollUp => {
@@ -914,7 +919,7 @@ fn render_transcript(frame: &mut Frame, area: Rect, state: &UiState) {
     }
 
     let inner = block.inner(area);
-    let lines = build_transcript_lines(state);
+    let lines = build_transcript_lines(state, inner.width);
     let line_count = lines.len() as u16;
     let visible = inner.height;
     let max_scroll = line_count.saturating_sub(visible);
@@ -1074,7 +1079,7 @@ fn render_input(frame: &mut Frame, area: Rect, state: &UiState) {
     frame.render_widget(para, area);
 }
 
-fn build_transcript_lines(state: &UiState) -> Vec<Line<'static>> {
+fn build_transcript_lines(state: &UiState, width: u16) -> Vec<Line<'static>> {
     let mut lines = Vec::<Line<'static>>::new();
 
     for msg in &state.messages {
@@ -1091,7 +1096,7 @@ fn build_transcript_lines(state: &UiState) -> Vec<Line<'static>> {
         );
     }
 
-    lines
+    wrap_transcript_lines(lines, width)
 }
 
 fn push_message_lines(
@@ -1139,6 +1144,74 @@ fn push_message_lines(
             Span::styled("…", Style::default().fg(palette::ASH).italic()),
         ]));
     }
+}
+
+fn wrap_transcript_lines(lines: Vec<Line<'static>>, width: u16) -> Vec<Line<'static>> {
+    let width = width as usize;
+    if width == 0 {
+        return lines;
+    }
+
+    lines
+        .into_iter()
+        .flat_map(|line| wrap_line(line, width))
+        .collect()
+}
+
+fn wrap_line(line: Line<'static>, width: usize) -> Vec<Line<'static>> {
+    if width == 0 {
+        return vec![line];
+    }
+
+    let mut rows = Vec::<Line<'static>>::new();
+    let mut current = Vec::<Span<'static>>::new();
+    let mut pending = String::new();
+    let mut pending_style = Style::default();
+    let mut col = 0usize;
+
+    let flush_pending =
+        |current: &mut Vec<Span<'static>>, pending: &mut String, pending_style: Style| {
+            if !pending.is_empty() {
+                current.push(Span::styled(std::mem::take(pending), pending_style));
+            }
+        };
+
+    let push_row = |rows: &mut Vec<Line<'static>>,
+                    current: &mut Vec<Span<'static>>,
+                    pending: &mut String,
+                    pending_style: Style| {
+        flush_pending(current, pending, pending_style);
+        rows.push(Line::from(std::mem::take(current)));
+    };
+
+    for span in line.spans {
+        let style = span.style;
+        for ch in span.content.chars() {
+            if col >= width {
+                push_row(&mut rows, &mut current, &mut pending, pending_style);
+                col = 0;
+            }
+
+            if pending.is_empty() {
+                pending_style = style;
+            } else if pending_style != style {
+                flush_pending(&mut current, &mut pending, pending_style);
+                pending_style = style;
+            }
+
+            pending.push(ch);
+            col += 1;
+        }
+    }
+
+    flush_pending(&mut current, &mut pending, pending_style);
+    if current.is_empty() && rows.is_empty() {
+        rows.push(Line::from(""));
+    } else if !current.is_empty() {
+        rows.push(Line::from(current));
+    }
+
+    rows
 }
 
 fn tool_call_lines(content: &str) -> Vec<Line<'static>> {
@@ -1368,12 +1441,16 @@ fn find_marker(text: &str, start: usize, marker: &str) -> Option<usize> {
     text[start..].find(marker).map(|p| start + p)
 }
 
-fn transcript_line_count(state: &UiState) -> u16 {
-    build_transcript_lines(state).len() as u16
+fn transcript_line_count(state: &UiState, width: u16) -> u16 {
+    build_transcript_lines(state, width).len() as u16
 }
 
 fn message_visible_lines(total_height: u16) -> u16 {
     total_height.saturating_sub(3 + 1 + 3 + 3)
+}
+
+fn transcript_content_width(total_width: u16) -> u16 {
+    total_width.saturating_sub(6).max(1)
 }
 
 fn max_scroll(line_count: u16, visible_lines: u16) -> u16 {
