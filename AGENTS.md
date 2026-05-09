@@ -162,6 +162,13 @@ It captures build/test commands, project conventions, and coding style.
 - Prefer small focused tests over broad integration mocks.
 - Update existing tests when behavior contracts intentionally change.
 
+## YOLO Shortcut
+
+- When the user says "YOLO":
+- Generate the commit message using the `caveman-commit` skill.
+- Create a release.
+- Push to the remote.
+
 ## Change Management Expectations for Agents
 
 - Make minimal, targeted edits.
