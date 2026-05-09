@@ -1,4 +1,5 @@
 use std::io::ErrorKind;
+use std::net::{IpAddr, ToSocketAddrs};
 use std::path::{Component, Path, PathBuf};
 use std::process::Stdio;
 use std::time::Duration;
@@ -11,6 +12,8 @@ use reqwest::Client;
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use tokio::fs;
+use tokio::fs::OpenOptions;
+use tokio::io::AsyncWriteExt;
 use tokio::process::Command;
 use tokio::sync::Mutex;
 use tokio::time::timeout;
@@ -52,7 +55,15 @@ impl ToolRuntime {
         let http_client = Client::builder()
             .user_agent("GhostPWN/0.1")
             .timeout(Duration::from_secs(30))
-            .redirect(reqwest::redirect::Policy::limited(5))
+            .redirect(reqwest::redirect::Policy::custom(|attempt| {
+                if attempt.previous().len() >= 5 {
+                    return attempt.error("too many redirects");
+                }
+                match validate_public_url(attempt.url()) {
+                    Ok(()) => attempt.follow(),
+                    Err(err) => attempt.error(err),
+                }
+            }))
             .build()?;
 
         Ok(Self {
@@ -500,6 +511,7 @@ impl ToolRuntime {
                     actions.push(PatchAction::Write {
                         path: resolved,
                         content,
+                        create_new: true,
                     });
                 }
                 PatchOp::Delete { path } => {
@@ -527,12 +539,14 @@ impl ToolRuntime {
                         source.clone()
                     };
 
-                    if target != source {
+                    let create_new = target != source;
+                    if create_new {
                         actions.push(PatchAction::Delete { path: source });
                     }
                     actions.push(PatchAction::Write {
                         path: target,
                         content: updated,
+                        create_new,
                     });
                 }
             }
@@ -541,11 +555,26 @@ impl ToolRuntime {
         let mut changed = Vec::<String>::new();
         for action in actions {
             match action {
-                PatchAction::Write { path, content } => {
+                PatchAction::Write {
+                    path,
+                    content,
+                    create_new,
+                } => {
                     if let Some(parent) = path.parent() {
                         fs::create_dir_all(parent).await?;
                     }
-                    fs::write(&path, content).await?;
+                    if create_new {
+                        let mut file = OpenOptions::new()
+                            .write(true)
+                            .create_new(true)
+                            .open(&path)
+                            .await
+                            .map_err(|err| anyhow!("Cannot add '{}': {}", path.display(), err))?;
+                        file.write_all(content.as_bytes()).await?;
+                        file.flush().await?;
+                    } else {
+                        fs::write(&path, content).await?;
+                    }
                     changed.push(path.display().to_string());
                 }
                 PatchAction::Delete { path } => {
@@ -652,6 +681,8 @@ impl ToolRuntime {
         if !matches!(parsed.scheme(), "http" | "https") {
             return Err(anyhow!("Unsupported URL scheme '{}'", parsed.scheme()));
         }
+        validate_public_url(&parsed)
+            .map_err(|err| anyhow!("Refusing to fetch '{}': {}", url, err))?;
 
         let response = self
             .http_client
@@ -799,8 +830,14 @@ enum PatchLine {
 }
 
 enum PatchAction {
-    Write { path: PathBuf, content: String },
-    Delete { path: PathBuf },
+    Write {
+        path: PathBuf,
+        content: String,
+        create_new: bool,
+    },
+    Delete {
+        path: PathBuf,
+    },
 }
 
 fn canonical_tool_name(name: &str) -> &str {
@@ -1336,6 +1373,109 @@ fn chrono_like(time: std::time::SystemTime) -> String {
     format!("{}", datetime)
 }
 
+fn validate_public_url(url: &reqwest::Url) -> std::result::Result<(), String> {
+    if !matches!(url.scheme(), "http" | "https") {
+        return Err(format!("unsupported URL scheme '{}'", url.scheme()));
+    }
+
+    let host = url
+        .host_str()
+        .ok_or_else(|| "URL has no host".to_string())?;
+
+    let lower = host.to_ascii_lowercase();
+    if lower == "localhost" || lower.ends_with(".localhost") || lower.ends_with(".local") {
+        return Err(format!("host '{host}' is not a public address"));
+    }
+
+    let ip_candidate = host
+        .strip_prefix('[')
+        .and_then(|v| v.strip_suffix(']'))
+        .unwrap_or(host);
+    if let Ok(ip) = ip_candidate.parse::<IpAddr>() {
+        if !is_public_ip(ip) {
+            return Err(format!("host '{host}' is not a public address"));
+        }
+        return Ok(());
+    }
+
+    let port = url.port_or_known_default().unwrap_or(0);
+    let addrs = (host, port)
+        .to_socket_addrs()
+        .map_err(|err| format!("failed to resolve '{host}': {err}"))?
+        .collect::<Vec<_>>();
+    if addrs.is_empty() {
+        return Err(format!("host '{host}' did not resolve"));
+    }
+    for addr in addrs {
+        if !is_public_ip(addr.ip()) {
+            return Err(format!("host '{host}' resolves to a non-public address"));
+        }
+    }
+    Ok(())
+}
+
+fn is_public_ip(ip: IpAddr) -> bool {
+    match ip {
+        IpAddr::V4(v4) => {
+            if v4.is_loopback()
+                || v4.is_private()
+                || v4.is_link_local()
+                || v4.is_broadcast()
+                || v4.is_multicast()
+                || v4.is_unspecified()
+                || v4.is_documentation()
+            {
+                return false;
+            }
+            let o = v4.octets();
+            // 0.0.0.0/8
+            if o[0] == 0 {
+                return false;
+            }
+            // CGNAT 100.64.0.0/10
+            if o[0] == 100 && (64..=127).contains(&o[1]) {
+                return false;
+            }
+            // 192.0.0.0/24 protocol assignments
+            if o[0] == 192 && o[1] == 0 && o[2] == 0 {
+                return false;
+            }
+            // Benchmarking 198.18.0.0/15
+            if o[0] == 198 && (o[1] == 18 || o[1] == 19) {
+                return false;
+            }
+            // Reserved 240.0.0.0/4 (excluding broadcast)
+            if o[0] >= 240 {
+                return false;
+            }
+            true
+        }
+        IpAddr::V6(v6) => {
+            if v6.is_loopback() || v6.is_unspecified() || v6.is_multicast() {
+                return false;
+            }
+            let s = v6.segments();
+            // Unique local fc00::/7
+            if (s[0] & 0xfe00) == 0xfc00 {
+                return false;
+            }
+            // Link-local fe80::/10
+            if (s[0] & 0xffc0) == 0xfe80 {
+                return false;
+            }
+            // Documentation 2001:db8::/32
+            if s[0] == 0x2001 && s[1] == 0x0db8 {
+                return false;
+            }
+            // ::ffff:0:0/96 IPv4-mapped → check underlying v4
+            if let Some(v4) = v6.to_ipv4_mapped() {
+                return is_public_ip(IpAddr::V4(v4));
+            }
+            true
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use std::fs;
@@ -1699,6 +1839,121 @@ mod tests {
                 .as_str()
                 .is_some_and(|v| v.contains("# Workflow"))
         );
+    }
+
+    #[tokio::test]
+    async fn web_fetch_rejects_loopback_ip() {
+        let root = tempdir().expect("tempdir");
+        let workspace = root.path().join("workspace");
+        fs::create_dir_all(&workspace).expect("workspace");
+        let tools = ToolRuntime::new(workspace).expect("runtime");
+
+        let call = ToolCall {
+            name: "webFetch".to_string(),
+            arguments: json!({ "url": "http://127.0.0.1/" }),
+        };
+        let err = tools
+            .execute(&call)
+            .await
+            .expect_err("should reject loopback");
+        assert!(err.to_string().contains("not a public address"));
+    }
+
+    #[tokio::test]
+    async fn web_fetch_rejects_metadata_ip() {
+        let root = tempdir().expect("tempdir");
+        let workspace = root.path().join("workspace");
+        fs::create_dir_all(&workspace).expect("workspace");
+        let tools = ToolRuntime::new(workspace).expect("runtime");
+
+        let call = ToolCall {
+            name: "webFetch".to_string(),
+            arguments: json!({ "url": "http://169.254.169.254/latest/meta-data/" }),
+        };
+        let err = tools
+            .execute(&call)
+            .await
+            .expect_err("should reject link-local");
+        assert!(err.to_string().contains("not a public address"));
+    }
+
+    #[tokio::test]
+    async fn web_fetch_rejects_private_rfc1918() {
+        let root = tempdir().expect("tempdir");
+        let workspace = root.path().join("workspace");
+        fs::create_dir_all(&workspace).expect("workspace");
+        let tools = ToolRuntime::new(workspace).expect("runtime");
+
+        let call = ToolCall {
+            name: "webFetch".to_string(),
+            arguments: json!({ "url": "http://10.0.0.1/" }),
+        };
+        let err = tools
+            .execute(&call)
+            .await
+            .expect_err("should reject rfc1918");
+        assert!(err.to_string().contains("not a public address"));
+    }
+
+    #[tokio::test]
+    async fn web_fetch_rejects_localhost_hostname() {
+        let root = tempdir().expect("tempdir");
+        let workspace = root.path().join("workspace");
+        fs::create_dir_all(&workspace).expect("workspace");
+        let tools = ToolRuntime::new(workspace).expect("runtime");
+
+        let call = ToolCall {
+            name: "webFetch".to_string(),
+            arguments: json!({ "url": "http://localhost:8080/admin" }),
+        };
+        let err = tools
+            .execute(&call)
+            .await
+            .expect_err("should reject localhost");
+        assert!(err.to_string().contains("not a public address"));
+    }
+
+    #[tokio::test]
+    async fn web_fetch_rejects_ipv6_loopback() {
+        let root = tempdir().expect("tempdir");
+        let workspace = root.path().join("workspace");
+        fs::create_dir_all(&workspace).expect("workspace");
+        let tools = ToolRuntime::new(workspace).expect("runtime");
+
+        let call = ToolCall {
+            name: "webFetch".to_string(),
+            arguments: json!({ "url": "http://[::1]/" }),
+        };
+        let err = tools
+            .execute(&call)
+            .await
+            .expect_err("should reject ipv6 loopback");
+        assert!(err.to_string().contains("not a public address"));
+    }
+
+    #[test]
+    fn ssrf_helper_classifies_ip_ranges() {
+        use super::is_public_ip;
+        use std::net::{IpAddr, Ipv4Addr, Ipv6Addr};
+
+        assert!(!is_public_ip(IpAddr::V4(Ipv4Addr::new(127, 0, 0, 1))));
+        assert!(!is_public_ip(IpAddr::V4(Ipv4Addr::new(10, 1, 2, 3))));
+        assert!(!is_public_ip(IpAddr::V4(Ipv4Addr::new(192, 168, 0, 1))));
+        assert!(!is_public_ip(IpAddr::V4(Ipv4Addr::new(172, 16, 0, 1))));
+        assert!(!is_public_ip(IpAddr::V4(Ipv4Addr::new(169, 254, 169, 254))));
+        assert!(!is_public_ip(IpAddr::V4(Ipv4Addr::new(100, 64, 0, 1))));
+        assert!(!is_public_ip(IpAddr::V4(Ipv4Addr::new(0, 0, 0, 0))));
+        assert!(!is_public_ip(IpAddr::V4(Ipv4Addr::new(255, 255, 255, 255))));
+        assert!(is_public_ip(IpAddr::V4(Ipv4Addr::new(8, 8, 8, 8))));
+        assert!(is_public_ip(IpAddr::V4(Ipv4Addr::new(1, 1, 1, 1))));
+
+        assert!(!is_public_ip(IpAddr::V6(Ipv6Addr::LOCALHOST)));
+        assert!(!is_public_ip(IpAddr::V6(Ipv6Addr::UNSPECIFIED)));
+        assert!(!is_public_ip(IpAddr::V6("fc00::1".parse().unwrap())));
+        assert!(!is_public_ip(IpAddr::V6("fe80::1".parse().unwrap())));
+        assert!(is_public_ip(IpAddr::V6(
+            "2606:4700:4700::1111".parse().unwrap()
+        )));
     }
 
     #[tokio::test]
