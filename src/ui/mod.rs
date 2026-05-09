@@ -1,5 +1,6 @@
 mod logo;
 
+use std::collections::HashMap;
 use std::io;
 use std::sync::Arc;
 use std::time::Duration;
@@ -98,6 +99,10 @@ struct UiMessage {
 struct ModelSelector {
     providers: Vec<ProviderKind>,
     provider_index: usize,
+    provider_states: HashMap<ProviderKind, ModelSelectorProviderState>,
+}
+
+struct ModelSelectorProviderState {
     models: Vec<String>,
     model_index: usize,
     loading: bool,
@@ -606,16 +611,28 @@ async fn open_model_selector(
         .iter()
         .position(|provider| *provider == current_provider)
         .unwrap_or(0);
+    let provider_states = providers
+        .iter()
+        .copied()
+        .map(|provider| {
+            (
+                provider,
+                ModelSelectorProviderState {
+                    models: Vec::new(),
+                    model_index: 0,
+                    loading: false,
+                    error: None,
+                },
+            )
+        })
+        .collect();
 
     state.selector = Some(ModelSelector {
         providers,
         provider_index,
-        models: Vec::new(),
-        model_index: 0,
-        loading: true,
-        error: None,
+        provider_states,
     });
-    fetch_selector_models(agent, event_tx, current_provider);
+    fetch_initial_selector_models(state, agent, event_tx, current_provider);
 }
 
 async fn handle_selector_key(
@@ -624,6 +641,7 @@ async fn handle_selector_key(
     agent: &Arc<Mutex<Agent>>,
     event_tx: &UnboundedSender<AgentEvent>,
 ) {
+    let mut provider_to_fetch = None;
     let Some(selector) = state.selector.as_mut() else {
         return;
     };
@@ -634,44 +652,56 @@ async fn handle_selector_key(
         }
         KeyCode::Left | KeyCode::Char('h') => {
             selector.provider_index = selector.provider_index.saturating_sub(1);
-            selector.model_index = 0;
-            selector.models.clear();
-            selector.error = None;
-            selector.loading = true;
             let provider = selector.providers[selector.provider_index];
-            fetch_selector_models(agent, event_tx, provider);
+            provider_to_fetch = Some(provider);
         }
         KeyCode::Right | KeyCode::Char('l') => {
             selector.provider_index =
                 (selector.provider_index + 1).min(selector.providers.len().saturating_sub(1));
-            selector.model_index = 0;
-            selector.models.clear();
-            selector.error = None;
-            selector.loading = true;
             let provider = selector.providers[selector.provider_index];
-            fetch_selector_models(agent, event_tx, provider);
+            provider_to_fetch = Some(provider);
         }
         KeyCode::Up | KeyCode::Char('k') => {
-            selector.model_index = selector.model_index.saturating_sub(1);
+            let provider = selector.providers[selector.provider_index];
+            if let Some(provider_state) = selector.provider_states.get_mut(&provider) {
+                provider_state.model_index = provider_state.model_index.saturating_sub(1);
+            }
         }
         KeyCode::Down | KeyCode::Char('j') => {
-            if !selector.models.is_empty() {
-                selector.model_index =
-                    (selector.model_index + 1).min(selector.models.len().saturating_sub(1));
+            let provider = selector.providers[selector.provider_index];
+            if let Some(provider_state) = selector.provider_states.get_mut(&provider)
+                && !provider_state.models.is_empty()
+            {
+                provider_state.model_index = (provider_state.model_index + 1)
+                    .min(provider_state.models.len().saturating_sub(1));
             }
         }
         KeyCode::PageUp => {
-            selector.model_index = selector.model_index.saturating_sub(10);
+            let provider = selector.providers[selector.provider_index];
+            if let Some(provider_state) = selector.provider_states.get_mut(&provider) {
+                provider_state.model_index = provider_state.model_index.saturating_sub(10);
+            }
         }
         KeyCode::PageDown => {
-            if !selector.models.is_empty() {
-                selector.model_index =
-                    (selector.model_index + 10).min(selector.models.len().saturating_sub(1));
+            let provider = selector.providers[selector.provider_index];
+            if let Some(provider_state) = selector.provider_states.get_mut(&provider)
+                && !provider_state.models.is_empty()
+            {
+                provider_state.model_index = (provider_state.model_index + 10)
+                    .min(provider_state.models.len().saturating_sub(1));
             }
         }
         KeyCode::Enter => {
             let provider = selector.providers[selector.provider_index];
-            let model = selector.models.get(selector.model_index).cloned();
+            let model = selector
+                .provider_states
+                .get(&provider)
+                .and_then(|provider_state| {
+                    provider_state
+                        .models
+                        .get(provider_state.model_index)
+                        .cloned()
+                });
             if let Some(model) = model {
                 let mut locked = agent.lock().await;
                 let response = locked.switch_model(provider, Some(model));
@@ -682,6 +712,47 @@ async fn handle_selector_key(
         }
         _ => {}
     }
+
+    if let Some(provider) = provider_to_fetch {
+        fetch_selector_models_if_needed(state, agent, event_tx, provider);
+    }
+}
+
+fn fetch_initial_selector_models(
+    state: &mut UiState,
+    agent: &Arc<Mutex<Agent>>,
+    event_tx: &UnboundedSender<AgentEvent>,
+    current_provider: ProviderKind,
+) {
+    for provider in [
+        ProviderKind::Anthropic,
+        ProviderKind::OpenAi,
+        ProviderKind::Google,
+    ] {
+        fetch_selector_models_if_needed(state, agent, event_tx, provider);
+    }
+    fetch_selector_models_if_needed(state, agent, event_tx, current_provider);
+}
+
+fn fetch_selector_models_if_needed(
+    state: &mut UiState,
+    agent: &Arc<Mutex<Agent>>,
+    event_tx: &UnboundedSender<AgentEvent>,
+    provider: ProviderKind,
+) {
+    let Some(selector) = state.selector.as_mut() else {
+        return;
+    };
+    let Some(provider_state) = selector.provider_states.get_mut(&provider) else {
+        return;
+    };
+    if provider_state.loading || provider_state.error.is_some() || !provider_state.models.is_empty()
+    {
+        return;
+    }
+
+    provider_state.loading = true;
+    fetch_selector_models(agent, event_tx, provider);
 }
 
 fn fetch_selector_models(
@@ -692,8 +763,11 @@ fn fetch_selector_models(
     let tx = event_tx.clone();
     let handle = Arc::clone(agent);
     tokio::spawn(async move {
-        let mut locked = handle.lock().await;
-        match locked.fetch_provider_models(provider).await {
+        let provider_keys = {
+            let locked = handle.lock().await;
+            locked.provider_keys_snapshot()
+        };
+        match Agent::fetch_provider_models_with_keys(provider, &provider_keys).await {
             Ok(models) => {
                 let _ = tx.send(AgentEvent::ModelList {
                     provider,
@@ -730,12 +804,12 @@ fn apply_agent_event(state: &mut UiState, event: AgentEvent) {
             error,
         } => {
             if let Some(selector) = state.selector.as_mut()
-                && selector.providers.get(selector.provider_index) == Some(&provider)
+                && let Some(provider_state) = selector.provider_states.get_mut(&provider)
             {
-                selector.models = models;
-                selector.model_index = 0;
-                selector.loading = false;
-                selector.error = error;
+                provider_state.models = models;
+                provider_state.model_index = 0;
+                provider_state.loading = false;
+                provider_state.error = error;
             }
         }
         AgentEvent::Error(err) => {
@@ -822,36 +896,42 @@ fn render_selector(frame: &mut Frame, state: &UiState) {
         .collect::<Vec<Span>>();
     frame.render_widget(Paragraph::new(Line::from(provider_spans)), rows[0]);
 
-    let list_lines = if selector.loading {
+    let selected_provider = selector.providers[selector.provider_index];
+    let selected_state = selector.provider_states.get(&selected_provider);
+
+    let list_lines = if selected_state.is_some_and(|provider_state| provider_state.loading) {
         vec![Line::from(vec![Span::styled(
             "fetching models...",
             Style::default().fg(palette::EMBER),
         )])]
-    } else if let Some(error) = &selector.error {
+    } else if let Some(error) =
+        selected_state.and_then(|provider_state| provider_state.error.as_ref())
+    {
         vec![Line::from(vec![Span::styled(
             error.clone(),
             Style::default().fg(palette::BLOOD),
         )])]
-    } else if selector.models.is_empty() {
+    } else if selected_state.is_none_or(|provider_state| provider_state.models.is_empty()) {
         vec![Line::from(vec![Span::styled(
             "no models returned",
             Style::default().fg(palette::ASH),
         )])]
     } else {
+        let selected_state = selected_state.expect("selected provider state must exist");
         let visible = rows[1].height.max(1) as usize;
-        let start = selector
+        let start = selected_state
             .model_index
             .saturating_add(1)
             .saturating_sub(visible);
 
-        selector
+        selected_state
             .models
             .iter()
             .enumerate()
             .skip(start)
             .take(visible)
             .map(|(idx, model)| {
-                let selected = idx == selector.model_index;
+                let selected = idx == selected_state.model_index;
                 Line::from(vec![
                     Span::styled(
                         if selected { "❯ " } else { "  " },

@@ -120,12 +120,23 @@ impl Agent {
         self.provider_kind
     }
 
+    pub fn provider_keys_snapshot(&self) -> ProviderKeys {
+        self.provider_keys.clone()
+    }
+
     pub fn clear_history(&mut self) {
         self.history.clear();
     }
 
     pub async fn fetch_provider_models(&mut self, provider: ProviderKind) -> Result<Vec<String>> {
-        if !self.provider_keys.is_connected(provider) {
+        Self::fetch_provider_models_with_keys(provider, &self.provider_keys).await
+    }
+
+    pub async fn fetch_provider_models_with_keys(
+        provider: ProviderKind,
+        provider_keys: &ProviderKeys,
+    ) -> Result<Vec<String>> {
+        if !provider_keys.is_connected(provider) {
             let usage = if provider == ProviderKind::Copilot {
                 "/connect github"
             } else {
@@ -138,7 +149,7 @@ impl Agent {
             ));
         }
 
-        let temp_provider = build_provider(provider, "temp".to_string(), &self.provider_keys);
+        let temp_provider = build_provider(provider, "temp".to_string(), provider_keys);
         let mut models = temp_provider
             .list_models()
             .await?
