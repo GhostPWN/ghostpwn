@@ -1,13 +1,12 @@
 [package]
 name = "ghostpwn"
-version = "0.1.0"
+version = "0.1.1"
 edition = "2024"
 
 [dependencies]
 anyhow = "1.0.100"
 async-trait = "0.1.89"
 crossterm = "0.29.0"
-dotenvy = "0.15.7"
 futures-util = "0.3.31"
 globset = "0.4.16"
 keyring = "3.6.3"

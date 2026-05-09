@@ -10,7 +10,7 @@ It captures build/test commands, project conventions, and coding style.
 - UI: `ratatui` + `crossterm`.
 - Providers: OpenAI, Anthropic, Google (streaming).
 - Tool runtime: local FS + command tools with workspace boundaries.
-- Secrets: `.env` + keychain fallback/persistence support.
+- Secrets: keychain persistence support.
 
 ## External Agent Rules Check
 
@@ -71,7 +71,7 @@ It captures build/test commands, project conventions, and coding style.
 
 - `src/main.rs`: bootstrap, config load, dependency wiring.
 - `src/config.rs`: provider/model/env parsing and key loading.
-- `src/secrets.rs`: keychain + `.env` persistence helpers.
+- `src/secrets.rs`: keychain persistence helpers.
 - `src/agent.rs`: orchestration loop, command/model switching, tool loop.
 - `src/providers/`: provider adapters + SSE consumption.
 - `src/tools/mod.rs`: local tools (`readFile`, `grep`, `runCommand`, etc.).
@@ -105,7 +105,7 @@ It captures build/test commands, project conventions, and coding style.
 - Functions/methods/variables: `snake_case`.
 - Enum variants: `PascalCase`.
 - Acronyms follow normal Rust style (`OpenAi`, not `OpenAI` type names).
-- Keep command strings lowercase slash commands (`/connect`, `/models`).
+- Keep command strings lowercase slash commands (`/model`, `/help`).
 
 ## Types and API Design
 
@@ -134,7 +134,7 @@ It captures build/test commands, project conventions, and coding style.
 
 ## UI/TUI Conventions
 
-- Maintain existing command UX (`/help`, `/models`, `/connect`, etc.).
+- Maintain existing command UX (`/help`, `/model`, etc.).
 - Keep keybindings consistent with current behavior.
 - Preserve auto-scroll semantics and status indicators.
 - Keep transcript rendering readable and role-differentiated.
@@ -152,7 +152,6 @@ It captures build/test commands, project conventions, and coding style.
 
 - Never print full API keys in UI logs/messages.
 - Persist keys via `SecretStore` APIs only.
-- Keep `.env` updates minimal and deterministic.
 - Respect workspace path boundaries in all file/tool commands.
 - Do not weaken command timeout or sandbox behavior without reason.
 

@@ -62,19 +62,7 @@ const COMMANDS: &[CommandSpec] = &[
     },
     CommandSpec {
         name: "/model",
-        description: "Open keyboard model selector",
-    },
-    CommandSpec {
-        name: "/connect",
-        description: "Connect provider API key or /connect github",
-    },
-    CommandSpec {
-        name: "/copilot",
-        description: "Start GitHub Copilot OAuth",
-    },
-    CommandSpec {
-        name: "/disconnect",
-        description: "Disconnect provider API key",
+        description: "Open model selector and provider auth",
     },
     CommandSpec {
         name: "/clear",
@@ -100,6 +88,8 @@ struct ModelSelector {
     providers: Vec<ProviderKind>,
     provider_index: usize,
     provider_states: HashMap<ProviderKind, ModelSelectorProviderState>,
+    mode: ModelSelectorMode,
+    status: Option<ModelSelectorStatus>,
 }
 
 struct ModelSelectorProviderState {
@@ -107,6 +97,20 @@ struct ModelSelectorProviderState {
     model_index: usize,
     loading: bool,
     error: Option<String>,
+}
+
+enum ModelSelectorMode {
+    Browse,
+    ApiKeyInput {
+        provider: ProviderKind,
+        input: String,
+    },
+}
+
+struct ModelSelectorStatus {
+    provider: ProviderKind,
+    message: String,
+    error: bool,
 }
 
 struct UiState {
@@ -450,118 +454,6 @@ async fn handle_submit(
         return;
     }
 
-    if text.starts_with("/disconnect") {
-        let parts = text.split_whitespace().collect::<Vec<&str>>();
-        if parts.len() != 2 {
-            state.push_message(UiRole::Error, "Usage: /disconnect <provider>".to_string());
-            return;
-        }
-
-        let Some(provider) = ProviderKind::parse(parts[1]) else {
-            state.push_message(
-                UiRole::Error,
-                "Invalid provider. Use: anthropic | openai | google | github | ollama".to_string(),
-            );
-            return;
-        };
-
-        let mut locked = agent.lock().await;
-        let response = locked.disconnect_key(provider);
-        state.provider_name = locked.provider_name();
-        state.push_message(UiRole::Assistant, response);
-        return;
-    }
-
-    if text == "/copilot" || text.starts_with("/connect") {
-        let connect_text = if text == "/copilot" {
-            "/connect github"
-        } else {
-            text.as_str()
-        };
-        let parts = connect_text.split_whitespace().collect::<Vec<&str>>();
-        if parts.len() == 1 {
-            let locked = agent.lock().await;
-            state.push_message(UiRole::Assistant, locked.connection_overview());
-            return;
-        }
-
-        let Some(provider) = ProviderKind::parse(parts[1]) else {
-            state.push_message(
-                UiRole::Error,
-                "Invalid provider. Use: anthropic | openai | google | github | ollama".to_string(),
-            );
-            return;
-        };
-
-        if provider == ProviderKind::Copilot
-            && (parts.len() == 2
-                || parts.get(2) == Some(&"oauth")
-                || parts.get(2) == Some(&"device"))
-        {
-            state.push_message(
-                UiRole::Assistant,
-                "Starting GitHub Copilot OAuth...".to_string(),
-            );
-            state.is_streaming = true;
-            state.streaming_content.clear();
-            state.tool_status.clear();
-
-            let tx = event_tx.clone();
-            let handle = Arc::clone(agent);
-
-            tokio::spawn(async move {
-                match copilot_device_flow(tx.clone(), handle).await {
-                    Ok(()) => {}
-                    Err(err) => {
-                        let _ = tx.send(AgentEvent::Error(format!(
-                            "Copilot authorization failed: {}",
-                            err
-                        )));
-                        let _ = tx.send(AgentEvent::Done);
-                    }
-                }
-            });
-            return;
-        }
-
-        if provider == ProviderKind::Ollama {
-            let model = if parts.len() > 2 {
-                parts[2..].join(" ")
-            } else {
-                "llama3".to_string()
-            };
-            let mut locked = agent.lock().await;
-            let response = locked.switch_model(ProviderKind::Ollama, Some(model));
-            state.provider_name = locked.provider_name();
-            state.push_message(UiRole::Assistant, response);
-            return;
-        }
-
-        if parts.len() < 3 {
-            state.push_message(
-                UiRole::Error,
-                "Usage: /connect <provider> <api_key>\nFor GitHub, use: /connect github\nFor Ollama, use: /connect ollama [model]"
-                    .to_string(),
-            );
-            return;
-        }
-
-        let api_key = parts[2..].join(" ");
-        if api_key.len() < 8 {
-            state.push_message(
-                UiRole::Error,
-                "API key looks too short. Usage: /connect <provider> <api_key>".to_string(),
-            );
-            return;
-        }
-
-        let mut locked = agent.lock().await;
-        let response = locked.connect_key(provider, api_key);
-        state.provider_name = locked.provider_name();
-        state.push_message(UiRole::Assistant, response);
-        return;
-    }
-
     if text == "/help" {
         let help = COMMANDS
             .iter()
@@ -631,6 +523,8 @@ async fn open_model_selector(
         providers,
         provider_index,
         provider_states,
+        mode: ModelSelectorMode::Browse,
+        status: None,
     });
     fetch_initial_selector_models(state, agent, event_tx, current_provider);
 }
@@ -641,6 +535,10 @@ async fn handle_selector_key(
     agent: &Arc<Mutex<Agent>>,
     event_tx: &UnboundedSender<AgentEvent>,
 ) {
+    if selector_handles_api_key_input(key, state, agent, event_tx).await {
+        return;
+    }
+
     let mut provider_to_fetch = None;
     let Some(selector) = state.selector.as_mut() else {
         return;
@@ -649,6 +547,60 @@ async fn handle_selector_key(
     match key {
         KeyCode::Esc => {
             state.selector = None;
+        }
+        KeyCode::Char('c') => {
+            let provider = selector.providers[selector.provider_index];
+            match provider {
+                ProviderKind::Copilot => start_selector_copilot_auth(state, agent, event_tx),
+                ProviderKind::Ollama => {
+                    selector.status = Some(ModelSelectorStatus {
+                        provider,
+                        message: "Ollama is local and does not require an API key.".to_string(),
+                        error: false,
+                    });
+                }
+                _ => {
+                    selector.mode = ModelSelectorMode::ApiKeyInput {
+                        provider,
+                        input: String::new(),
+                    };
+                    selector.status = Some(ModelSelectorStatus {
+                        provider,
+                        message: format!("Paste {} API key, then press enter.", provider.as_str()),
+                        error: false,
+                    });
+                }
+            }
+        }
+        KeyCode::Char('d') => {
+            let provider = selector.providers[selector.provider_index];
+            if provider == ProviderKind::Ollama {
+                selector.status = Some(ModelSelectorStatus {
+                    provider,
+                    message: "Ollama is local and cannot be disconnected.".to_string(),
+                    error: false,
+                });
+            } else {
+                let mut locked = agent.lock().await;
+                let message = locked.disconnect_key(provider);
+                state.provider_name = locked.provider_name();
+                if let Some(selector) = state.selector.as_mut() {
+                    if let Some(provider_state) = selector.provider_states.get_mut(&provider) {
+                        provider_state.models.clear();
+                        provider_state.model_index = 0;
+                        provider_state.loading = false;
+                        provider_state.error = Some(format!(
+                            "{} disconnected. Press c to connect.",
+                            provider.as_str()
+                        ));
+                    }
+                    selector.status = Some(ModelSelectorStatus {
+                        provider,
+                        message,
+                        error: false,
+                    });
+                }
+            }
         }
         KeyCode::Left | KeyCode::Char('h') => {
             selector.provider_index = selector.provider_index.saturating_sub(1);
@@ -716,6 +668,108 @@ async fn handle_selector_key(
     if let Some(provider) = provider_to_fetch {
         fetch_selector_models_if_needed(state, agent, event_tx, provider);
     }
+}
+
+async fn selector_handles_api_key_input(
+    key: KeyCode,
+    state: &mut UiState,
+    agent: &Arc<Mutex<Agent>>,
+    event_tx: &UnboundedSender<AgentEvent>,
+) -> bool {
+    let Some(selector) = state.selector.as_mut() else {
+        return false;
+    };
+    let ModelSelectorMode::ApiKeyInput { provider, input } = &mut selector.mode else {
+        return false;
+    };
+    let provider = *provider;
+
+    match key {
+        KeyCode::Esc => {
+            selector.mode = ModelSelectorMode::Browse;
+            selector.status = Some(ModelSelectorStatus {
+                provider,
+                message: "API key entry cancelled.".to_string(),
+                error: false,
+            });
+        }
+        KeyCode::Enter => {
+            let api_key = input.trim().to_string();
+            if api_key.len() < 8 {
+                selector.status = Some(ModelSelectorStatus {
+                    provider,
+                    message: "API key looks too short.".to_string(),
+                    error: true,
+                });
+                return true;
+            }
+
+            let mut locked = agent.lock().await;
+            let message = locked.connect_key(provider, api_key);
+            state.provider_name = locked.provider_name();
+            drop(locked);
+
+            if let Some(selector) = state.selector.as_mut() {
+                selector.mode = ModelSelectorMode::Browse;
+                selector.status = Some(ModelSelectorStatus {
+                    provider,
+                    message,
+                    error: false,
+                });
+                if let Some(provider_state) = selector.provider_states.get_mut(&provider) {
+                    provider_state.models.clear();
+                    provider_state.model_index = 0;
+                    provider_state.loading = false;
+                    provider_state.error = None;
+                }
+            }
+            fetch_selector_models_if_needed(state, agent, event_tx, provider);
+        }
+        KeyCode::Backspace => {
+            input.pop();
+        }
+        KeyCode::Char(ch) => {
+            input.push(ch);
+        }
+        _ => {}
+    }
+
+    true
+}
+
+fn start_selector_copilot_auth(
+    state: &mut UiState,
+    agent: &Arc<Mutex<Agent>>,
+    event_tx: &UnboundedSender<AgentEvent>,
+) {
+    if let Some(selector) = state.selector.as_mut() {
+        selector.status = Some(ModelSelectorStatus {
+            provider: ProviderKind::Copilot,
+            message: "Starting GitHub Copilot OAuth...".to_string(),
+            error: false,
+        });
+        if let Some(provider_state) = selector.provider_states.get_mut(&ProviderKind::Copilot) {
+            provider_state.loading = true;
+            provider_state.error = None;
+        }
+    }
+
+    let tx = event_tx.clone();
+    let handle = Arc::clone(agent);
+    tokio::spawn(async move {
+        if let Err(err) = copilot_device_flow(tx.clone(), handle).await {
+            let _ = tx.send(AgentEvent::ProviderStatus {
+                provider: ProviderKind::Copilot,
+                message: format!("Copilot authorization failed: {}", err),
+                error: true,
+            });
+            let _ = tx.send(AgentEvent::ModelList {
+                provider: ProviderKind::Copilot,
+                models: Vec::new(),
+                error: Some("Copilot authorization failed.".to_string()),
+            });
+        }
+    });
 }
 
 fn fetch_initial_selector_models(
@@ -812,6 +866,26 @@ fn apply_agent_event(state: &mut UiState, event: AgentEvent) {
                 provider_state.error = error;
             }
         }
+        AgentEvent::ProviderStatus {
+            provider,
+            message,
+            error,
+        } => {
+            if let Some(selector) = state.selector.as_mut() {
+                selector.status = Some(ModelSelectorStatus {
+                    provider,
+                    message,
+                    error,
+                });
+            } else if error {
+                state.push_message(UiRole::Error, message);
+            } else {
+                state.push_message(UiRole::Assistant, message);
+            }
+        }
+        AgentEvent::ProviderName(name) => {
+            state.provider_name = name;
+        }
         AgentEvent::Error(err) => {
             state.flush_streaming_to_messages();
             state.push_message(UiRole::Error, err);
@@ -899,7 +973,25 @@ fn render_selector(frame: &mut Frame, state: &UiState) {
     let selected_provider = selector.providers[selector.provider_index];
     let selected_state = selector.provider_states.get(&selected_provider);
 
-    let list_lines = if selected_state.is_some_and(|provider_state| provider_state.loading) {
+    let list_lines = if let ModelSelectorMode::ApiKeyInput { provider, input } = &selector.mode {
+        let masked = "•".repeat(input.chars().count());
+        vec![
+            Line::from(vec![Span::styled(
+                format!("Paste {} API key", provider.as_str()),
+                Style::default().fg(palette::BONE).bold(),
+            )]),
+            Line::from(""),
+            Line::from(vec![
+                Span::styled("key  ", Style::default().fg(palette::ASH)),
+                Span::styled(masked, Style::default().fg(palette::PHOSPHOR)),
+            ]),
+            Line::from(""),
+            Line::from(vec![Span::styled(
+                "enter saves · esc cancels",
+                Style::default().fg(palette::ASH),
+            )]),
+        ]
+    } else if selected_state.is_some_and(|provider_state| provider_state.loading) {
         vec![Line::from(vec![Span::styled(
             "fetching models...",
             Style::default().fg(palette::EMBER),
@@ -907,10 +999,19 @@ fn render_selector(frame: &mut Frame, state: &UiState) {
     } else if let Some(error) =
         selected_state.and_then(|provider_state| provider_state.error.as_ref())
     {
-        vec![Line::from(vec![Span::styled(
-            error.clone(),
-            Style::default().fg(palette::BLOOD),
-        )])]
+        let hint = match selected_provider {
+            ProviderKind::Copilot => "press c to connect with GitHub device OAuth",
+            ProviderKind::Ollama => "local provider; no API key required",
+            _ => "press c to paste an API key",
+        };
+        vec![
+            Line::from(vec![Span::styled(
+                error.clone(),
+                Style::default().fg(palette::BLOOD),
+            )]),
+            Line::from(""),
+            Line::from(vec![Span::styled(hint, Style::default().fg(palette::ASH))]),
+        ]
     } else if selected_state.is_none_or(|provider_state| provider_state.models.is_empty()) {
         vec![Line::from(vec![Span::styled(
             "no models returned",
@@ -949,6 +1050,10 @@ fn render_selector(frame: &mut Frame, state: &UiState) {
             })
             .collect()
     };
+    let list_lines = selector_status_lines(selector, selected_provider)
+        .into_iter()
+        .chain(list_lines)
+        .collect::<Vec<_>>();
     frame.render_widget(
         Paragraph::new(list_lines).wrap(Wrap { trim: false }),
         rows[1],
@@ -961,12 +1066,47 @@ fn render_selector(frame: &mut Frame, state: &UiState) {
         Span::styled(" model  ", Style::default().fg(palette::ASH)),
         Span::styled("pgup/pgdn", Style::default().fg(palette::PHOSPHOR).bold()),
         Span::styled(" jump  ", Style::default().fg(palette::ASH)),
+        Span::styled("c", Style::default().fg(palette::PHOSPHOR).bold()),
+        Span::styled(" connect  ", Style::default().fg(palette::ASH)),
+        Span::styled("d", Style::default().fg(palette::PHOSPHOR).bold()),
+        Span::styled(" disconnect  ", Style::default().fg(palette::ASH)),
         Span::styled("enter", Style::default().fg(palette::PHOSPHOR).bold()),
         Span::styled(" switch  ", Style::default().fg(palette::ASH)),
         Span::styled("esc", Style::default().fg(palette::PHOSPHOR).bold()),
         Span::styled(" close", Style::default().fg(palette::ASH)),
     ]);
     frame.render_widget(Paragraph::new(footer), rows[2]);
+}
+
+fn selector_status_lines(
+    selector: &ModelSelector,
+    selected_provider: ProviderKind,
+) -> Vec<Line<'static>> {
+    let Some(status) = selector
+        .status
+        .as_ref()
+        .filter(|status| status.provider == selected_provider)
+    else {
+        return Vec::new();
+    };
+
+    let color = if status.error {
+        palette::BLOOD
+    } else {
+        palette::ASH
+    };
+    let mut lines = status
+        .message
+        .lines()
+        .map(|line| {
+            Line::from(vec![Span::styled(
+                line.to_string(),
+                Style::default().fg(color),
+            )])
+        })
+        .collect::<Vec<_>>();
+    lines.push(Line::from(""));
+    lines
 }
 
 fn centered_rect(percent_x: u16, percent_y: u16, area: Rect) -> Rect {
@@ -1537,10 +1677,14 @@ async fn copilot_device_flow(
 ) -> Result<()> {
     let auth = copilot::authorize().await?;
 
-    let _ = events.send(AgentEvent::AssistantDelta(format!(
-        "Open {}  and enter code:  {}\nWaiting for authorization...",
-        auth.verification_uri, auth.user_code
-    )));
+    let _ = events.send(AgentEvent::ProviderStatus {
+        provider: ProviderKind::Copilot,
+        message: format!(
+            "Open {} and enter code: {}. Waiting for authorization...",
+            auth.verification_uri, auth.user_code
+        ),
+        error: false,
+    });
 
     let deadline = std::time::Instant::now() + std::time::Duration::from_secs(auth.expires_in);
     let interval = std::time::Duration::from_secs(auth.interval);
@@ -1549,10 +1693,16 @@ async fn copilot_device_flow(
         tokio::time::sleep(interval).await;
 
         if std::time::Instant::now() > deadline {
-            let _ = events.send(AgentEvent::Error(
-                "Authorization timed out. Try /connect github again.".to_string(),
-            ));
-            let _ = events.send(AgentEvent::Done);
+            let _ = events.send(AgentEvent::ProviderStatus {
+                provider: ProviderKind::Copilot,
+                message: "Authorization timed out. Press c to try again.".to_string(),
+                error: true,
+            });
+            let _ = events.send(AgentEvent::ModelList {
+                provider: ProviderKind::Copilot,
+                models: Vec::new(),
+                error: Some("Authorization timed out. Press c to try again.".to_string()),
+            });
             return Ok(());
         }
 
@@ -1561,8 +1711,14 @@ async fn copilot_device_flow(
                 let mut locked = agent.lock().await;
                 let msg = locked.connect_key(ProviderKind::Copilot, refresh_token);
                 let switch_msg = locked.switch_model(ProviderKind::Copilot, None);
+                let provider_name = locked.provider_name();
                 let model_msg = match locked.fetch_provider_models(ProviderKind::Copilot).await {
                     Ok(models) if !models.is_empty() => {
+                        let _ = events.send(AgentEvent::ModelList {
+                            provider: ProviderKind::Copilot,
+                            models: models.clone(),
+                            error: None,
+                        });
                         let preview = models
                             .iter()
                             .take(8)
@@ -1575,23 +1731,45 @@ async fn copilot_device_flow(
                             preview
                         )
                     }
-                    Ok(_) => "Copilot connected, but no models were returned.".to_string(),
-                    Err(err) => format!("Copilot connected, but model fetch failed: {}", err),
+                    Ok(_) => {
+                        let _ = events.send(AgentEvent::ModelList {
+                            provider: ProviderKind::Copilot,
+                            models: Vec::new(),
+                            error: None,
+                        });
+                        "Copilot connected, but no models were returned.".to_string()
+                    }
+                    Err(err) => {
+                        let message = format!("Copilot connected, but model fetch failed: {}", err);
+                        let _ = events.send(AgentEvent::ModelList {
+                            provider: ProviderKind::Copilot,
+                            models: Vec::new(),
+                            error: Some(message.clone()),
+                        });
+                        message
+                    }
                 };
 
-                let _ = events.send(AgentEvent::AssistantDelta(format!(
-                    "\n{}\n{}\n{}",
-                    msg, switch_msg, model_msg
-                )));
-                let _ = events.send(AgentEvent::Done);
+                let _ = events.send(AgentEvent::ProviderName(provider_name));
+                let _ = events.send(AgentEvent::ProviderStatus {
+                    provider: ProviderKind::Copilot,
+                    message: format!("{}\n{}\n{}", msg, switch_msg, model_msg),
+                    error: false,
+                });
                 return Ok(());
             }
             copilot::PollResult::Pending => continue,
             copilot::PollResult::Failed => {
-                let _ = events.send(AgentEvent::Error(
-                    "Authorization denied or expired.".to_string(),
-                ));
-                let _ = events.send(AgentEvent::Done);
+                let _ = events.send(AgentEvent::ProviderStatus {
+                    provider: ProviderKind::Copilot,
+                    message: "Authorization denied or expired.".to_string(),
+                    error: true,
+                });
+                let _ = events.send(AgentEvent::ModelList {
+                    provider: ProviderKind::Copilot,
+                    models: Vec::new(),
+                    error: Some("Authorization denied or expired.".to_string()),
+                });
                 return Ok(());
             }
         }

@@ -64,6 +64,12 @@ pub enum AgentEvent {
         models: Vec<String>,
         error: Option<String>,
     },
+    ProviderStatus {
+        provider: crate::config::ProviderKind,
+        message: String,
+        error: bool,
+    },
+    ProviderName(String),
     Error(String),
     Done,
 }

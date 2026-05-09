@@ -3,7 +3,7 @@ use std::path::PathBuf;
 
 use anyhow::Result;
 
-use crate::secrets::SecretStore;
+use crate::secrets::{SETTING_MODEL, SETTING_PROVIDER, SecretStore};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum ProviderKind {
@@ -154,21 +154,15 @@ pub struct Config {
 
 impl Config {
     pub fn load() -> Result<Self> {
-        let _ = dotenvy::dotenv();
         let secret_store = SecretStore::new();
 
         let provider_keys = ProviderKeys::from_env_and_store(&secret_store);
 
-        let provider = env::var("GHOSTPWN_PROVIDER")
-            .ok()
-            .as_deref()
-            .and_then(ProviderKind::parse)
-            .unwrap_or(ProviderKind::Google);
-
-        let model = env::var("GHOSTPWN_MODEL")
-            .ok()
-            .filter(|v| !v.trim().is_empty())
-            .unwrap_or_else(|| provider.default_model().to_string());
+        let saved_provider = secret_store
+            .load_setting(SETTING_PROVIDER)
+            .and_then(|value| ProviderKind::parse(&value));
+        let saved_model = secret_store.load_setting(SETTING_MODEL);
+        let (provider, model) = resolve_provider_and_model(saved_provider, saved_model);
 
         let workspace_root = env::var("GHOSTPWN_WORKSPACE")
             .ok()
@@ -190,4 +184,44 @@ fn read_env(key: &str) -> Option<String> {
         .ok()
         .map(|v| v.trim().to_string())
         .filter(|v| !v.is_empty())
+}
+
+fn resolve_provider_and_model(
+    saved_provider: Option<ProviderKind>,
+    saved_model: Option<String>,
+) -> (ProviderKind, String) {
+    let provider = saved_provider.unwrap_or(ProviderKind::Google);
+    let model = saved_model.unwrap_or_else(|| provider.default_model().to_string());
+
+    (provider, model)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{ProviderKind, resolve_provider_and_model};
+
+    #[test]
+    fn saved_provider_and_model_are_used() {
+        let (provider, model) =
+            resolve_provider_and_model(Some(ProviderKind::Copilot), Some("gpt-4o".to_string()));
+
+        assert_eq!(provider, ProviderKind::Copilot);
+        assert_eq!(model, "gpt-4o");
+    }
+
+    #[test]
+    fn default_model_is_used_without_saved_model() {
+        let (provider, model) = resolve_provider_and_model(Some(ProviderKind::Anthropic), None);
+
+        assert_eq!(provider, ProviderKind::Anthropic);
+        assert_eq!(model, ProviderKind::Anthropic.default_model());
+    }
+
+    #[test]
+    fn google_default_is_used_without_saved_provider() {
+        let (provider, model) = resolve_provider_and_model(None, None);
+
+        assert_eq!(provider, ProviderKind::Google);
+        assert_eq!(model, ProviderKind::Google.default_model());
+    }
 }

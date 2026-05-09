@@ -4,7 +4,7 @@ use tokio::sync::mpsc::UnboundedSender;
 use crate::config::{ProviderKeys, ProviderKind};
 use crate::models::{AgentEvent, ConversationMessage, ModelEnvelope, ToolCall};
 use crate::providers::{Provider, build_provider};
-use crate::secrets::SecretStore;
+use crate::secrets::{SETTING_MODEL, SETTING_PROVIDER, SecretStore};
 use crate::tools::ToolRuntime;
 
 const MAX_STEPS: usize = 15;
@@ -138,12 +138,12 @@ impl Agent {
     ) -> Result<Vec<String>> {
         if !provider_keys.is_connected(provider) {
             let usage = if provider == ProviderKind::Copilot {
-                "/connect github"
+                "press c in /model to start GitHub OAuth"
             } else {
-                "/connect <provider> <api_key>"
+                "press c in /model to paste an API key"
             };
             return Err(anyhow::anyhow!(
-                "{} is disconnected. Run {} first.",
+                "{} is disconnected. {}.",
                 provider.as_str(),
                 usage
             ));
@@ -166,23 +166,33 @@ impl Agent {
         self.provider_kind = provider;
         self.model = model.unwrap_or_else(|| provider.default_model().to_string());
         self.provider = build_provider(self.provider_kind, self.model.clone(), &self.provider_keys);
-
-        format!(
+        let disconnected_suffix = if self.provider_keys.is_connected(self.provider_kind) {
+            ""
+        } else {
+            " (disconnected: open /model and press c)"
+        };
+        let message = format!(
             "Switched to {} / {}{}",
             self.provider_kind.as_str(),
             self.model,
-            if self.provider_keys.is_connected(self.provider_kind) {
-                ""
-            } else {
-                " (disconnected: run /connect)"
-            }
-        )
+            disconnected_suffix,
+        );
+
+        match self.remember_current_model() {
+            Ok(()) => message,
+            Err(err) => format!("{message} (memory save failed: {err})"),
+        }
+    }
+
+    fn remember_current_model(&self) -> Result<()> {
+        self.secret_store
+            .save_setting(SETTING_PROVIDER, self.provider_kind.as_str())?;
+        self.secret_store.save_setting(SETTING_MODEL, &self.model)
     }
 
     pub fn connect_key(&mut self, provider: ProviderKind, api_key: String) -> String {
         if provider == ProviderKind::Ollama {
-            return "Ollama is local and does not use API keys. Use /connect ollama [model]."
-                .to_string();
+            return "Ollama is local and does not use API keys.".to_string();
         }
 
         let save_result = self.secret_store.save_key(provider, &api_key);
@@ -204,12 +214,12 @@ impl Agent {
                     )
                 } else if let Some(err) = report.keychain_error {
                     format!(
-                        "Connected {} and persisted to .env, but keychain save failed: {}",
+                        "Connected {} for this session, but keychain save failed: {}",
                         provider.as_str(),
                         err
                     )
                 } else {
-                    format!("Connected {} (persisted to .env).", provider.as_str())
+                    format!("Connected {} for this session.", provider.as_str())
                 }
             }
             Err(err) => format!(
@@ -243,7 +253,7 @@ impl Agent {
                     )
                 } else if let Some(err) = report.keychain_error {
                     format!(
-                        "Disconnected {} and removed key from .env, but keychain removal failed: {}",
+                        "Disconnected {} for this session, but keychain removal failed: {}",
                         provider.as_str(),
                         err
                     )
@@ -257,39 +267,6 @@ impl Agent {
                 err
             ),
         }
-    }
-
-    pub fn connection_overview(&self) -> String {
-        let mut lines = vec![
-            "Connection status:".to_string(),
-            format_status_line(
-                self.provider_kind,
-                self.provider_keys.is_connected(self.provider_kind),
-                true,
-            ),
-        ];
-
-        for provider in ProviderKind::all() {
-            if *provider == self.provider_kind {
-                continue;
-            }
-
-            lines.push(format_status_line(
-                *provider,
-                self.provider_keys.is_connected(*provider),
-                false,
-            ));
-        }
-
-        lines.push(String::new());
-        lines.push("Usage: /connect <provider> <api_key>".to_string());
-        lines.push("Local models: /connect ollama [model]".to_string());
-        lines.push("Example: /connect openai sk-...".to_string());
-        lines.push(format!(
-            "Persistence backend: {}",
-            self.secret_store.backend_name()
-        ));
-        lines.join("\n")
     }
 
     pub async fn handle_user_input(
@@ -367,33 +344,6 @@ impl Agent {
             SYSTEM_PROMPT,
             self.tools.prompt_skill_section().await
         )
-    }
-}
-
-fn format_status_line(provider: ProviderKind, connected: bool, current: bool) -> String {
-    if provider == ProviderKind::Ollama {
-        if current {
-            return "- ollama: local (active, no API key)".to_string();
-        }
-        return "- ollama: local (no API key)".to_string();
-    }
-
-    let status = if connected {
-        "connected"
-    } else {
-        "disconnected"
-    };
-    let env_var = provider.env_key();
-
-    if current {
-        format!(
-            "- {}: {} (active, key: {})",
-            provider.as_str(),
-            status,
-            env_var
-        )
-    } else {
-        format!("- {}: {} (key: {})", provider.as_str(), status, env_var)
     }
 }
 

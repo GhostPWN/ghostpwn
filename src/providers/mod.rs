@@ -78,13 +78,16 @@ impl Provider for DisconnectedProvider {
         _on_delta: &mut (dyn FnMut(String) + Send),
     ) -> Result<String> {
         let usage = if self.provider == ProviderKind::Copilot {
-            "/connect github".to_string()
+            "open /model and press c on the copilot tab".to_string()
         } else {
-            format!("/connect {} <api_key>", self.provider.as_str())
+            format!(
+                "open /model and press c on the {} tab",
+                self.provider.as_str()
+            )
         };
 
         Err(anyhow!(
-            "No API key connected for {}. Use {}",
+            "No API key connected for {}. {}",
             self.provider.as_str(),
             usage
         ))
