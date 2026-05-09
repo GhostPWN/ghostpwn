@@ -18,6 +18,7 @@ use ratatui::prelude::*;
 use ratatui::widgets::{Block, BorderType, Borders, Clear, Padding, Paragraph, Wrap};
 use tokio::sync::Mutex;
 use tokio::sync::mpsc::{UnboundedReceiver, UnboundedSender, unbounded_channel};
+use unicode_width::UnicodeWidthChar;
 
 use crate::agent::Agent;
 use crate::config::ProviderKind;
@@ -923,10 +924,7 @@ fn render_transcript(frame: &mut Frame, area: Rect, state: &UiState) {
     let max_scroll = line_count.saturating_sub(visible);
     let scroll = state.scroll_offset.min(max_scroll);
 
-    let paragraph = Paragraph::new(lines)
-        .block(block)
-        .scroll((scroll, 0))
-        .wrap(Wrap { trim: false });
+    let paragraph = Paragraph::new(lines).block(block).scroll((scroll, 0));
     frame.render_widget(paragraph, area);
 
     if line_count > visible {
@@ -1185,7 +1183,8 @@ fn wrap_line(line: Line<'static>, width: usize) -> Vec<Line<'static>> {
     for span in line.spans {
         let style = span.style;
         for ch in span.content.chars() {
-            if col >= width {
+            let char_width = ch.width().unwrap_or(0);
+            if col > 0 && col.saturating_add(char_width) > width {
                 push_row(&mut rows, &mut current, &mut pending, pending_style);
                 col = 0;
             }
@@ -1198,7 +1197,7 @@ fn wrap_line(line: Line<'static>, width: usize) -> Vec<Line<'static>> {
             }
 
             pending.push(ch);
-            col += 1;
+            col += char_width;
         }
     }
 
@@ -1444,11 +1443,11 @@ fn transcript_line_count(state: &UiState, width: u16) -> u16 {
 }
 
 fn message_visible_lines(total_height: u16) -> u16 {
-    total_height.saturating_sub(3 + 1 + 3 + 3)
+    total_height.saturating_sub(1 + 3)
 }
 
 fn transcript_content_width(total_width: u16) -> u16 {
-    total_width.saturating_sub(6).max(1)
+    total_width.saturating_sub(4).max(1)
 }
 
 fn max_scroll(line_count: u16, visible_lines: u16) -> u16 {
