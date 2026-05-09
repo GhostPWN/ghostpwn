@@ -1,11 +1,11 @@
 <p align="center">
-  <img src="logo.svg" alt="GhostPwn" width="200">
+  <img src="LOGO.svg" alt="GhostPWN LOGO" width="200">
 </p>
 
 <h1 align="center">GhostPWN</h1>
 
 <p align="center">
-  <strong>Autonomous Web Penetration Testing Agent</strong><br>
+  <strong>Autonomous Penetration Testing Agent</strong><br>
   <em>Multi-provider LLM support · Human-in-the-loop · Lightweight architecture</em>
 </p>
 
@@ -26,9 +26,8 @@
 The current code base focuses on:
 - provider support for OpenAI, Anthropic, Google, GitHub Copilot, and local Ollama
 - in-session provider/model switching
-- keychain memory for the latest selected provider/model
 - local tools for reading files, listing directories, searching, and running commands
-- persistent API key storage via OS keychain
+- persistent API key storage via `.env` and OS keychain fallback
 - streaming assistant output with auto-scroll and transcript controls
 
 ---
@@ -40,16 +39,15 @@ The current code base focuses on:
 - Native streaming support across provider adapters
 - GitHub Copilot OAuth with automatic model discovery
 - Keyboard model selector via `/model`
-- Latest selected provider/model restored from keychain on startup
 - JSON-first agent loop with tool-calling
 - Local tools: `listSkills`, `searchSkills`, `readSkill`, `readFile`, `listDirectory`, `searchFiles`, `grep`, `runCommand`, `fileInfo`, `generateDiff`, `writeFile`, `editFile`, `multiEdit`, `applyPatch`, `todoRead`, `todoWrite`, `webFetch`, `webSearch`
-- Local skills loaded from `src/skills/*/SKILL.md` with automatic skill search/read guidance in the system prompt
+- Local skills loaded from `src/skills/*/SKILL.md` with automatic skill search/read guidance in theë system prompt
 - Claude Code, Codex, and OpenCode-compatible tool aliases for common read/write/edit/shell/search operations
 - Diff rendering for fenced `diff` blocks in assistant output
 - Workspace boundary enforcement for filesystem tools
 - Shell commands run from the configured workspace but are not an OS-level sandbox
-- Persistent secrets via OS keychain
-- Transcript scroll controls: mouse wheel + `Up`, `Down`, `PgUp`, `PgDn`, `Home`, `End`
+- Persistent secrets via `.env` and OS keychain
+- Transcript scroll controls: moëuse wheel + `Up`, `Down`, `PgUp`, `PgDn`, `Home`, `End`
 
 ## Setup
 
@@ -60,10 +58,13 @@ cargo run
 ## Commands
 
 - `/help` shows all commands
-- `/model` opens the keyboard model selector and provider auth panel
-- In `/model`: `Left`/`Right` provider, `Up`/`Down` model, `Enter` switch, `c` connect, `d` disconnect, `Esc` close
-- In `/model`: paste Anthropic/OpenAI/Google API keys with `c`; start GitHub Copilot device authorization with `c` on the Copilot tab
+- `/model` opens the keyboard model selector (`Left`/`Right` provider, `Up`/`Down` model, `Enter` switch, `Esc` close)
+- `/connect` shows provider connection status
+- `/connect <provider> <api_key>` connects and persists key to `.env` and keychain when available
+- `/connect github` or `/copilot` starts GitHub Copilot device authorization
 - GitHub Copilot model list is fetched automatically after successful device authorization
+- `/connect ollama [model]` switches to local Ollama without an API key
+- `/disconnect <provider>` disconnects and removes key from `.env` and keychain when available
 - `/clear` resets in-memory conversation
 - `/quit` or `/exit` exits the TUI
 - `Ctrl+C` exits immediately
@@ -71,14 +72,16 @@ cargo run
 
 ## Configuration
 
+- `GHOSTPWN_PROVIDER`: `anthropic` | `openai` | `google` | `copilot` | `ollama`
+- `GHOSTPWN_MODEL`: optional model override for the selected provider
 - Provider key env vars:
   - `ANTHROPIC_API_KEY`
   - `OPENAI_API_KEY`
   - `GOOGLE_GENERATIVE_AI_API_KEY`
   - `GITHUB_COPILOT_TOKEN`
 - `GHOSTPWN_WORKSPACE`: optional root path used as the filesystem-tool boundary and command working directory
-- API keys are loaded from environment variables first, then from OS keychain entries under service `ghostpwn-rust`
-- Latest provider/model selection is remembered in the OS keychain and restored on startup
+- `GHOSTPWN_ENV_FILE`: optional `.env` path override for secret persistence
+- API keys are loaded from environment first, then from `.env`, and finally from OS keychain entries under service `ghostpwn-rust`
 - Ollama uses `http://localhost:11434` and does not require an API key
 
 ## Architecture
@@ -90,7 +93,7 @@ cargo run
 - `src/tools/mod.rs`: built-in local tool implementations with workspace safety checks
 - `src/ui/mod.rs`: `ratatui` terminal app and command handling
 - `src/config.rs`: environment-based configuration and provider defaults
-- `src/secrets.rs`: keychain persistence helpers
+- `src/secrets.rs`: `.env` and keychain persistence helpers
 - `src/models.rs`: shared data models and events
 
 ## Notes
@@ -101,8 +104,8 @@ cargo run
 - Filesystem tools reject paths outside the configured workspace root.
 - `runCommand` uses the configured workspace as its current directory and enforces a bounded timeout; do not treat it as a security sandbox.
 - `webSearch` uses DuckDuckGo HTML results and may fail if the page structure changes or rate limits requests.
-- Provider keys can come from environment variables or the OS keychain.
-- GitHub Copilot is supported through `/model`.
+- Provider keys can come from environment variables, `.env`, or the OS keychain.
+- GitHub Copilot is supported through `/connect github` or `/copilot`.
 
 ---
 
