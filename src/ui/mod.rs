@@ -35,6 +35,7 @@ pub(super) mod palette {
     pub const EMBER: Color = Color::Rgb(225, 175, 255);
     pub const BLOOD: Color = Color::Rgb(255, 110, 180);
     pub const STEEL: Color = Color::Rgb(70, 55, 95);
+    pub const FOG: Color = Color::Rgb(60, 58, 70);
 }
 
 const SPINNER: &[&str] = &["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"];
@@ -1104,20 +1105,21 @@ fn push_message_lines(
     let (bullet, bullet_color) = match role {
         UiRole::User => ("›", palette::ASH),
         UiRole::Assistant => ("●", palette::PHOSPHOR),
-        UiRole::Tool => ("●", palette::PLASMA),
+        UiRole::Tool => ("●", palette::FOG),
         UiRole::Error => ("●", palette::BLOOD),
     };
 
     let body = match role {
         UiRole::Assistant => styled_assistant_lines(content),
-        UiRole::Tool => tool_call_lines(content),
         _ => styled_content_lines(content, role),
     };
 
-    let bullet_span = Span::styled(
-        format!("{bullet} "),
-        Style::default().fg(bullet_color).bold(),
-    );
+    let bullet_style = if role == UiRole::Tool {
+        Style::default().fg(bullet_color)
+    } else {
+        Style::default().fg(bullet_color).bold()
+    };
+    let bullet_span = Span::styled(format!("{bullet} "), bullet_style);
 
     let mut iter = body.into_iter();
     if let Some(first) = iter.next() {
@@ -1211,39 +1213,15 @@ fn wrap_line(line: Line<'static>, width: usize) -> Vec<Line<'static>> {
     rows
 }
 
-fn tool_call_lines(content: &str) -> Vec<Line<'static>> {
-    if content.is_empty() {
-        return vec![Line::from("")];
-    }
-    let mut out = Vec::<Line<'static>>::new();
-    let mut first = true;
-    for line in content.lines() {
-        if first {
-            out.push(Line::styled(
-                line.to_string(),
-                Style::default().fg(palette::BONE).bold(),
-            ));
-            first = false;
-        } else {
-            let mut spans = vec![
-                Span::styled("⎿ ", Style::default().fg(palette::STEEL)),
-                Span::styled(line.to_string(), Style::default().fg(palette::ASH)),
-            ];
-            // keep spans length consistent
-            spans.shrink_to_fit();
-            out.push(Line::from(spans));
-        }
-    }
-    out
-}
-
 fn styled_content_lines(content: &str, role: UiRole) -> Vec<Line<'static>> {
     let color = match role {
         UiRole::User => palette::BONE,
         UiRole::Assistant => palette::BONE,
-        UiRole::Tool => palette::BONE,
+        UiRole::Tool => palette::FOG,
         UiRole::Error => palette::BLOOD,
     };
+
+    let style = Style::default().fg(color);
 
     if content.is_empty() {
         return vec![Line::from("")];
@@ -1251,7 +1229,7 @@ fn styled_content_lines(content: &str, role: UiRole) -> Vec<Line<'static>> {
 
     content
         .lines()
-        .map(|line| Line::styled(line.to_string(), Style::default().fg(color)))
+        .map(|line| Line::styled(line.to_string(), style))
         .collect()
 }
 
