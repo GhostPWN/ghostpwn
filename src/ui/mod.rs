@@ -1381,56 +1381,84 @@ fn wrap_line(line: Line<'static>, width: usize) -> Vec<Line<'static>> {
         return vec![line];
     }
 
-    let mut rows = Vec::<Line<'static>>::new();
-    let mut current = Vec::<Span<'static>>::new();
-    let mut pending = String::new();
-    let mut pending_style = Style::default();
-    let mut col = 0usize;
+    let chars: Vec<(char, Style)> = line
+        .spans
+        .iter()
+        .flat_map(|span| {
+            let style = span.style;
+            span.content.chars().map(move |ch| (ch, style))
+        })
+        .collect();
 
-    let flush_pending =
-        |current: &mut Vec<Span<'static>>, pending: &mut String, pending_style: Style| {
-            if !pending.is_empty() {
-                current.push(Span::styled(std::mem::take(pending), pending_style));
-            }
-        };
-
-    let push_row = |rows: &mut Vec<Line<'static>>,
-                    current: &mut Vec<Span<'static>>,
-                    pending: &mut String,
-                    pending_style: Style| {
-        flush_pending(current, pending, pending_style);
-        rows.push(Line::from(std::mem::take(current)));
-    };
-
-    for span in line.spans {
-        let style = span.style;
-        for ch in span.content.chars() {
-            let char_width = ch.width().unwrap_or(0);
-            if col > 0 && col.saturating_add(char_width) > width {
-                push_row(&mut rows, &mut current, &mut pending, pending_style);
-                col = 0;
-            }
-
-            if pending.is_empty() {
-                pending_style = style;
-            } else if pending_style != style {
-                flush_pending(&mut current, &mut pending, pending_style);
-                pending_style = style;
-            }
-
-            pending.push(ch);
-            col += char_width;
-        }
+    if chars.is_empty() {
+        return vec![Line::from("")];
     }
 
-    flush_pending(&mut current, &mut pending, pending_style);
-    if current.is_empty() && rows.is_empty() {
+    let mut rows = Vec::<Line<'static>>::new();
+    let mut start = 0usize;
+
+    while start < chars.len() {
+        let mut col = 0usize;
+        let mut last_ws: Option<usize> = None;
+        let mut end = start;
+
+        while end < chars.len() {
+            let (ch, _) = chars[end];
+            let cw = ch.width().unwrap_or(0);
+
+            if col > 0 && col.saturating_add(cw) > width {
+                break;
+            }
+
+            if ch.is_whitespace() {
+                last_ws = Some(end);
+            }
+
+            col += cw;
+            end += 1;
+        }
+
+        let (line_end, next_start) = if end == chars.len() {
+            (end, end)
+        } else if let Some(ws) = last_ws {
+            (ws, ws + 1)
+        } else {
+            (end, end)
+        };
+
+        rows.push(build_styled_line(&chars[start..line_end]));
+        start = next_start;
+    }
+
+    if rows.is_empty() {
         rows.push(Line::from(""));
-    } else if !current.is_empty() {
-        rows.push(Line::from(current));
     }
 
     rows
+}
+
+fn build_styled_line(chars: &[(char, Style)]) -> Line<'static> {
+    let mut spans = Vec::<Span<'static>>::new();
+    let mut buf = String::new();
+    let mut cur_style = Style::default();
+    let mut started = false;
+
+    for (ch, style) in chars {
+        if !started {
+            cur_style = *style;
+            started = true;
+        } else if *style != cur_style {
+            spans.push(Span::styled(std::mem::take(&mut buf), cur_style));
+            cur_style = *style;
+        }
+        buf.push(*ch);
+    }
+
+    if !buf.is_empty() {
+        spans.push(Span::styled(buf, cur_style));
+    }
+
+    Line::from(spans)
 }
 
 fn styled_content_lines(content: &str, role: UiRole) -> Vec<Line<'static>> {
