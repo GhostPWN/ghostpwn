@@ -158,11 +158,15 @@ impl Config {
 
         let provider_keys = ProviderKeys::from_env_and_store(&secret_store);
 
+        let env_provider =
+            read_env("GHOSTPWN_PROVIDER").and_then(|value| ProviderKind::parse(&value));
+        let env_model = read_env("GHOSTPWN_MODEL");
         let saved_provider = secret_store
             .load_setting(SETTING_PROVIDER)
             .and_then(|value| ProviderKind::parse(&value));
         let saved_model = secret_store.load_setting(SETTING_MODEL);
-        let (provider, model) = resolve_provider_and_model(saved_provider, saved_model);
+        let (provider, model) =
+            resolve_provider_and_model(env_provider.or(saved_provider), env_model.or(saved_model));
 
         let workspace_root = env::var("GHOSTPWN_WORKSPACE")
             .ok()
@@ -223,5 +227,14 @@ mod tests {
 
         assert_eq!(provider, ProviderKind::Google);
         assert_eq!(model, ProviderKind::Google.default_model());
+    }
+
+    #[test]
+    fn provided_provider_and_model_take_precedence() {
+        let (provider, model) =
+            resolve_provider_and_model(Some(ProviderKind::OpenAi), Some("gpt-5-mini".to_string()));
+
+        assert_eq!(provider, ProviderKind::OpenAi);
+        assert_eq!(model, "gpt-5-mini");
     }
 }

@@ -120,6 +120,11 @@ impl Agent {
         self.provider_kind
     }
 
+    #[cfg(test)]
+    fn current_model(&self) -> &str {
+        &self.model
+    }
+
     pub fn provider_keys_snapshot(&self) -> ProviderKeys {
         self.provider_keys.clone()
     }
@@ -197,37 +202,72 @@ impl Agent {
 
         let save_result = self.secret_store.save_key(provider, &api_key);
 
-        self.provider_keys.set(provider, api_key);
+        self.activate_connected_provider(provider, api_key);
 
-        if self.provider_kind == provider {
-            self.provider =
-                build_provider(self.provider_kind, self.model.clone(), &self.provider_keys);
-        }
-
-        match save_result {
+        let mut persisted = false;
+        let mut message = match save_result {
             Ok(report) => {
-                if report.keychain_saved {
-                    format!(
+                if report.persisted() {
+                    persisted = true;
+                    let mut message = format!(
                         "Connected {} (persisted to {}).",
                         provider.as_str(),
-                        self.secret_store.backend_name()
-                    )
+                        report.backend_name()
+                    );
+                    if !report.keychain_saved
+                        && let Some(err) = report.keychain_error
+                    {
+                        message.push_str(&format!(" OS keychain save failed: {}.", err));
+                    }
+                    message
                 } else if let Some(err) = report.keychain_error {
                     format!(
-                        "Connected {} for this session, but keychain save failed: {}",
+                        "Connected {} for this session only; it will disconnect after restart because keychain save failed: {}",
                         provider.as_str(),
                         err
                     )
                 } else {
-                    format!("Connected {} for this session.", provider.as_str())
+                    format!("Connected {} for this session only.", provider.as_str())
                 }
             }
             Err(err) => format!(
-                "Connected {} for this session, but persistence failed: {}",
+                "Connected {} for this session only; it will disconnect after restart because persistence failed: {}",
                 provider.as_str(),
                 err
             ),
+        };
+
+        message.push('\n');
+        if persisted {
+            message.push_str(&match self.remember_current_model() {
+                Ok(()) => format!(
+                    "Switched to {} / {} and remembered it.",
+                    self.provider_kind.as_str(),
+                    self.model
+                ),
+                Err(err) => format!(
+                    "Switched to {} / {}, but latest connection save failed: {}",
+                    self.provider_kind.as_str(),
+                    self.model,
+                    err
+                ),
+            });
+        } else {
+            message.push_str(&format!(
+                "Switched to {} / {} for this session; latest connection was not changed.",
+                self.provider_kind.as_str(),
+                self.model
+            ));
         }
+
+        message
+    }
+
+    fn activate_connected_provider(&mut self, provider: ProviderKind, api_key: String) {
+        self.provider_keys.set(provider, api_key);
+        self.provider_kind = provider;
+        self.model = provider.default_model().to_string();
+        self.provider = build_provider(self.provider_kind, self.model.clone(), &self.provider_keys);
     }
 
     pub fn disconnect_key(&mut self, provider: ProviderKind) -> String {
@@ -245,11 +285,11 @@ impl Agent {
 
         match delete_result {
             Ok(report) => {
-                if report.keychain_saved {
+                if report.keychain_saved || report.file_saved {
                     format!(
                         "Disconnected {} and removed key from {}.",
                         provider.as_str(),
-                        self.secret_store.backend_name()
+                        report.backend_name()
                     )
                 } else if let Some(err) = report.keychain_error {
                     format!(
@@ -498,9 +538,27 @@ fn extract_partial_assistant_value(raw: &str) -> Option<String> {
 
 #[cfg(test)]
 mod tests {
-    use super::{AssistantStreamExtractor, extract_partial_assistant_value, parse_envelope};
+    use crate::config::{ProviderKeys, ProviderKind};
+    use crate::secrets::SecretStore;
+    use crate::tools::ToolRuntime;
 
-    use super::normalize_model_name;
+    use super::{
+        Agent, AssistantStreamExtractor, extract_partial_assistant_value, normalize_model_name,
+        parse_envelope,
+    };
+
+    fn test_agent(provider: ProviderKind) -> Agent {
+        let workspace = tempfile::tempdir().expect("temp workspace");
+        let tools = ToolRuntime::new(workspace.path().to_path_buf()).expect("tool runtime");
+
+        Agent::new(
+            provider,
+            provider.default_model().to_string(),
+            ProviderKeys::default(),
+            SecretStore::new(),
+            tools,
+        )
+    }
 
     #[test]
     fn parse_envelope_reads_json_block() {
@@ -535,5 +593,39 @@ mod tests {
             "gemini-2.5-pro"
         );
         assert_eq!(normalize_model_name("gpt-4o"), "gpt-4o");
+    }
+
+    #[test]
+    fn connected_provider_becomes_active_with_default_model() {
+        let mut agent = test_agent(ProviderKind::Google);
+
+        agent.activate_connected_provider(ProviderKind::OpenAi, "sk-test-token".to_string());
+
+        assert_eq!(agent.current_provider(), ProviderKind::OpenAi);
+        assert_eq!(agent.current_model(), ProviderKind::OpenAi.default_model());
+        assert!(
+            agent
+                .provider_keys_snapshot()
+                .is_connected(ProviderKind::OpenAi)
+        );
+    }
+
+    #[test]
+    fn connected_copilot_becomes_active_with_default_model() {
+        let mut agent = test_agent(ProviderKind::Google);
+
+        agent.activate_connected_provider(ProviderKind::Copilot, "ghu-test-token".to_string());
+
+        assert_eq!(agent.current_provider(), ProviderKind::Copilot);
+        assert_eq!(agent.current_model(), ProviderKind::Copilot.default_model());
+        assert!(
+            agent
+                .provider_keys_snapshot()
+                .is_connected(ProviderKind::Copilot)
+        );
+        assert_eq!(
+            agent.provider_name(),
+            format!("copilot / {}", ProviderKind::Copilot.default_model())
+        );
     }
 }

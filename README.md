@@ -58,13 +58,11 @@ cargo run
 ## Commands
 
 - `/help` shows all commands
-- `/model` opens the keyboard model selector (`Left`/`Right` provider, `Up`/`Down` model, `Enter` switch, `Esc` close)
-- `/connect` shows provider connection status
-- `/connect <provider> <api_key>` connects and persists key to `.env` and keychain when available
-- `/connect github` or `/copilot` starts GitHub Copilot device authorization
-- GitHub Copilot model list is fetched automatically after successful device authorization
-- `/connect ollama [model]` switches to local Ollama without an API key
-- `/disconnect <provider>` disconnects and removes key from `.env` and keychain when available
+- `/model` opens the keyboard model selector (`Left`/`Right` provider, `Up`/`Down` model, `Enter` switch, `c` connect, `d` disconnect, `Esc` close)
+- Connecting a provider from `/model` makes it active immediately and remembers the provider/model for the next launch
+- GitHub Copilot uses device authorization from the Copilot tab and fetches its model list after successful authorization
+- Non-Copilot cloud providers accept pasted API keys from their `/model` tab
+- Disconnecting a provider from `/model` removes its key from the OS keychain when available
 - `/clear` resets in-memory conversation
 - `/quit` or `/exit` exits the TUI
 - `Ctrl+C` exits immediately
@@ -72,16 +70,17 @@ cargo run
 
 ## Configuration
 
-- `GHOSTPWN_PROVIDER`: `anthropic` | `openai` | `google` | `copilot` | `ollama`
-- `GHOSTPWN_MODEL`: optional model override for the selected provider
+- `GHOSTPWN_PROVIDER`: optional startup provider override (`anthropic` | `openai` | `google` | `copilot` | `ollama`)
+- `GHOSTPWN_MODEL`: optional startup model override for the selected provider
 - Provider key env vars:
   - `ANTHROPIC_API_KEY`
   - `OPENAI_API_KEY`
   - `GOOGLE_GENERATIVE_AI_API_KEY`
   - `GITHUB_COPILOT_TOKEN`
 - `GHOSTPWN_WORKSPACE`: optional root path used as the filesystem-tool boundary and command working directory
-- `GHOSTPWN_ENV_FILE`: optional `.env` path override for secret persistence
-- API keys are loaded from environment first, then from `.env`, and finally from OS keychain entries under service `ghostpwn-rust`
+- `GHOSTPWN_STATE_FILE`: optional local state-file override
+- API keys are loaded from environment first, then OS keychain entries under service `ghostpwn-rust`, then the local state-file fallback
+- The latest provider/model selection is stored as `latest_provider` and `latest_model` in the OS keychain and local state file
 - Ollama uses `http://localhost:11434` and does not require an API key
 
 ## Architecture
@@ -104,8 +103,8 @@ cargo run
 - Filesystem tools reject paths outside the configured workspace root.
 - `runCommand` uses the configured workspace as its current directory and enforces a bounded timeout; do not treat it as a security sandbox.
 - `webSearch` uses DuckDuckGo HTML results and may fail if the page structure changes or rate limits requests.
-- Provider keys can come from environment variables, `.env`, or the OS keychain.
-- GitHub Copilot is supported through `/connect github` or `/copilot`.
+- Provider keys can come from environment variables, the OS keychain, or the local state-file fallback.
+- GitHub Copilot is supported through the Copilot tab in `/model`.
 
 ---
 

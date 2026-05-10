@@ -1710,7 +1710,6 @@ async fn copilot_device_flow(
             copilot::PollResult::Success(refresh_token) => {
                 let mut locked = agent.lock().await;
                 let msg = locked.connect_key(ProviderKind::Copilot, refresh_token);
-                let switch_msg = locked.switch_model(ProviderKind::Copilot, None);
                 let provider_name = locked.provider_name();
                 let model_msg = match locked.fetch_provider_models(ProviderKind::Copilot).await {
                     Ok(models) if !models.is_empty() => {
@@ -1753,7 +1752,7 @@ async fn copilot_device_flow(
                 let _ = events.send(AgentEvent::ProviderName(provider_name));
                 let _ = events.send(AgentEvent::ProviderStatus {
                     provider: ProviderKind::Copilot,
-                    message: format!("{}\n{}\n{}", msg, switch_msg, model_msg),
+                    message: format!("{}\n{}", msg, model_msg),
                     error: false,
                 });
                 return Ok(());
