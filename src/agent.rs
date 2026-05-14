@@ -3,7 +3,7 @@ use tokio::sync::mpsc::UnboundedSender;
 
 use crate::config::{ProviderKeys, ProviderKind};
 use crate::models::{AgentEvent, ConversationMessage, ModelEnvelope, ToolCall};
-use crate::providers::{Provider, build_provider};
+use crate::providers::{Provider, build_provider_with_secret_store};
 use crate::secrets::{SETTING_MODEL, SETTING_PROVIDER, SecretStore};
 use crate::tools::ToolRuntime;
 
@@ -99,7 +99,12 @@ impl Agent {
         secret_store: SecretStore,
         tools: ToolRuntime,
     ) -> Self {
-        let provider = build_provider(provider_kind, model.clone(), &provider_keys);
+        let provider = build_provider_with_secret_store(
+            provider_kind,
+            model.clone(),
+            &provider_keys,
+            secret_store.clone(),
+        );
 
         Self {
             provider_kind,
@@ -142,10 +147,10 @@ impl Agent {
         provider_keys: &ProviderKeys,
     ) -> Result<Vec<String>> {
         if !provider_keys.is_connected(provider) {
-            let usage = if provider == ProviderKind::Copilot {
-                "press c in /model to start GitHub OAuth"
-            } else {
-                "press c in /model to paste an API key"
+            let usage = match provider {
+                ProviderKind::Copilot => "press c in /model to start GitHub OAuth",
+                ProviderKind::Codex => "press c in /model to start Codex OAuth",
+                _ => "press c in /model to paste an API key",
             };
             return Err(anyhow::anyhow!(
                 "{} is disconnected. {}.",
@@ -154,7 +159,12 @@ impl Agent {
             ));
         }
 
-        let temp_provider = build_provider(provider, "temp".to_string(), provider_keys);
+        let temp_provider = build_provider_with_secret_store(
+            provider,
+            "temp".to_string(),
+            provider_keys,
+            SecretStore::new(),
+        );
         let mut models = temp_provider
             .list_models()
             .await?
@@ -170,7 +180,12 @@ impl Agent {
     pub fn switch_model(&mut self, provider: ProviderKind, model: Option<String>) -> String {
         self.provider_kind = provider;
         self.model = model.unwrap_or_else(|| provider.default_model().to_string());
-        self.provider = build_provider(self.provider_kind, self.model.clone(), &self.provider_keys);
+        self.provider = build_provider_with_secret_store(
+            self.provider_kind,
+            self.model.clone(),
+            &self.provider_keys,
+            self.secret_store.clone(),
+        );
         let disconnected_suffix = if self.provider_keys.is_connected(self.provider_kind) {
             ""
         } else {
@@ -267,7 +282,12 @@ impl Agent {
         self.provider_keys.set(provider, api_key);
         self.provider_kind = provider;
         self.model = provider.default_model().to_string();
-        self.provider = build_provider(self.provider_kind, self.model.clone(), &self.provider_keys);
+        self.provider = build_provider_with_secret_store(
+            self.provider_kind,
+            self.model.clone(),
+            &self.provider_keys,
+            self.secret_store.clone(),
+        );
     }
 
     pub fn disconnect_key(&mut self, provider: ProviderKind) -> String {
@@ -279,8 +299,12 @@ impl Agent {
         self.provider_keys.clear(provider);
 
         if self.provider_kind == provider {
-            self.provider =
-                build_provider(self.provider_kind, self.model.clone(), &self.provider_keys);
+            self.provider = build_provider_with_secret_store(
+                self.provider_kind,
+                self.model.clone(),
+                &self.provider_keys,
+                self.secret_store.clone(),
+            );
         }
 
         match delete_result {
@@ -626,6 +650,29 @@ mod tests {
         assert_eq!(
             agent.provider_name(),
             format!("copilot / {}", ProviderKind::Copilot.default_model())
+        );
+    }
+
+    #[test]
+    fn connected_codex_becomes_active_with_default_model() {
+        let mut agent = test_agent(ProviderKind::Google);
+
+        agent.activate_connected_provider(
+            ProviderKind::Codex,
+            "{\"refresh_token\":\"refresh\",\"access_token\":\"access\",\"expires_at\":9999999999}"
+                .to_string(),
+        );
+
+        assert_eq!(agent.current_provider(), ProviderKind::Codex);
+        assert_eq!(agent.current_model(), ProviderKind::Codex.default_model());
+        assert!(
+            agent
+                .provider_keys_snapshot()
+                .is_connected(ProviderKind::Codex)
+        );
+        assert_eq!(
+            agent.provider_name(),
+            format!("codex / {}", ProviderKind::Codex.default_model())
         );
     }
 }
