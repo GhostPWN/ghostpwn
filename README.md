@@ -61,6 +61,7 @@ cargo run
 - `/model` opens the keyboard model selector (`Left`/`Right` provider, `Up`/`Down` model, `Enter` switch, `c` connect, `d` disconnect, `Esc` close)
 - Connecting a provider from `/model` makes it active immediately and remembers the provider/model for the next launch
 - GitHub Copilot uses device authorization from the Copilot tab and fetches its model list after successful authorization
+- Codex uses ChatGPT/Codex OAuth from the Codex tab, opening a browser first and falling back to device authorization when browser login is unavailable
 - Non-Copilot cloud providers accept pasted API keys from their `/model` tab
 - Disconnecting a provider from `/model` removes its key from the OS keychain when available
 - `/clear` resets in-memory conversation
@@ -70,13 +71,14 @@ cargo run
 
 ## Configuration
 
-- `GHOSTPWN_PROVIDER`: optional startup provider override (`anthropic` | `openai` | `google` | `copilot` | `ollama`)
+- `GHOSTPWN_PROVIDER`: optional startup provider override (`anthropic` | `openai` | `google` | `copilot` | `codex` | `ollama`)
 - `GHOSTPWN_MODEL`: optional startup model override for the selected provider
 - Provider key env vars:
   - `ANTHROPIC_API_KEY`
   - `OPENAI_API_KEY`
   - `GOOGLE_GENERATIVE_AI_API_KEY`
   - `GITHUB_COPILOT_TOKEN`
+  - `CODEX_OAUTH_TOKEN` (serialized Codex OAuth credentials; normally managed by `/model`)
 - `GHOSTPWN_WORKSPACE`: optional root path used as the filesystem-tool boundary and command working directory
 - `GHOSTPWN_STATE_FILE`: optional local state-file override
 - API keys are loaded from environment first, then OS keychain entries under service `ghostpwn-rust`, then the local state-file fallback

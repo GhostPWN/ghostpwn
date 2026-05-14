@@ -11,6 +11,7 @@ pub enum ProviderKind {
     OpenAi,
     Google,
     Copilot,
+    Codex,
     Ollama,
 }
 
@@ -21,6 +22,7 @@ impl ProviderKind {
             "openai" => Some(Self::OpenAi),
             "google" => Some(Self::Google),
             "copilot" | "github" => Some(Self::Copilot),
+            "codex" | "openai-codex" => Some(Self::Codex),
             "ollama" | "local" => Some(Self::Ollama),
             _ => None,
         }
@@ -32,6 +34,7 @@ impl ProviderKind {
             Self::OpenAi => "openai",
             Self::Google => "google",
             Self::Copilot => "copilot",
+            Self::Codex => "codex",
             Self::Ollama => "ollama",
         }
     }
@@ -42,6 +45,7 @@ impl ProviderKind {
             Self::OpenAi => "OPENAI_API_KEY",
             Self::Google => "GOOGLE_GENERATIVE_AI_API_KEY",
             Self::Copilot => "GITHUB_COPILOT_TOKEN",
+            Self::Codex => "CODEX_OAUTH_TOKEN",
             Self::Ollama => "OLLAMA_HOST",
         }
     }
@@ -52,6 +56,7 @@ impl ProviderKind {
             Self::OpenAi => "gpt-4.1-mini",
             Self::Google => "gemini-2.5-flash",
             Self::Copilot => "gpt-4o",
+            Self::Codex => "gpt-5.3-codex",
             Self::Ollama => "llama3",
         }
     }
@@ -62,6 +67,7 @@ impl ProviderKind {
             Self::OpenAi,
             Self::Google,
             Self::Copilot,
+            Self::Codex,
             Self::Ollama,
         ]
     }
@@ -73,6 +79,7 @@ pub struct ProviderKeys {
     openai: Option<String>,
     google: Option<String>,
     copilot: Option<String>,
+    codex: Option<String>,
     #[allow(dead_code)]
     ollama: Option<String>,
 }
@@ -84,6 +91,7 @@ impl ProviderKeys {
             openai: read_env("OPENAI_API_KEY"),
             google: read_env("GOOGLE_GENERATIVE_AI_API_KEY"),
             copilot: read_env("GITHUB_COPILOT_TOKEN"),
+            codex: read_env("CODEX_OAUTH_TOKEN"),
             ollama: None,
         };
 
@@ -108,6 +116,7 @@ impl ProviderKeys {
             ProviderKind::OpenAi => self.openai.as_deref(),
             ProviderKind::Google => self.google.as_deref(),
             ProviderKind::Copilot => self.copilot.as_deref(),
+            ProviderKind::Codex => self.codex.as_deref(),
             ProviderKind::Ollama => None,
         }
     }
@@ -118,6 +127,7 @@ impl ProviderKeys {
             ProviderKind::OpenAi => &mut self.openai,
             ProviderKind::Google => &mut self.google,
             ProviderKind::Copilot => &mut self.copilot,
+            ProviderKind::Codex => &mut self.codex,
             ProviderKind::Ollama => &mut self.ollama,
         };
 
@@ -130,6 +140,7 @@ impl ProviderKeys {
             ProviderKind::OpenAi => &mut self.openai,
             ProviderKind::Google => &mut self.google,
             ProviderKind::Copilot => &mut self.copilot,
+            ProviderKind::Codex => &mut self.codex,
             ProviderKind::Ollama => &mut self.ollama,
         };
 
@@ -236,5 +247,17 @@ mod tests {
 
         assert_eq!(provider, ProviderKind::OpenAi);
         assert_eq!(model, "gpt-5-mini");
+    }
+
+    #[test]
+    fn codex_provider_is_parsed_and_has_separate_secret_key() {
+        assert_eq!(ProviderKind::parse("codex"), Some(ProviderKind::Codex));
+        assert_eq!(
+            ProviderKind::parse("openai-codex"),
+            Some(ProviderKind::Codex)
+        );
+        assert_eq!(ProviderKind::Codex.as_str(), "codex");
+        assert_eq!(ProviderKind::Codex.env_key(), "CODEX_OAUTH_TOKEN");
+        assert_eq!(ProviderKind::Codex.default_model(), "gpt-5.3-codex");
     }
 }

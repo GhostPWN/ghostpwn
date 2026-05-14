@@ -24,7 +24,7 @@ use unicode_width::UnicodeWidthChar;
 use crate::agent::Agent;
 use crate::config::ProviderKind;
 use crate::models::AgentEvent;
-use crate::providers::copilot;
+use crate::providers::{codex, copilot};
 
 pub(super) mod palette {
     use ratatui::style::Color;
@@ -552,6 +552,7 @@ async fn handle_selector_key(
             let provider = selector.providers[selector.provider_index];
             match provider {
                 ProviderKind::Copilot => start_selector_copilot_auth(state, agent, event_tx),
+                ProviderKind::Codex => start_selector_codex_auth(state, agent, event_tx),
                 ProviderKind::Ollama => {
                     selector.status = Some(ModelSelectorStatus {
                         provider,
@@ -772,6 +773,41 @@ fn start_selector_copilot_auth(
     });
 }
 
+fn start_selector_codex_auth(
+    state: &mut UiState,
+    agent: &Arc<Mutex<Agent>>,
+    event_tx: &UnboundedSender<AgentEvent>,
+) {
+    if let Some(selector) = state.selector.as_mut() {
+        selector.status = Some(ModelSelectorStatus {
+            provider: ProviderKind::Codex,
+            message: "Starting Codex OAuth...".to_string(),
+            error: false,
+        });
+        if let Some(provider_state) = selector.provider_states.get_mut(&ProviderKind::Codex) {
+            provider_state.loading = true;
+            provider_state.error = None;
+        }
+    }
+
+    let tx = event_tx.clone();
+    let handle = Arc::clone(agent);
+    tokio::spawn(async move {
+        if let Err(err) = codex_oauth_flow(tx.clone(), handle).await {
+            let _ = tx.send(AgentEvent::ProviderStatus {
+                provider: ProviderKind::Codex,
+                message: format!("Codex authorization failed: {}", err),
+                error: true,
+            });
+            let _ = tx.send(AgentEvent::ModelList {
+                provider: ProviderKind::Codex,
+                models: Vec::new(),
+                error: Some("Codex authorization failed.".to_string()),
+            });
+        }
+    });
+}
+
 fn fetch_initial_selector_models(
     state: &mut UiState,
     agent: &Arc<Mutex<Agent>>,
@@ -782,6 +818,7 @@ fn fetch_initial_selector_models(
         ProviderKind::Anthropic,
         ProviderKind::OpenAi,
         ProviderKind::Google,
+        ProviderKind::Codex,
     ] {
         fetch_selector_models_if_needed(state, agent, event_tx, provider);
     }
@@ -1001,6 +1038,7 @@ fn render_selector(frame: &mut Frame, state: &UiState) {
     {
         let hint = match selected_provider {
             ProviderKind::Copilot => "press c to connect with GitHub device OAuth",
+            ProviderKind::Codex => "press c to connect with Codex OAuth",
             ProviderKind::Ollama => "local provider; no API key required",
             _ => "press c to paste an API key",
         };
@@ -1801,4 +1839,169 @@ async fn copilot_device_flow(
             }
         }
     }
+}
+
+async fn codex_oauth_flow(
+    events: UnboundedSender<AgentEvent>,
+    agent: Arc<Mutex<Agent>>,
+) -> Result<()> {
+    match codex_browser_flow(events.clone(), Arc::clone(&agent)).await {
+        Ok(()) => Ok(()),
+        Err(browser_err) => {
+            let _ = events.send(AgentEvent::ProviderStatus {
+                provider: ProviderKind::Codex,
+                message: format!(
+                    "Browser OAuth unavailable: {}. Falling back to device login...",
+                    browser_err
+                ),
+                error: false,
+            });
+            codex_device_flow(events, agent).await
+        }
+    }
+}
+
+async fn codex_browser_flow(
+    events: UnboundedSender<AgentEvent>,
+    agent: Arc<Mutex<Agent>>,
+) -> Result<()> {
+    let auth = codex::start_browser_auth()?;
+    let state = auth.state.clone();
+    let verifier = auth.verifier.clone();
+    let redirect_uri = auth.redirect_uri.clone();
+
+    let _ = events.send(AgentEvent::ProviderStatus {
+        provider: ProviderKind::Codex,
+        message: format!(
+            "Opened browser for Codex OAuth. If it did not open, visit {}",
+            auth.authorization_url
+        ),
+        error: false,
+    });
+
+    let code = codex::wait_for_browser_code(auth).await?;
+    if code.state != state {
+        return Err(anyhow::anyhow!("OAuth callback state mismatch"));
+    }
+    let credentials = codex::exchange_browser_code(&code.code, &verifier, &redirect_uri).await?;
+    finish_codex_connection(events, agent, credentials).await
+}
+
+async fn codex_device_flow(
+    events: UnboundedSender<AgentEvent>,
+    agent: Arc<Mutex<Agent>>,
+) -> Result<()> {
+    let auth = codex::authorize_device().await?;
+    let device_url = auth
+        .verification_uri_complete
+        .as_ref()
+        .unwrap_or(&auth.verification_uri);
+
+    let _ = events.send(AgentEvent::ProviderStatus {
+        provider: ProviderKind::Codex,
+        message: format!(
+            "Open {} and enter code: {}. Waiting for authorization...",
+            device_url, auth.user_code
+        ),
+        error: false,
+    });
+
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(auth.expires_in);
+    let interval = std::time::Duration::from_secs(auth.interval);
+
+    loop {
+        tokio::time::sleep(interval).await;
+
+        if std::time::Instant::now() > deadline {
+            let message = "Authorization timed out. Press c to try again.".to_string();
+            let _ = events.send(AgentEvent::ProviderStatus {
+                provider: ProviderKind::Codex,
+                message: message.clone(),
+                error: true,
+            });
+            let _ = events.send(AgentEvent::ModelList {
+                provider: ProviderKind::Codex,
+                models: Vec::new(),
+                error: Some(message),
+            });
+            return Ok(());
+        }
+
+        match codex::poll_device_authorization(&auth.device_code).await? {
+            codex::DevicePollResult::Success(credentials) => {
+                return finish_codex_connection(events, agent, credentials).await;
+            }
+            codex::DevicePollResult::Pending => continue,
+            codex::DevicePollResult::Failed(reason) => {
+                let message = format!("Authorization denied or expired: {}", reason);
+                let _ = events.send(AgentEvent::ProviderStatus {
+                    provider: ProviderKind::Codex,
+                    message: message.clone(),
+                    error: true,
+                });
+                let _ = events.send(AgentEvent::ModelList {
+                    provider: ProviderKind::Codex,
+                    models: Vec::new(),
+                    error: Some(message),
+                });
+                return Ok(());
+            }
+        }
+    }
+}
+
+async fn finish_codex_connection(
+    events: UnboundedSender<AgentEvent>,
+    agent: Arc<Mutex<Agent>>,
+    credentials: codex::CodexCredentials,
+) -> Result<()> {
+    let serialized = codex::serialize_credentials(&credentials)?;
+    let mut locked = agent.lock().await;
+    let msg = locked.connect_key(ProviderKind::Codex, serialized);
+    let provider_name = locked.provider_name();
+    let model_msg = match locked.fetch_provider_models(ProviderKind::Codex).await {
+        Ok(models) if !models.is_empty() => {
+            let _ = events.send(AgentEvent::ModelList {
+                provider: ProviderKind::Codex,
+                models: models.clone(),
+                error: None,
+            });
+            let preview = models
+                .iter()
+                .take(8)
+                .cloned()
+                .collect::<Vec<_>>()
+                .join(", ");
+            format!(
+                "Fetched {} Codex models. Use /model to select one.\n{}",
+                models.len(),
+                preview
+            )
+        }
+        Ok(_) => {
+            let _ = events.send(AgentEvent::ModelList {
+                provider: ProviderKind::Codex,
+                models: Vec::new(),
+                error: None,
+            });
+            "Codex connected, but no models were returned.".to_string()
+        }
+        Err(err) => {
+            let message = format!("Codex connected, but model fetch failed: {}", err);
+            let _ = events.send(AgentEvent::ModelList {
+                provider: ProviderKind::Codex,
+                models: Vec::new(),
+                error: Some(message.clone()),
+            });
+            message
+        }
+    };
+
+    let _ = events.send(AgentEvent::ProviderName(provider_name));
+    let _ = events.send(AgentEvent::ProviderStatus {
+        provider: ProviderKind::Codex,
+        message: format!("{}\n{}", msg, model_msg),
+        error: false,
+    });
+    Ok(())
 }

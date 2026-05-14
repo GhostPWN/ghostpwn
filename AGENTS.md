@@ -1,11 +1,11 @@
 # AGENTS.md
 
-This file is guidance for coding agents working in `ghostpwn-rust`.
+This file is guidance for coding agents working in `ghostpwn`.
 It captures build/test commands, project conventions, and coding style.
 
 ## Repository Scope
 
-- Primary target: `ghostpwn-rust/` (Rust TUI application).
+- Primary target: `ghostpwn/` (Rust TUI application).
 - Runtime: Rust (edition 2024), async with Tokio.
 - UI: `ratatui` + `crossterm`.
 - Providers: OpenAI, Anthropic, Google (streaming).
@@ -21,9 +21,9 @@ It captures build/test commands, project conventions, and coding style.
 
 ## Working Directory and Invocation
 
-- Preferred working directory: `ghostpwn-rust/`.
+- Preferred working directory: `ghostpwn/`.
 - If running from parent directory, use:
-- `cargo <cmd> --manifest-path ghostpwn-rust/Cargo.toml`.
+- `cargo <cmd> --manifest-path ghostpwn/Cargo.toml`.
 
 ## Build, Lint, and Test Commands
 
