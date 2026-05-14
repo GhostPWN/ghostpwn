@@ -27,7 +27,7 @@ The current code base focuses on:
 - provider support for OpenAI, Anthropic, Google, GitHub Copilot, and local Ollama
 - in-session provider/model switching
 - local tools for reading files, listing directories, searching, and running commands
-- persistent API key storage via `.env` and OS keychain fallback
+- persistent API key storage via OS keychain fallback
 - streaming assistant output with auto-scroll and transcript controls
 
 ---
@@ -38,6 +38,7 @@ The current code base focuses on:
 - Provider adapters for OpenAI, Anthropic, Google, GitHub Copilot, and Ollama
 - Native streaming support across provider adapters
 - GitHub Copilot OAuth with automatic model discovery
+- Codex OAuth with ChatGPT/Codex OAuth browser login
 - Keyboard model selector via `/model`
 - JSON-first agent loop with tool-calling
 - Local tools: `listSkills`, `searchSkills`, `readSkill`, `readFile`, `listDirectory`, `searchFiles`, `grep`, `runCommand`, `fileInfo`, `generateDiff`, `writeFile`, `editFile`, `multiEdit`, `applyPatch`, `todoRead`, `todoWrite`, `webFetch`, `webSearch`
