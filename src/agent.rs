@@ -51,6 +51,7 @@ Skill behavior:
 Tool policy:
 - Use searchSkills/readSkill before other tools when a skill matches the task context.
 - Use readFile, listDirectory, searchFiles, grep, and fileInfo before guessing about the repo.
+- For workspace summaries, list the directory first and only read files that the listing or search results show exist.
 - Use runCommand for local, reversible commands such as builds, tests, formatters, and safe inspection.
 - Use writeFile, editFile, multiEdit, and applyPatch for direct workspace edits only when the user asks for code changes.
 - Use todoWrite/todoRead for multi-step task tracking.
@@ -355,9 +356,11 @@ impl Agent {
                 .await?;
 
             let envelope = parse_envelope(&raw);
+            let has_tool_calls = !envelope.tool_calls.is_empty();
 
             if let Some(assistant) = envelope.assistant.as_deref()
                 && !assistant.trim().is_empty()
+                && !has_tool_calls
             {
                 if let Some(remaining) = stream_extractor.finish_with(assistant) {
                     let _ = events.send(AgentEvent::AssistantDelta(remaining));
@@ -367,7 +370,7 @@ impl Agent {
                     .push(ConversationMessage::assistant(assistant.to_string()));
             }
 
-            if envelope.tool_calls.is_empty() {
+            if !has_tool_calls {
                 let _ = events.send(AgentEvent::Done);
                 return Ok(());
             }
@@ -390,8 +393,7 @@ impl Agent {
                     }
                     Err(err) => {
                         let text = format!("tool_error {}: {}", call.name, err);
-                        self.history.push(ConversationMessage::tool(text.clone()));
-                        let _ = events.send(AgentEvent::Error(text));
+                        self.history.push(ConversationMessage::tool(text));
                     }
                 }
             }
@@ -435,6 +437,10 @@ fn try_parse_envelope(raw: &str) -> Option<ModelEnvelope> {
         return Some(env);
     }
 
+    if let Some(env) = parse_first_json_envelope(raw) {
+        return Some(env);
+    }
+
     if let Some(json) = extract_json_block(raw)
         && let Ok(env) = serde_json::from_str::<ModelEnvelope>(&json)
     {
@@ -442,6 +448,11 @@ fn try_parse_envelope(raw: &str) -> Option<ModelEnvelope> {
     }
 
     None
+}
+
+fn parse_first_json_envelope(raw: &str) -> Option<ModelEnvelope> {
+    let mut stream = serde_json::Deserializer::from_str(raw).into_iter::<ModelEnvelope>();
+    stream.next()?.ok()
 }
 
 fn extract_json_block(input: &str) -> Option<String> {
@@ -590,6 +601,22 @@ mod tests {
         let env = parse_envelope(raw);
         assert_eq!(env.assistant.as_deref(), Some("ok"));
         assert!(env.tool_calls.is_empty());
+    }
+
+    #[test]
+    fn parse_envelope_ignores_concatenated_json_tail() {
+        let raw = concat!(
+            "{\"assistant\":\"checking\",\"tool_calls\":[",
+            "{\"name\":\"listDirectory\",\"arguments\":{\"path\":\".\"}}",
+            "]}",
+            "{\"assistant\":\"done\",\"tool_calls\":[]}"
+        );
+
+        let env = parse_envelope(raw);
+
+        assert_eq!(env.assistant.as_deref(), Some("checking"));
+        assert_eq!(env.tool_calls.len(), 1);
+        assert_eq!(env.tool_calls[0].name, "listDirectory");
     }
 
     #[test]

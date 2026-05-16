@@ -884,7 +884,7 @@ fn apply_agent_event(state: &mut UiState, event: AgentEvent) {
             state.tool_status.clear();
         }
         AgentEvent::ToolCall { name, args_summary } => {
-            state.flush_streaming_to_messages();
+            state.streaming_content.clear();
             let tool_line = format!("{}({})", name, args_summary);
             state.tool_status = tool_line.clone();
             state.push_message(UiRole::Tool, tool_line);
