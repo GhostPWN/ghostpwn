@@ -50,7 +50,16 @@ The current code base focuses on:
 - Persistent secrets via `.env` and OS keychain
 - Transcript scroll controls: moëuse wheel + `Up`, `Down`, `PgUp`, `PgDn`, `Home`, `End`
 
-## Setup
+## Install
+
+```bash
+brew install GhostPWN/tap/ghostpwn
+ghostpwn
+```
+
+The Homebrew formula lives in `Formula/ghostpwn.rb`.
+
+## Development
 
 ```bash
 cargo run

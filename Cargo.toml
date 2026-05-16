@@ -1,7 +1,11 @@
 [package]
 name = "ghostpwn"
-version = "0.1.5"
+version = "0.1.6"
 edition = "2024"
+description = "Autonomous pentest agent TUI with multi-provider LLM support"
+license = "MIT"
+homepage = "https://ghostpwn.vercel.app/"
+repository = "https://github.com/GhostPWN/ghostpwn"
 
 [dependencies]
 anyhow = "1.0.100"
