@@ -47,7 +47,7 @@ The current code base focuses on:
 - Diff rendering for fenced `diff` blocks in assistant output
 - Workspace boundary enforcement for filesystem tools
 - Shell commands run from the configured workspace but are not an OS-level sandbox
-- Persistent secrets via `.env` and OS keychain
+- Persistent secrets via OS keychain
 - Transcript scroll controls: moëuse wheel + `Up`, `Down`, `PgUp`, `PgDn`, `Home`, `End`
 
 ## Install
