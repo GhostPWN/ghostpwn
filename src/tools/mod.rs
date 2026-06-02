@@ -1520,6 +1520,21 @@ mod tests {
     use crate::models::ToolCall;
 
     #[cfg(windows)]
+    fn shell_cwd_display(path: &std::path::Path) -> String {
+        let display = path.to_string_lossy();
+        display
+            .as_ref()
+            .strip_prefix(r"\\?\")
+            .unwrap_or(display.as_ref())
+            .to_string()
+    }
+
+    #[cfg(not(windows))]
+    fn shell_cwd_display(path: &std::path::Path) -> String {
+        path.to_string_lossy().to_string()
+    }
+
+    #[cfg(windows)]
     #[test]
     fn command_shell_uses_powershell_on_windows() {
         let invocation = command_shell("Write-Output hello");
@@ -1578,7 +1593,8 @@ mod tests {
         let root = tempdir().expect("tempdir");
         let workspace = root.path().join("workspace");
         fs::create_dir_all(&workspace).expect("workspace");
-        let expected_cwd = workspace.canonicalize().expect("canonical workspace");
+        let expected_cwd =
+            shell_cwd_display(&workspace.canonicalize().expect("canonical workspace"));
 
         let tools = ToolRuntime::new(workspace.clone()).expect("runtime");
         let command = if cfg!(windows) {
@@ -1597,7 +1613,7 @@ mod tests {
         assert_eq!(result.get("exitCode").and_then(|v| v.as_i64()), Some(0));
         assert_eq!(
             result.get("stdout").and_then(|v| v.as_str()).map(str::trim),
-            Some(expected_cwd.to_string_lossy().as_ref())
+            Some(expected_cwd.as_str())
         );
     }
 
