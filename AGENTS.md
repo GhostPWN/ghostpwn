@@ -174,6 +174,7 @@ It captures build/test commands, project conventions, and coding style.
 - Make minimal, targeted edits.
 - Preserve existing public behavior unless request requires change.
 - If behavior changes, update README and command help text.
+- Do not launch or trigger GitHub Actions unless the user explicitly asks for a new release.
 - Bump the app version by a small increment for each release.
 - Run full validation pipeline before final response.
 - Summarize touched files and rationale clearly in handoff.
