@@ -127,6 +127,7 @@ struct UiState {
     completion_index: usize,
     selector: Option<ModelSelector>,
     tick: u64,
+    logo: Option<logo::LogoImage>,
 }
 
 impl UiState {
@@ -145,6 +146,7 @@ impl UiState {
             completion_index: 0,
             selector: None,
             tick: 0,
+            logo: None,
         }
     }
 
@@ -278,6 +280,8 @@ pub async fn run_ui(agent: Arc<Mutex<Agent>>) -> Result<()> {
     };
 
     enable_raw_mode()?;
+    // Probe terminal graphics support before entering the alternate screen.
+    let logo = logo::init();
     let mut stdout = io::stdout();
     execute!(stdout, EnterAlternateScreen, EnableMouseCapture)?;
 
@@ -286,6 +290,7 @@ pub async fn run_ui(agent: Arc<Mutex<Agent>>) -> Result<()> {
 
     let (event_tx, mut event_rx) = unbounded_channel::<AgentEvent>();
     let mut state = UiState::new(provider_name);
+    state.logo = logo;
 
     let run_result = ui_loop(&mut terminal, &agent, &event_tx, &mut event_rx, &mut state).await;
 
@@ -934,7 +939,7 @@ fn apply_agent_event(state: &mut UiState, event: AgentEvent) {
     }
 }
 
-fn render(frame: &mut Frame, state: &UiState) {
+fn render(frame: &mut Frame, state: &mut UiState) {
     let root = Layout::default()
         .direction(Direction::Vertical)
         .constraints([
@@ -1161,7 +1166,7 @@ fn centered_rect(percent_x: u16, percent_y: u16, area: Rect) -> Rect {
     .split(vertical[1])[1]
 }
 
-fn render_transcript(frame: &mut Frame, area: Rect, state: &UiState) {
+fn render_transcript(frame: &mut Frame, area: Rect, state: &mut UiState) {
     let is_home = state.messages.is_empty() && state.streaming_content.is_empty();
 
     let block = Block::default()
@@ -1171,7 +1176,7 @@ fn render_transcript(frame: &mut Frame, area: Rect, state: &UiState) {
     if is_home {
         let inner = block.inner(area);
         frame.render_widget(block, area);
-        logo::render(frame, inner);
+        logo::render(frame, inner, state.logo.as_mut());
         return;
     }
 
