@@ -345,10 +345,10 @@ impl ToolRuntime {
 
         let resolved_cwd = self.resolve_in_workspace(cwd)?;
 
-        let mut command_builder = Command::new("sh");
+        let invocation = command_shell(command);
+        let mut command_builder = Command::new(invocation.program);
         command_builder
-            .arg("-c")
-            .arg(command)
+            .args(invocation.args)
             .current_dir(resolved_cwd)
             .stdin(Stdio::null())
             .stdout(Stdio::piped())
@@ -797,6 +797,34 @@ struct WebFetchBody {
     bytes: usize,
     content: String,
     truncated: bool,
+}
+
+#[derive(Debug, PartialEq, Eq)]
+struct CommandShell<'a> {
+    program: &'static str,
+    args: Vec<&'a str>,
+}
+
+#[cfg(windows)]
+fn command_shell(command: &str) -> CommandShell<'_> {
+    CommandShell {
+        program: "powershell.exe",
+        args: vec![
+            "-NoLogo",
+            "-NoProfile",
+            "-NonInteractive",
+            "-Command",
+            command,
+        ],
+    }
+}
+
+#[cfg(not(windows))]
+fn command_shell(command: &str) -> CommandShell<'_> {
+    CommandShell {
+        program: "sh",
+        args: vec!["-c", command],
+    }
 }
 
 #[derive(Debug, Serialize, PartialEq, Eq)]
@@ -1484,11 +1512,122 @@ mod tests {
     use tempfile::tempdir;
 
     use super::ToolRuntime;
+    use super::command_shell;
     use super::decode_duckduckgo_url;
     use super::parse_duckduckgo_results;
     use super::unified_diff;
     use super::url_encode_query;
     use crate::models::ToolCall;
+
+    #[cfg(windows)]
+    #[test]
+    fn command_shell_uses_powershell_on_windows() {
+        let invocation = command_shell("Write-Output hello");
+
+        assert_eq!(invocation.program, "powershell.exe");
+        assert_eq!(
+            invocation.args,
+            vec![
+                "-NoLogo",
+                "-NoProfile",
+                "-NonInteractive",
+                "-Command",
+                "Write-Output hello",
+            ]
+        );
+    }
+
+    #[cfg(not(windows))]
+    #[test]
+    fn command_shell_uses_sh_on_unix() {
+        let invocation = command_shell("printf hello");
+
+        assert_eq!(invocation.program, "sh");
+        assert_eq!(invocation.args, vec!["-c", "printf hello"]);
+    }
+
+    #[tokio::test]
+    async fn run_command_executes_through_platform_shell() {
+        let root = tempdir().expect("tempdir");
+        let workspace = root.path().join("workspace");
+        fs::create_dir_all(&workspace).expect("workspace");
+
+        let tools = ToolRuntime::new(workspace).expect("runtime");
+        let command = if cfg!(windows) {
+            "Write-Output hello"
+        } else {
+            "printf hello"
+        };
+        let call = ToolCall {
+            name: "runCommand".to_string(),
+            arguments: json!({
+                "command": command,
+            }),
+        };
+
+        let result = tools.execute(&call).await.expect("tool result");
+        assert_eq!(result.get("exitCode").and_then(|v| v.as_i64()), Some(0));
+        assert_eq!(
+            result.get("stdout").and_then(|v| v.as_str()).map(str::trim),
+            Some("hello")
+        );
+    }
+
+    #[tokio::test]
+    async fn run_command_uses_workspace_cwd() {
+        let root = tempdir().expect("tempdir");
+        let workspace = root.path().join("workspace");
+        fs::create_dir_all(&workspace).expect("workspace");
+        let expected_cwd = workspace.canonicalize().expect("canonical workspace");
+
+        let tools = ToolRuntime::new(workspace.clone()).expect("runtime");
+        let command = if cfg!(windows) {
+            "[System.IO.Directory]::GetCurrentDirectory()"
+        } else {
+            "pwd"
+        };
+        let call = ToolCall {
+            name: "runCommand".to_string(),
+            arguments: json!({
+                "command": command,
+            }),
+        };
+
+        let result = tools.execute(&call).await.expect("tool result");
+        assert_eq!(result.get("exitCode").and_then(|v| v.as_i64()), Some(0));
+        assert_eq!(
+            result.get("stdout").and_then(|v| v.as_str()).map(str::trim),
+            Some(expected_cwd.to_string_lossy().as_ref())
+        );
+    }
+
+    #[tokio::test]
+    async fn run_command_reports_timeout() {
+        let root = tempdir().expect("tempdir");
+        let workspace = root.path().join("workspace");
+        fs::create_dir_all(&workspace).expect("workspace");
+
+        let tools = ToolRuntime::new(workspace).expect("runtime");
+        let command = if cfg!(windows) {
+            "Start-Sleep -Seconds 5"
+        } else {
+            "sleep 5"
+        };
+        let call = ToolCall {
+            name: "runCommand".to_string(),
+            arguments: json!({
+                "command": command,
+                "timeout": 50,
+            }),
+        };
+
+        let result = tools.execute(&call).await.expect("tool result");
+        assert_eq!(result.get("exitCode").and_then(|v| v.as_i64()), Some(-1));
+        assert_eq!(
+            result.get("stderr").and_then(|v| v.as_str()),
+            Some("Command timed out")
+        );
+    }
 
     #[tokio::test]
     async fn read_file_truncates_and_counts_lines() {

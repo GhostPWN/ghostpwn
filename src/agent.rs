@@ -53,6 +53,7 @@ Tool policy:
 - Use readFile, listDirectory, searchFiles, grep, and fileInfo before guessing about the repo.
 - For workspace summaries, list the directory first and only read files that the listing or search results show exist.
 - Use runCommand for local, reversible commands such as builds, tests, formatters, and safe inspection.
+- runCommand uses PowerShell on Windows and sh on Unix/macOS.
 - Use writeFile, editFile, multiEdit, and applyPatch for direct workspace edits only when the user asks for code changes.
 - Use todoWrite/todoRead for multi-step task tracking.
 - Use webFetch for user-provided URLs and webSearch for current public web lookups.

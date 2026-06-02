@@ -262,9 +262,38 @@ fn setting_entry_for(key: &str) -> Result<Entry> {
 }
 
 fn default_state_file_path() -> Option<PathBuf> {
-    read_env_path("GHOSTPWN_STATE_FILE")
-        .or_else(|| read_env_path("XDG_CONFIG_HOME").map(|path| path.join("ghostpwn/state.json")))
-        .or_else(|| read_env_path("HOME").map(|path| path.join(".config/ghostpwn/state.json")))
+    default_state_file_path_with(read_env_path)
+}
+
+fn default_state_file_path_with<F>(mut read_path: F) -> Option<PathBuf>
+where
+    F: FnMut(&str) -> Option<PathBuf>,
+{
+    if let Some(path) = read_path("GHOSTPWN_STATE_FILE") {
+        return Some(path);
+    }
+
+    platform_state_file_path(&mut read_path)
+}
+
+#[cfg(windows)]
+fn platform_state_file_path<F>(read_path: &mut F) -> Option<PathBuf>
+where
+    F: FnMut(&str) -> Option<PathBuf>,
+{
+    read_path("APPDATA")
+        .map(|path| path.join("ghostpwn/state.json"))
+        .or_else(|| read_path("USERPROFILE").map(|path| path.join(".ghostpwn/state.json")))
+}
+
+#[cfg(not(windows))]
+fn platform_state_file_path<F>(read_path: &mut F) -> Option<PathBuf>
+where
+    F: FnMut(&str) -> Option<PathBuf>,
+{
+    read_path("XDG_CONFIG_HOME")
+        .map(|path| path.join("ghostpwn/state.json"))
+        .or_else(|| read_path("HOME").map(|path| path.join(".config/ghostpwn/state.json")))
 }
 
 fn read_env_path(key: &str) -> Option<PathBuf> {
@@ -343,10 +372,70 @@ fn secure_directory(path: &Path) {
 
 #[cfg(test)]
 mod tests {
+    use std::collections::HashMap;
+    use std::path::PathBuf;
+
     use tempfile::tempdir;
 
-    use super::{SETTING_MODEL, SETTING_PROVIDER, SecretStore};
+    use super::{SETTING_MODEL, SETTING_PROVIDER, SecretStore, default_state_file_path_with};
     use crate::config::ProviderKind;
+
+    fn state_path_from(entries: &[(&str, &str)]) -> Option<PathBuf> {
+        let values = entries.iter().copied().collect::<HashMap<_, _>>();
+        default_state_file_path_with(|key| values.get(key).map(|value| PathBuf::from(*value)))
+    }
+
+    #[test]
+    fn state_file_override_takes_precedence() {
+        assert_eq!(
+            state_path_from(&[
+                ("GHOSTPWN_STATE_FILE", "/tmp/ghostpwn-state.json"),
+                ("APPDATA", "/tmp/appdata"),
+                ("XDG_CONFIG_HOME", "/tmp/xdg"),
+            ]),
+            Some(PathBuf::from("/tmp/ghostpwn-state.json"))
+        );
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn default_state_file_uses_windows_appdata() {
+        let appdata = PathBuf::from(r"C:\Users\alice\AppData\Roaming");
+
+        assert_eq!(
+            state_path_from(&[("APPDATA", r"C:\Users\alice\AppData\Roaming")]),
+            Some(appdata.join("ghostpwn/state.json"))
+        );
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn default_state_file_falls_back_to_windows_userprofile() {
+        let userprofile = PathBuf::from(r"C:\Users\alice");
+
+        assert_eq!(
+            state_path_from(&[("USERPROFILE", r"C:\Users\alice")]),
+            Some(userprofile.join(".ghostpwn/state.json"))
+        );
+    }
+
+    #[cfg(not(windows))]
+    #[test]
+    fn default_state_file_uses_xdg_config_home() {
+        assert_eq!(
+            state_path_from(&[("XDG_CONFIG_HOME", "/tmp/xdg")]),
+            Some(PathBuf::from("/tmp/xdg").join("ghostpwn/state.json"))
+        );
+    }
+
+    #[cfg(not(windows))]
+    #[test]
+    fn default_state_file_falls_back_to_home_config() {
+        assert_eq!(
+            state_path_from(&[("HOME", "/tmp/home")]),
+            Some(PathBuf::from("/tmp/home").join(".config/ghostpwn/state.json"))
+        );
+    }
 
     #[test]
     fn file_store_persists_settings_without_keychain() {

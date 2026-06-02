@@ -2,8 +2,8 @@ class Ghostpwn < Formula
   desc "Autonomous pentest agent TUI with multi-provider LLM support"
   homepage "https://github.com/GhostPWN/ghostpwn"
   url "https://github.com/GhostPWN/ghostpwn.git",
-      tag:      "v0.1.7"
-  version "0.1.7"
+      tag:      "v0.1.8"
+  version "0.1.8"
   license "MIT"
   head "https://github.com/GhostPWN/ghostpwn.git", branch: "main"
 

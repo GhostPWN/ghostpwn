@@ -46,11 +46,13 @@ The current code base focuses on:
 - Claude Code, Codex, and OpenCode-compatible tool aliases for common read/write/edit/shell/search operations
 - Diff rendering for fenced `diff` blocks in assistant output
 - Workspace boundary enforcement for filesystem tools
-- Shell commands run from the configured workspace but are not an OS-level sandbox
+- Shell commands run from the configured workspace using `sh` on Unix/macOS and PowerShell on Windows, but are not an OS-level sandbox
 - Persistent secrets via OS keychain
 - Transcript scroll controls: moëuse wheel + `Up`, `Down`, `PgUp`, `PgDn`, `Home`, `End`
 
 ## Install
+
+### macOS
 
 ```bash
 brew install GhostPWN/tap/ghostpwn
@@ -58,6 +60,17 @@ ghostpwn
 ```
 
 The Homebrew formula lives in `Formula/ghostpwn.rb`.
+
+### Windows
+
+Install Rust, then build or install GhostPWN with Cargo:
+
+```powershell
+cargo install --git https://github.com/GhostPWN/ghostpwn
+ghostpwn
+```
+
+Windows CI builds also publish a `ghostpwn-windows-x86_64.zip` artifact containing `ghostpwn.exe`.
 
 ## Development
 
@@ -91,6 +104,7 @@ cargo run
   - `CODEX_OAUTH_TOKEN` (serialized Codex OAuth credentials; normally managed by `/model`)
 - `GHOSTPWN_WORKSPACE`: optional root path used as the filesystem-tool boundary and command working directory
 - `GHOSTPWN_STATE_FILE`: optional local state-file override
+- Local state fallback defaults to `%APPDATA%\ghostpwn\state.json` on Windows, `$XDG_CONFIG_HOME/ghostpwn/state.json` on Unix/macOS, then the user's home config path
 - API keys are loaded from environment first, then OS keychain entries under service `ghostpwn-rust`, then the local state-file fallback
 - The latest provider/model selection is stored as `latest_provider` and `latest_model` in the OS keychain and local state file
 - Ollama uses `http://localhost:11434` and does not require an API key
@@ -113,7 +127,7 @@ cargo run
 - The system prompt requires `searchSkills`/`readSkill` for matching specialized workflows before the agent proceeds.
 - Assistant text is streamed from provider responses and incrementally rendered in the TUI.
 - Filesystem tools reject paths outside the configured workspace root.
-- `runCommand` uses the configured workspace as its current directory and enforces a bounded timeout; do not treat it as a security sandbox.
+- `runCommand` uses the configured workspace as its current directory, runs through PowerShell on Windows and `sh` on Unix/macOS, and enforces a bounded timeout; do not treat it as a security sandbox.
 - `webSearch` uses DuckDuckGo HTML results and may fail if the page structure changes or rate limits requests.
 - Provider keys can come from environment variables, the OS keychain, or the local state-file fallback.
 - GitHub Copilot is supported through the Copilot tab in `/model`.
