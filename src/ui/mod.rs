@@ -387,13 +387,12 @@ async fn ui_loop<B: Backend>(
                                 state.refresh_completions();
                             }
                         }
-                        KeyCode::Char(ch) => {
+                        KeyCode::Char(ch)
                             if !key.modifiers.contains(KeyModifiers::CONTROL)
-                                && !key.modifiers.contains(KeyModifiers::ALT)
-                            {
-                                state.input.push(ch);
-                                state.refresh_completions();
-                            }
+                                && !key.modifiers.contains(KeyModifiers::ALT) =>
+                        {
+                            state.input.push(ch);
+                            state.refresh_completions();
                         }
                         _ => {}
                     }

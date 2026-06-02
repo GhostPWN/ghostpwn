@@ -346,19 +346,28 @@ fn save_file_state(path: &Path, state: &FileState) -> Result<()> {
 
 fn secure_file_options() -> fs::OpenOptions {
     let mut options = fs::OpenOptions::new();
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::OpenOptionsExt;
-        options.mode(0o600);
-    }
+    secure_file_options_permissions(&mut options);
     options
 }
+
+#[cfg(unix)]
+fn secure_file_options_permissions(options: &mut fs::OpenOptions) {
+    use std::os::unix::fs::OpenOptionsExt;
+    options.mode(0o600);
+}
+
+#[cfg(not(unix))]
+fn secure_file_options_permissions(_options: &mut fs::OpenOptions) {}
 
 fn secure_file(path: &Path) {
     #[cfg(unix)]
     {
         use std::os::unix::fs::PermissionsExt;
         let _ = fs::set_permissions(path, fs::Permissions::from_mode(0o600));
+    }
+    #[cfg(not(unix))]
+    {
+        let _ = path;
     }
 }
 
@@ -367,6 +376,10 @@ fn secure_directory(path: &Path) {
     {
         use std::os::unix::fs::PermissionsExt;
         let _ = fs::set_permissions(path, fs::Permissions::from_mode(0o700));
+    }
+    #[cfg(not(unix))]
+    {
+        let _ = path;
     }
 }
 
