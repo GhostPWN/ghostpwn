@@ -21,7 +21,7 @@
 
 ## Overview
 
-**GhostPWN** is a Rust-based terminal assistant for offensive security research. It uses a `ratatui` + `crossterm` TUI, streams responses from multiple LLM providers, and constrains filesystem tools to a configured workspace boundary.
+GhostPWN is a Rust terminal assistant for offensive security research. It uses a `ratatui` + `crossterm` TUI, streams responses from multiple LLM providers, and constrains filesystem tools to a configured workspace boundary.
 
 The current code base focuses on:
 - provider support for OpenAI, Anthropic, Google, GitHub Copilot, and local Ollama
@@ -42,13 +42,13 @@ The current code base focuses on:
 - Keyboard model selector via `/model`
 - JSON-first agent loop with tool-calling
 - Local tools: `listSkills`, `searchSkills`, `readSkill`, `readFile`, `listDirectory`, `searchFiles`, `grep`, `runCommand`, `fileInfo`, `generateDiff`, `writeFile`, `editFile`, `multiEdit`, `applyPatch`, `todoRead`, `todoWrite`, `webFetch`, `webSearch`
-- Local skills loaded from `src/skills/*/SKILL.md` with automatic skill search/read guidance in theë system prompt
+- Local skills loaded from `src/skills/*/SKILL.md` with automatic skill search/read guidance in the system prompt
 - Claude Code, Codex, and OpenCode-compatible tool aliases for common read/write/edit/shell/search operations
 - Diff rendering for fenced `diff` blocks in assistant output
 - Workspace boundary enforcement for filesystem tools
 - Shell commands run from the configured workspace using `sh` on Unix/macOS and PowerShell on Windows, but are not an OS-level sandbox
 - Persistent secrets via OS keychain
-- Transcript scroll controls: moëuse wheel + `Up`, `Down`, `PgUp`, `PgDn`, `Home`, `End`
+- Transcript scroll controls: mouse wheel + `Up`, `Down`, `PgUp`, `PgDn`, `Home`, `End`
 
 ## Install
 
@@ -156,7 +156,7 @@ MIT License. See LICENSE for details.
 
 ## Contributing
 
-Contributions are welcome. Please open an issue before submitting a PR to discuss the proposed change.
+Contributions are welcome. Open an issue before submitting a PR to discuss the proposed change.
 
 ---
 
