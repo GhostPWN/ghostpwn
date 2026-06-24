@@ -19,7 +19,6 @@ use ratatui::prelude::*;
 use ratatui::widgets::{Block, BorderType, Borders, Clear, Padding, Paragraph, Wrap};
 use tokio::sync::Mutex;
 use tokio::sync::mpsc::{UnboundedReceiver, UnboundedSender, unbounded_channel};
-use unicode_width::UnicodeWidthChar;
 
 use crate::agent::Agent;
 use crate::config::ProviderKind;
@@ -127,7 +126,6 @@ struct UiState {
     completion_index: usize,
     selector: Option<ModelSelector>,
     tick: u64,
-    logo: Option<logo::LogoImage>,
 }
 
 impl UiState {
@@ -146,7 +144,6 @@ impl UiState {
             completion_index: 0,
             selector: None,
             tick: 0,
-            logo: None,
         }
     }
 
@@ -280,8 +277,6 @@ pub async fn run_ui(agent: Arc<Mutex<Agent>>) -> Result<()> {
     };
 
     enable_raw_mode()?;
-    // Probe terminal graphics support before entering the alternate screen.
-    let logo = logo::init();
     let mut stdout = io::stdout();
     execute!(stdout, EnterAlternateScreen, EnableMouseCapture)?;
 
@@ -290,7 +285,6 @@ pub async fn run_ui(agent: Arc<Mutex<Agent>>) -> Result<()> {
 
     let (event_tx, mut event_rx) = unbounded_channel::<AgentEvent>();
     let mut state = UiState::new(provider_name);
-    state.logo = logo;
 
     let run_result = ui_loop(&mut terminal, &agent, &event_tx, &mut event_rx, &mut state).await;
 
@@ -818,14 +812,6 @@ fn fetch_initial_selector_models(
     event_tx: &UnboundedSender<AgentEvent>,
     current_provider: ProviderKind,
 ) {
-    for provider in [
-        ProviderKind::Anthropic,
-        ProviderKind::OpenAi,
-        ProviderKind::Google,
-        ProviderKind::Codex,
-    ] {
-        fetch_selector_models_if_needed(state, agent, event_tx, provider);
-    }
     fetch_selector_models_if_needed(state, agent, event_tx, current_provider);
 }
 
@@ -1176,7 +1162,7 @@ fn render_transcript(frame: &mut Frame, area: Rect, state: &mut UiState) {
     if is_home {
         let inner = block.inner(area);
         frame.render_widget(block, area);
-        logo::render(frame, inner, state.logo.as_mut());
+        logo::render(frame, inner);
         return;
     }
 
@@ -1187,7 +1173,10 @@ fn render_transcript(frame: &mut Frame, area: Rect, state: &mut UiState) {
     let max_scroll = line_count.saturating_sub(visible);
     let scroll = state.scroll_offset.min(max_scroll);
 
-    let paragraph = Paragraph::new(lines).block(block).scroll((scroll, 0));
+    let paragraph = Paragraph::new(lines)
+        .block(block)
+        .scroll((scroll, 0))
+        .wrap(Wrap { trim: false });
     frame.render_widget(paragraph, area);
 
     if line_count > visible {
@@ -1355,7 +1344,8 @@ fn build_transcript_lines(state: &UiState, width: u16) -> Vec<Line<'static>> {
         );
     }
 
-    wrap_transcript_lines(lines, width)
+    let _ = width;
+    lines
 }
 
 fn push_message_lines(
@@ -1404,103 +1394,6 @@ fn push_message_lines(
             Span::styled("…", Style::default().fg(palette::ASH).italic()),
         ]));
     }
-}
-
-fn wrap_transcript_lines(lines: Vec<Line<'static>>, width: u16) -> Vec<Line<'static>> {
-    let width = width as usize;
-    if width == 0 {
-        return lines;
-    }
-
-    lines
-        .into_iter()
-        .flat_map(|line| wrap_line(line, width))
-        .collect()
-}
-
-fn wrap_line(line: Line<'static>, width: usize) -> Vec<Line<'static>> {
-    if width == 0 {
-        return vec![line];
-    }
-
-    let chars: Vec<(char, Style)> = line
-        .spans
-        .iter()
-        .flat_map(|span| {
-            let style = span.style;
-            span.content.chars().map(move |ch| (ch, style))
-        })
-        .collect();
-
-    if chars.is_empty() {
-        return vec![Line::from("")];
-    }
-
-    let mut rows = Vec::<Line<'static>>::new();
-    let mut start = 0usize;
-
-    while start < chars.len() {
-        let mut col = 0usize;
-        let mut last_ws: Option<usize> = None;
-        let mut end = start;
-
-        while end < chars.len() {
-            let (ch, _) = chars[end];
-            let cw = ch.width().unwrap_or(0);
-
-            if col > 0 && col.saturating_add(cw) > width {
-                break;
-            }
-
-            if ch.is_whitespace() {
-                last_ws = Some(end);
-            }
-
-            col += cw;
-            end += 1;
-        }
-
-        let (line_end, next_start) = if end == chars.len() {
-            (end, end)
-        } else if let Some(ws) = last_ws {
-            (ws, ws + 1)
-        } else {
-            (end, end)
-        };
-
-        rows.push(build_styled_line(&chars[start..line_end]));
-        start = next_start;
-    }
-
-    if rows.is_empty() {
-        rows.push(Line::from(""));
-    }
-
-    rows
-}
-
-fn build_styled_line(chars: &[(char, Style)]) -> Line<'static> {
-    let mut spans = Vec::<Span<'static>>::new();
-    let mut buf = String::new();
-    let mut cur_style = Style::default();
-    let mut started = false;
-
-    for (ch, style) in chars {
-        if !started {
-            cur_style = *style;
-            started = true;
-        } else if *style != cur_style {
-            spans.push(Span::styled(std::mem::take(&mut buf), cur_style));
-            cur_style = *style;
-        }
-        buf.push(*ch);
-    }
-
-    if !buf.is_empty() {
-        spans.push(Span::styled(buf, cur_style));
-    }
-
-    Line::from(spans)
 }
 
 fn styled_content_lines(content: &str, role: UiRole) -> Vec<Line<'static>> {

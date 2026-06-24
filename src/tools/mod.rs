@@ -9,13 +9,12 @@ use futures_util::StreamExt;
 use globset::Glob;
 use regex::Regex;
 use reqwest::Client;
-use serde::{Deserialize, Serialize};
+use serde::Serialize;
 use serde_json::{Value, json};
 use tokio::fs;
 use tokio::fs::OpenOptions;
 use tokio::io::AsyncWriteExt;
 use tokio::process::Command;
-use tokio::sync::Mutex;
 use tokio::time::timeout;
 use walkdir::WalkDir;
 
@@ -28,22 +27,23 @@ const DEFAULT_WEB_FETCH_BYTES: usize = 1_000_000;
 const MAX_WEB_FETCH_BYTES: usize = 5_000_000;
 const MAX_WEB_SEARCH_RESULTS: usize = 10;
 
-#[derive(Debug, Clone, Deserialize, Serialize, PartialEq, Eq)]
-struct TodoItem {
-    id: String,
-    content: String,
-    status: String,
-}
-
 pub struct ToolRuntime {
     workspace_root: PathBuf,
-    todos: Mutex<Vec<TodoItem>>,
     http_client: Client,
     skills: SkillRuntime,
 }
 
 impl ToolRuntime {
     pub fn new(workspace_root: PathBuf) -> Result<Self> {
+        Self::new_with_skills(workspace_root, SkillRuntime::new())
+    }
+
+    #[cfg(test)]
+    fn new_with_skills_root(workspace_root: PathBuf, skills_root: PathBuf) -> Result<Self> {
+        Self::new_with_skills(workspace_root, SkillRuntime::with_root(skills_root))
+    }
+
+    fn new_with_skills(workspace_root: PathBuf, skills: SkillRuntime) -> Result<Self> {
         let canonical = workspace_root.canonicalize().map_err(|err| {
             anyhow!(
                 "Failed to resolve workspace root '{}': {}",
@@ -67,9 +67,8 @@ impl ToolRuntime {
             .build()?;
 
         Ok(Self {
-            skills: SkillRuntime::new(&canonical),
+            skills,
             workspace_root: canonical,
-            todos: Mutex::new(Vec::new()),
             http_client,
         })
     }
@@ -133,8 +132,6 @@ impl ToolRuntime {
             "editFile" => self.edit_file(&call.arguments).await,
             "multiEdit" => self.multi_edit(&call.arguments).await,
             "applyPatch" => self.apply_patch(&call.arguments).await,
-            "todoRead" => self.todo_read().await,
-            "todoWrite" => self.todo_write(&call.arguments).await,
             "webFetch" => self.web_fetch(&call.arguments).await,
             "webSearch" => self.web_search(&call.arguments).await,
             other => Err(anyhow!("Unknown tool '{}'", other)),
@@ -589,46 +586,6 @@ impl ToolRuntime {
         }))
     }
 
-    async fn todo_read(&self) -> Result<Value> {
-        let todos = self.todos.lock().await.clone();
-        Ok(json!({
-            "todos": todos,
-        }))
-    }
-
-    async fn todo_write(&self, args: &Value) -> Result<Value> {
-        let values = args
-            .get("todos")
-            .and_then(Value::as_array)
-            .ok_or_else(|| anyhow!("Missing required array argument 'todos'"))?;
-        let mut todos = Vec::<TodoItem>::new();
-
-        for value in values {
-            let item = TodoItem {
-                id: required_str(value, "id")?.to_string(),
-                content: required_str(value, "content")?.to_string(),
-                status: required_str(value, "status")?.to_string(),
-            };
-
-            if !matches!(
-                item.status.as_str(),
-                "pending" | "in_progress" | "completed"
-            ) {
-                return Err(anyhow!("Invalid todo status '{}'", item.status));
-            }
-
-            todos.push(item);
-        }
-
-        let count = todos.len();
-        *self.todos.lock().await = todos.clone();
-
-        Ok(json!({
-            "todos": todos,
-            "count": count,
-        }))
-    }
-
     async fn web_fetch(&self, args: &Value) -> Result<Value> {
         let url = required_str(args, "url")?;
         let max_bytes = args
@@ -884,8 +841,6 @@ fn canonical_tool_name(name: &str) -> &str {
         "Edit" | "edit" | "editFile" => "editFile",
         "MultiEdit" | "multiedit" | "multiEdit" => "multiEdit",
         "apply_patch" | "ApplyPatch" | "applyPatch" => "applyPatch",
-        "TodoRead" | "todoread" | "todoRead" => "todoRead",
-        "TodoWrite" | "todowrite" | "todoWrite" => "todoWrite",
         "WebFetch" | "webfetch" | "webFetch" => "webFetch",
         "WebSearch" | "websearch" | "webSearch" => "webSearch",
         other => other,
@@ -1930,37 +1885,11 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn todo_write_and_read_round_trip() {
-        let root = tempdir().expect("tempdir");
-        let workspace = root.path().join("workspace");
-        fs::create_dir_all(&workspace).expect("workspace");
-        let tools = ToolRuntime::new(workspace).expect("runtime");
-
-        let write = ToolCall {
-            name: "TodoWrite".to_string(),
-            arguments: json!({
-                "todos": [
-                    { "id": "1", "content": "inspect", "status": "completed" },
-                    { "id": "2", "content": "patch", "status": "in_progress" }
-                ]
-            }),
-        };
-        tools.execute(&write).await.expect("write todos");
-
-        let read = ToolCall {
-            name: "todoRead".to_string(),
-            arguments: json!({}),
-        };
-        let result = tools.execute(&read).await.expect("read todos");
-        assert_eq!(result["todos"].as_array().map(Vec::len), Some(2));
-        assert_eq!(result["todos"][1]["status"].as_str(), Some("in_progress"));
-    }
-
-    #[tokio::test]
     async fn skill_tools_search_and_read_local_skills() {
         let root = tempdir().expect("tempdir");
         let workspace = root.path().join("workspace");
-        let skill_dir = workspace.join("src/skills/directory-traversal");
+        let skills_root = workspace.join("skills");
+        let skill_dir = skills_root.join("directory-traversal");
         fs::create_dir_all(&skill_dir).expect("skill dir");
         fs::write(
             skill_dir.join("SKILL.md"),
@@ -1968,7 +1897,7 @@ mod tests {
         )
         .expect("skill");
 
-        let tools = ToolRuntime::new(workspace).expect("runtime");
+        let tools = ToolRuntime::new_with_skills_root(workspace, skills_root).expect("runtime");
         let search = ToolCall {
             name: "SearchSkills".to_string(),
             arguments: json!({

@@ -1,7 +1,3 @@
-<p align="center">
-  <img src="logo.svg" alt="GhostPWN Logo" width="200">
-</p>
-
 <h1 align="center">GhostPWN</h1>
 
 <p align="center">
@@ -41,8 +37,8 @@ The current code base focuses on:
 - Codex OAuth with ChatGPT/Codex OAuth browser login
 - Keyboard model selector via `/model`
 - JSON-first agent loop with tool-calling
-- Local tools: `listSkills`, `searchSkills`, `readSkill`, `readFile`, `listDirectory`, `searchFiles`, `grep`, `runCommand`, `fileInfo`, `generateDiff`, `writeFile`, `editFile`, `multiEdit`, `applyPatch`, `todoRead`, `todoWrite`, `webFetch`, `webSearch`
-- Local skills loaded from `src/skills/*/SKILL.md` with automatic skill search/read guidance in the system prompt
+- Local tools: `listSkills`, `searchSkills`, `readSkill`, `readFile`, `listDirectory`, `searchFiles`, `grep`, `runCommand`, `fileInfo`, `generateDiff`, `writeFile`, `editFile`, `multiEdit`, `applyPatch`, `webFetch`, `webSearch`
+- Optional local skills loaded from `skills/*/SKILL.md` or `GHOSTPWN_SKILLS_DIR`
 - Claude Code, Codex, and OpenCode-compatible tool aliases for common read/write/edit/shell/search operations
 - Diff rendering for fenced `diff` blocks in assistant output
 - Workspace boundary enforcement for filesystem tools
@@ -117,6 +113,7 @@ cargo run
   - `GITHUB_COPILOT_TOKEN`
   - `CODEX_OAUTH_TOKEN` (serialized Codex OAuth credentials; normally managed by `/model`)
 - `GHOSTPWN_WORKSPACE`: optional root path used as the filesystem-tool boundary and command working directory
+- `GHOSTPWN_SKILLS_DIR`: optional directory for local skills; defaults to `skills`
 - `GHOSTPWN_STATE_FILE`: optional local state-file override
 - Local state fallback defaults to `%APPDATA%\ghostpwn\state.json` on Windows, `$XDG_CONFIG_HOME/ghostpwn/state.json` on Unix/macOS, then the user's home config path
 - API keys are loaded from environment first, then OS keychain entries under service `ghostpwn-rust`, then the local state-file fallback
@@ -128,7 +125,7 @@ cargo run
 - `src/main.rs`: bootstrap and dependency wiring
 - `src/agent.rs`: orchestration loop, tool-execution cycle, and provider/model switching
 - `src/providers/`: model adapters by vendor, including Copilot OAuth support
-- `src/skills.rs`: local skill discovery, search, and read support for `src/skills`
+- `src/skills.rs`: optional local skill discovery, search, and read support
 - `src/tools/mod.rs`: built-in local tool implementations with workspace safety checks
 - `src/ui/mod.rs`: `ratatui` terminal app and command handling
 - `src/config.rs`: environment-based configuration and provider defaults
@@ -138,7 +135,7 @@ cargo run
 ## Notes
 
 - The runtime expects model responses as JSON envelopes.
-- The system prompt requires `searchSkills`/`readSkill` for matching specialized workflows before the agent proceeds.
+- When local skills are configured, the system prompt requires `searchSkills`/`readSkill` for matching specialized workflows before the agent proceeds.
 - Assistant text is streamed from provider responses and incrementally rendered in the TUI.
 - Filesystem tools reject paths outside the configured workspace root.
 - `runCommand` uses the configured workspace as its current directory, runs through PowerShell on Windows and `sh` on Unix/macOS, and enforces a bounded timeout; do not treat it as a security sandbox.

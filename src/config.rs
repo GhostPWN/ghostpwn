@@ -80,8 +80,6 @@ pub struct ProviderKeys {
     google: Option<String>,
     copilot: Option<String>,
     codex: Option<String>,
-    #[allow(dead_code)]
-    ollama: Option<String>,
 }
 
 impl ProviderKeys {
@@ -92,7 +90,6 @@ impl ProviderKeys {
             google: read_env("GOOGLE_GENERATIVE_AI_API_KEY"),
             copilot: read_env("GITHUB_COPILOT_TOKEN"),
             codex: read_env("CODEX_OAUTH_TOKEN"),
-            ollama: None,
         };
 
         for provider in ProviderKind::all()
@@ -128,7 +125,7 @@ impl ProviderKeys {
             ProviderKind::Google => &mut self.google,
             ProviderKind::Copilot => &mut self.copilot,
             ProviderKind::Codex => &mut self.codex,
-            ProviderKind::Ollama => &mut self.ollama,
+            ProviderKind::Ollama => return,
         };
 
         *target = Some(value);
@@ -141,7 +138,7 @@ impl ProviderKeys {
             ProviderKind::Google => &mut self.google,
             ProviderKind::Copilot => &mut self.copilot,
             ProviderKind::Codex => &mut self.codex,
-            ProviderKind::Ollama => &mut self.ollama,
+            ProviderKind::Ollama => return,
         };
 
         *target = None;

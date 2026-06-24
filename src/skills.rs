@@ -1,3 +1,4 @@
+use std::env;
 use std::path::{Path, PathBuf};
 
 use anyhow::{Result, anyhow};
@@ -23,10 +24,19 @@ pub struct SkillRuntime {
 }
 
 impl SkillRuntime {
-    pub fn new(workspace_root: &Path) -> Self {
+    pub fn new() -> Self {
         Self {
-            root: workspace_root.join("src/skills"),
+            root: env::var("GHOSTPWN_SKILLS_DIR")
+                .ok()
+                .filter(|value| !value.trim().is_empty())
+                .map(PathBuf::from)
+                .unwrap_or_else(|| PathBuf::from("skills")),
         }
+    }
+
+    #[cfg(test)]
+    pub(crate) fn with_root(root: PathBuf) -> Self {
+        Self { root }
     }
 
     pub async fn list_tool(&self) -> Result<Value> {
@@ -87,11 +97,13 @@ impl SkillRuntime {
     pub async fn prompt_section(&self) -> String {
         let count = self.count_skill_files().await.unwrap_or(0);
         if count == 0 {
-            return "Skills:\n- No local skills were found in src/skills.\n".to_string();
+            return "Skills:\n- No local skills were found. Set GHOSTPWN_SKILLS_DIR to enable them.\n"
+                .to_string();
         }
 
         format!(
-            "Skills:\n- {count} local skills are available in src/skills.\n- For cybersecurity, forensics, compliance, cloud security, vulnerability testing, incident response, or other specialized workflow tasks, call searchSkills with the user's intent before answering.\n- If searchSkills returns a relevant match, call readSkill for the best matching skill and follow its instructions before using other tools or giving the final answer.\n- If no match is relevant, continue normally and mention that no matching local skill applied only if useful.\n"
+            "Skills:\n- {count} local skills are available in {}.\n- For cybersecurity, forensics, compliance, cloud security, vulnerability testing, incident response, or other specialized workflow tasks, call searchSkills with the user's intent before answering.\n- If searchSkills returns a relevant match, call readSkill for the best matching skill and follow its instructions before using other tools or giving the final answer.\n- If no match is relevant, continue normally and mention that no matching local skill applied only if useful.\n",
+            self.root.display()
         )
     }
 
@@ -173,14 +185,14 @@ impl SkillRuntime {
             .components()
             .any(|component| matches!(component, std::path::Component::ParentDir))
         {
-            return Err(anyhow!("Skill path '{}' is outside src/skills", relative));
+            return Err(anyhow!("Skill path '{}' is outside skills root", relative));
         }
 
         let path = self.root.join(relative);
         let canonical_root = self.root.canonicalize()?;
         let canonical_path = path.canonicalize()?;
         if !canonical_path.starts_with(canonical_root) {
-            return Err(anyhow!("Skill path '{}' is outside src/skills", relative));
+            return Err(anyhow!("Skill path '{}' is outside skills root", relative));
         }
         Ok(canonical_path)
     }
@@ -298,7 +310,7 @@ mod tests {
     #[tokio::test]
     async fn list_reads_skill_frontmatter() {
         let root = tempdir().expect("tempdir");
-        let skills = root.path().join("src/skills/example");
+        let skills = root.path().join("skills/example");
         fs::create_dir_all(&skills).expect("skills dir");
         fs::write(
             skills.join("SKILL.md"),
@@ -306,7 +318,9 @@ mod tests {
         )
         .expect("skill");
 
-        let runtime = SkillRuntime::new(root.path());
+        let runtime = SkillRuntime {
+            root: root.path().join("skills"),
+        };
         let result = runtime.list_tool().await.expect("list");
         assert_eq!(result["count"].as_u64(), Some(1));
         assert_eq!(result["skills"][0]["name"].as_str(), Some("example-skill"));
@@ -319,7 +333,7 @@ mod tests {
     #[tokio::test]
     async fn search_and_read_skill_by_name() {
         let root = tempdir().expect("tempdir");
-        let skills = root.path().join("src/skills/path-traversal");
+        let skills = root.path().join("skills/path-traversal");
         fs::create_dir_all(&skills).expect("skills dir");
         fs::write(
             skills.join("SKILL.md"),
@@ -327,7 +341,9 @@ mod tests {
         )
         .expect("skill");
 
-        let runtime = SkillRuntime::new(root.path());
+        let runtime = SkillRuntime {
+            root: root.path().join("skills"),
+        };
         let search = runtime
             .search_tool(&json!({ "query": "directory traversal" }))
             .await
