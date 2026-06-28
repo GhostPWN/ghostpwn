@@ -1,3 +1,7 @@
+<p align="center">
+  <img src="https://raw.githubusercontent.com/GhostPWN/.github/main/profile/logo.svg" alt="GhostPWN" width="200">
+</p>
+
 <h1 align="center">GhostPWN</h1>
 
 <p align="center">

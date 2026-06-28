@@ -1,0 +1,253 @@
+/* ── GhostPWN × Phosphor ────────────────────────────────────────────────
+   Dark-first phantom palette pulled straight from the TUI:
+   PHOSPHOR #be96ff · ION #a073eb · PLASMA #d78cff · EMBER #e1afff ·
+   BLOOD #ff6eb4 · BONE #f0ebfa · ASH #8c82a5 · STEEL #46375f.
+   Pill button derived from uiverse "short-lion-13" (MIT).
+   ──────────────────────────────────────────────────────────────────────── */
+
+@import url("https://fonts.googleapis.com/css2?family=Outfit:wght@400;500;600;700;800&display=swap");
+
+:root {
+  --ink:          #0d0a14;
+  --ink-soft:     #8c82a5;   /* ASH      */
+  --cloud:        #161121;
+  --phosphor:     #be96ff;   /* primary  */
+  --ion:          #a073eb;   /* deep     */
+  --plasma:       #d78cff;   /* accent   */
+  --blood:        #ff6eb4;   /* hot pink */
+  --hairline:     rgba(190, 150, 255, 0.14);
+  --soft-shadow:  0 1px 1px rgba(0, 0, 0, 0.4), 0 18px 40px -28px rgba(160, 115, 235, 0.6);
+
+  --gp-sans:  "Outfit", system-ui, -apple-system, sans-serif;
+
+  --md-primary-fg-color:        var(--ion);
+  --md-primary-fg-color--light: var(--phosphor);
+  --md-primary-fg-color--dark:  #7c3aed;
+  --md-accent-fg-color:         var(--plasma);
+}
+
+/* ── Light scheme = phosphor daylight ───────────────────────────────── */
+[data-md-color-scheme="default"] {
+  --md-default-bg-color:        #f7f4ff;
+  --md-default-fg-color:        #1a1326;
+  --md-default-fg-color--light: #5a5170;
+  --md-typeset-a-color:         var(--ion);
+  --md-code-bg-color:           #ffffff;
+  --md-code-fg-color:           #281a3a;
+  --hairline:                   rgba(124, 58, 237, 0.14);
+}
+[data-md-color-scheme="default"] body {
+  background:
+    radial-gradient(1100px 520px at 78% -8%, rgba(160, 115, 235, 0.16), transparent 60%),
+    radial-gradient(900px 460px at 12% 4%, rgba(215, 140, 255, 0.10), transparent 55%),
+    radial-gradient(700px 420px at 50% 120%, rgba(255, 110, 180, 0.07), transparent 60%),
+    linear-gradient(180deg, #efe8ff 0%, #f7f4ff 38%, #ffffff 100%);
+  background-attachment: fixed;
+}
+
+/* ── Dark scheme = phosphor nightfall (default vibe) ────────────────── */
+[data-md-color-scheme="slate"] {
+  --md-hue: 270;
+  --ink:                        #f0ebfa;   /* BONE */
+  --ink-soft:                   #8c82a5;   /* ASH  */
+  --cloud:                      #161121;
+  --hairline:                   rgba(190, 150, 255, 0.16);
+  --soft-shadow:                0 1px 1px rgba(0, 0, 0, 0.5), 0 22px 48px -28px rgba(0, 0, 0, 0.8);
+  --md-default-bg-color:        #0a0710;
+  --md-default-fg-color:        #f0ebfa;
+  --md-default-fg-color--light: #8c82a5;
+  --md-code-bg-color:           #161121;
+  --md-code-fg-color:           #ece4fb;
+  --md-typeset-a-color:         var(--phosphor);
+  --md-footer-bg-color:         #07050c;
+}
+[data-md-color-scheme="slate"] body {
+  background:
+    radial-gradient(1100px 560px at 78% -10%, rgba(160, 115, 235, 0.20), transparent 60%),
+    radial-gradient(820px 480px at 12% 2%, rgba(215, 140, 255, 0.12), transparent 55%),
+    radial-gradient(700px 460px at 50% 118%, rgba(255, 110, 180, 0.08), transparent 60%),
+    linear-gradient(180deg, #100b1c 0%, #0a0710 52%);
+  background-attachment: fixed;
+}
+
+/* ── Typography ─────────────────────────────────────────────────────── */
+body, .md-typeset {
+  font-family: var(--gp-sans);
+  letter-spacing: -0.011em;
+}
+.md-typeset h1, .md-typeset h2, .md-typeset h3,
+.md-header__title, .md-tabs__link {
+  font-family: var(--gp-sans);
+  letter-spacing: -0.022em;
+}
+
+/* ── Header: frosted phantom bar ────────────────────────────────────── */
+.md-header {
+  background: color-mix(in srgb, var(--md-default-bg-color) 80%, transparent);
+  -webkit-backdrop-filter: saturate(150%) blur(12px);
+  backdrop-filter: saturate(150%) blur(12px);
+  color: var(--ink);
+  border-bottom: 1px solid var(--hairline);
+  box-shadow: none;
+}
+.md-header__title, .md-header__button, .md-tabs__link { color: var(--ink); }
+.md-tabs { background: transparent; color: var(--ink); border-bottom: 1px solid var(--hairline); }
+.md-tabs__link { opacity: 0.72; }
+.md-tabs__link--active, .md-tabs__link:hover { opacity: 1; color: var(--phosphor); }
+.md-header__button.md-logo img { height: 1.55rem; width: auto; }
+
+/* ── Hero ───────────────────────────────────────────────────────────── */
+.gp-hero {
+  position: relative;
+  text-align: center;
+  padding: 4.5rem 1rem 3rem;
+}
+
+.gp-logo {
+  display: block;
+  width: clamp(96px, 16vw, 160px);
+  height: auto;
+  margin: 0 auto 1.4rem;
+  filter: drop-shadow(0 14px 34px rgba(160, 115, 235, 0.45));
+  opacity: 0;
+  animation: gp-rise 0.6s ease 0.02s forwards;
+}
+
+.gp-hero h1 {
+  font-family: var(--gp-sans);
+  font-size: clamp(2.8rem, 6.4vw, 4.6rem);
+  font-weight: 800;
+  letter-spacing: -0.04em;
+  line-height: 0.98;
+  margin: 0 0 0.9rem;
+  background: linear-gradient(120deg, var(--phosphor), var(--plasma) 55%, var(--blood));
+  -webkit-background-clip: text;
+  background-clip: text;
+  color: transparent;
+  opacity: 0;
+  animation: gp-rise 0.6s ease 0.12s forwards;
+}
+
+.gp-hero p.gp-tagline {
+  font-size: 1.2rem;
+  line-height: 1.55;
+  color: var(--ink-soft);
+  max-width: 40rem;
+  margin: 0 auto 2rem;
+  opacity: 0;
+  animation: gp-rise 0.6s ease 0.2s forwards;
+}
+.gp-cta {
+  display: inline-flex;
+  gap: 0.8rem;
+  flex-wrap: wrap;
+  justify-content: center;
+  opacity: 0;
+  animation: gp-rise 0.6s ease 0.28s forwards;
+}
+
+/* ── Phantom pill button (uiverse short-lion-13, MIT) ────────────────── */
+.md-typeset .md-button {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  height: 48px;
+  padding: 0 24px;
+  border-radius: 999px;
+  border: 1px solid var(--hairline);
+  background: var(--cloud);
+  color: var(--ink);
+  font-family: var(--gp-sans);
+  font-size: 15px;
+  font-weight: 600;
+  line-height: 1;
+  box-shadow: var(--soft-shadow);
+  transition:
+    transform 140ms cubic-bezier(0.22, 1, 0.36, 1),
+    background-color 220ms cubic-bezier(0.22, 1, 0.36, 1),
+    box-shadow 220ms cubic-bezier(0.22, 1, 0.36, 1);
+}
+.md-typeset .md-button:hover { transform: translateY(-1px); border-color: var(--phosphor); }
+.md-typeset .md-button:active { transform: translateY(1px); }
+
+.md-typeset .md-button--primary {
+  background: linear-gradient(120deg, var(--ion), var(--plasma));
+  border-color: transparent;
+  color: #0a0710;
+}
+.md-typeset .md-button--primary::after {
+  content: "↗";
+  font-size: 0.95em;
+  transition: transform 220ms cubic-bezier(0.22, 1, 0.36, 1);
+}
+.md-typeset .md-button--primary:hover {
+  box-shadow: 0 1px 1px rgba(0, 0, 0, 0.2), 0 22px 38px -16px rgba(160, 115, 235, 0.8);
+}
+.md-typeset .md-button--primary:hover::after { transform: translate(2px, -2px); }
+
+/* ── Install chip: terminal pill ────────────────────────────────────── */
+.gp-terminal {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.85rem;
+  height: 48px;
+  margin: 2rem auto 0;
+  padding: 0 0.5rem 0 1rem;
+  border-radius: 999px;
+  border: 1px solid var(--hairline);
+  background: var(--cloud);
+  box-shadow: var(--soft-shadow);
+  opacity: 0;
+  animation: gp-rise 0.6s ease 0.36s forwards;
+}
+.gp-terminal__dots { display: inline-flex; gap: 0.32rem; }
+.gp-terminal__dots i { width: 0.56rem; height: 0.56rem; border-radius: 50%; }
+.gp-terminal__dots i:nth-child(1) { background: var(--blood); }
+.gp-terminal__dots i:nth-child(2) { background: var(--plasma); }
+.gp-terminal__dots i:nth-child(3) { background: var(--phosphor); }
+.gp-terminal__cmd {
+  font-family: var(--md-code-font, monospace);
+  font-size: 0.85rem;
+  color: var(--md-code-fg-color);
+  background: none;
+  padding: 0;
+  white-space: nowrap;
+}
+.gp-prompt { color: var(--phosphor); margin-right: 0.45rem; user-select: none; }
+
+@keyframes gp-rise { from { opacity: 0; transform: translateY(12px); } to { opacity: 1; transform: translateY(0); } }
+@media (prefers-reduced-motion: reduce) {
+  .gp-hero h1, .gp-hero p.gp-tagline,
+  .gp-cta, .gp-terminal, .gp-logo { opacity: 1; animation: none; }
+}
+
+/* ── Feature cards = floating phantom surfaces ──────────────────────── */
+.md-typeset .grid.cards > ul > li,
+.md-typeset .grid > .card {
+  border-radius: 18px;
+  border: 1px solid var(--hairline);
+  background: var(--cloud);
+  box-shadow: var(--soft-shadow);
+  transition: transform 0.2s cubic-bezier(0.22, 1, 0.36, 1), box-shadow 0.2s ease, border-color 0.2s ease;
+}
+.md-typeset .grid.cards > ul > li:hover {
+  transform: translateY(-4px);
+  border-color: color-mix(in srgb, var(--phosphor) 50%, var(--hairline));
+  box-shadow: 0 1px 1px rgba(0,0,0,0.3), 0 30px 56px -30px rgba(160, 115, 235, 0.7);
+}
+.md-typeset .grid.cards .lg.middle { color: var(--phosphor); }
+.md-typeset .grid.cards > ul > li:nth-child(3n+2) .lg.middle { color: var(--plasma); }
+.md-typeset .grid.cards > ul > li:nth-child(3n+3) .lg.middle { color: var(--blood); }
+
+/* ── Code blocks ────────────────────────────────────────────────────── */
+.md-typeset pre > code { border-radius: 14px; }
+.md-typeset pre > code, .md-typeset .highlight { box-shadow: var(--soft-shadow); }
+
+/* ── Admonition ─────────────────────────────────────────────────────── */
+.md-typeset .admonition, .md-typeset details {
+  border-radius: 16px;
+  border: 1px solid var(--hairline);
+  box-shadow: var(--soft-shadow);
+}
+
+[data-md-color-scheme] { transition: background-color 0.3s ease, color 0.3s ease; }

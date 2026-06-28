@@ -6,3 +6,7 @@
 # AGENTS
 CLAUDE.md
 AGENTS.md
+
+# Zensical docs build output
+site/
+.cache/
