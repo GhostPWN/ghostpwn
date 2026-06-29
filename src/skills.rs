@@ -30,7 +30,7 @@ impl SkillRuntime {
                 .ok()
                 .filter(|value| !value.trim().is_empty())
                 .map(PathBuf::from)
-                .unwrap_or_else(|| PathBuf::from("skills")),
+                .unwrap_or_else(|| PathBuf::from("src/skills")),
         }
     }
 
