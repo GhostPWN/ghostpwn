@@ -27,15 +27,15 @@ use crate::providers::{codex, copilot};
 
 pub(super) mod palette {
     use ratatui::style::Color;
-    pub const PHOSPHOR: Color = Color::Rgb(190, 150, 255);
-    pub const BONE: Color = Color::Rgb(240, 235, 250);
-    pub const ASH: Color = Color::Rgb(140, 130, 165);
-    pub const ION: Color = Color::Rgb(160, 115, 235);
-    pub const PLASMA: Color = Color::Rgb(215, 140, 255);
-    pub const EMBER: Color = Color::Rgb(225, 175, 255);
-    pub const BLOOD: Color = Color::Rgb(255, 110, 180);
-    pub const STEEL: Color = Color::Rgb(70, 55, 95);
-    pub const FOG: Color = Color::Rgb(60, 58, 70);
+    pub const PHOSPHOR: Color = Color::Rgb(140, 90, 210);
+    pub const BONE: Color = Color::Reset;
+    pub const ASH: Color = Color::Reset;
+    pub const ION: Color = Color::Rgb(140, 90, 210);
+    pub const PLASMA: Color = Color::Rgb(140, 90, 210);
+    pub const EMBER: Color = Color::Rgb(140, 90, 210);
+    pub const BLOOD: Color = Color::Red;
+    pub const STEEL: Color = Color::Reset;
+    pub const FOG: Color = Color::Reset;
 }
 
 const SPINNER: &[&str] = &["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"];
@@ -957,7 +957,7 @@ fn render_selector(frame: &mut Frame, state: &UiState) {
             Span::styled("  ", Style::default()),
             Span::styled("▸ ", Style::default().fg(palette::PLASMA)),
             Span::styled("model selector", Style::default().fg(palette::BONE).bold()),
-            Span::styled(" ─", Style::default().fg(palette::STEEL)),
+            Span::styled(" ─", Style::default().fg(palette::STEEL).dim()),
         ]))
         .padding(Padding::new(2, 2, 1, 1));
 
@@ -980,7 +980,7 @@ fn render_selector(frame: &mut Frame, state: &UiState) {
             let style = if selected {
                 Style::default().fg(palette::PHOSPHOR).bold()
             } else {
-                Style::default().fg(palette::ASH)
+                Style::default().fg(palette::ASH).dim()
             };
             vec![
                 Span::styled(
@@ -1009,13 +1009,13 @@ fn render_selector(frame: &mut Frame, state: &UiState) {
             )]),
             Line::from(""),
             Line::from(vec![
-                Span::styled("key  ", Style::default().fg(palette::ASH)),
+                Span::styled("key  ", Style::default().fg(palette::ASH).dim()),
                 Span::styled(masked, Style::default().fg(palette::PHOSPHOR)),
             ]),
             Line::from(""),
             Line::from(vec![Span::styled(
                 "enter saves · esc cancels",
-                Style::default().fg(palette::ASH),
+                Style::default().fg(palette::ASH).dim(),
             )]),
         ]
     } else if selected_state.is_some_and(|provider_state| provider_state.loading) {
@@ -1038,12 +1038,15 @@ fn render_selector(frame: &mut Frame, state: &UiState) {
                 Style::default().fg(palette::BLOOD),
             )]),
             Line::from(""),
-            Line::from(vec![Span::styled(hint, Style::default().fg(palette::ASH))]),
+            Line::from(vec![Span::styled(
+                hint,
+                Style::default().fg(palette::ASH).dim(),
+            )]),
         ]
     } else if selected_state.is_none_or(|provider_state| provider_state.models.is_empty()) {
         vec![Line::from(vec![Span::styled(
             "no models returned",
-            Style::default().fg(palette::ASH),
+            Style::default().fg(palette::ASH).dim(),
         )])]
     } else {
         let selected_state = selected_state.expect("selected provider state must exist");
@@ -1071,7 +1074,7 @@ fn render_selector(frame: &mut Frame, state: &UiState) {
                         if selected {
                             Style::default().fg(palette::BONE).bold()
                         } else {
-                            Style::default().fg(palette::ASH)
+                            Style::default().fg(palette::ASH).dim()
                         },
                     ),
                 ])
@@ -1089,19 +1092,19 @@ fn render_selector(frame: &mut Frame, state: &UiState) {
 
     let footer = Line::from(vec![
         Span::styled("←/→", Style::default().fg(palette::PHOSPHOR).bold()),
-        Span::styled(" provider  ", Style::default().fg(palette::ASH)),
+        Span::styled(" provider  ", Style::default().fg(palette::ASH).dim()),
         Span::styled("↑/↓", Style::default().fg(palette::PHOSPHOR).bold()),
-        Span::styled(" model  ", Style::default().fg(palette::ASH)),
+        Span::styled(" model  ", Style::default().fg(palette::ASH).dim()),
         Span::styled("pgup/pgdn", Style::default().fg(palette::PHOSPHOR).bold()),
-        Span::styled(" jump  ", Style::default().fg(palette::ASH)),
+        Span::styled(" jump  ", Style::default().fg(palette::ASH).dim()),
         Span::styled("c", Style::default().fg(palette::PHOSPHOR).bold()),
-        Span::styled(" connect  ", Style::default().fg(palette::ASH)),
+        Span::styled(" connect  ", Style::default().fg(palette::ASH).dim()),
         Span::styled("d", Style::default().fg(palette::PHOSPHOR).bold()),
-        Span::styled(" disconnect  ", Style::default().fg(palette::ASH)),
+        Span::styled(" disconnect  ", Style::default().fg(palette::ASH).dim()),
         Span::styled("enter", Style::default().fg(palette::PHOSPHOR).bold()),
-        Span::styled(" switch  ", Style::default().fg(palette::ASH)),
+        Span::styled(" switch  ", Style::default().fg(palette::ASH).dim()),
         Span::styled("esc", Style::default().fg(palette::PHOSPHOR).bold()),
-        Span::styled(" close", Style::default().fg(palette::ASH)),
+        Span::styled(" close", Style::default().fg(palette::ASH).dim()),
     ]);
     frame.render_widget(Paragraph::new(footer), rows[2]);
 }
@@ -1123,15 +1126,15 @@ fn selector_status_lines(
     } else {
         palette::ASH
     };
+    let style = if status.error {
+        Style::default().fg(color).bold()
+    } else {
+        Style::default().fg(color).dim()
+    };
     let mut lines = status
         .message
         .lines()
-        .map(|line| {
-            Line::from(vec![Span::styled(
-                line.to_string(),
-                Style::default().fg(color),
-            )])
-        })
+        .map(|line| Line::from(vec![Span::styled(line.to_string(), style)]))
         .collect::<Vec<_>>();
     lines.push(Line::from(""));
     lines
@@ -1209,7 +1212,7 @@ fn render_scrollbar(frame: &mut Frame, area: Rect, offset: u16, total: u16, visi
     for y in track_y..track_y + track_h {
         let cell = &mut buf[(track_x, y)];
         cell.set_char('▏')
-            .set_style(Style::default().fg(palette::STEEL));
+            .set_style(Style::default().fg(palette::STEEL).dim());
     }
     for y in thumb_y..thumb_y + thumb_h {
         let cell = &mut buf[(track_x, y)];
@@ -1247,13 +1250,13 @@ fn render_status(frame: &mut Frame, area: Rect, state: &UiState) {
 
     let right = Line::from(vec![
         Span::styled("tab", Style::default().fg(palette::PHOSPHOR).bold()),
-        Span::styled(" complete ", Style::default().fg(palette::ASH)),
-        Span::styled("·", Style::default().fg(palette::STEEL)),
+        Span::styled(" complete ", Style::default().fg(palette::ASH).dim()),
+        Span::styled("·", Style::default().fg(palette::STEEL).dim()),
         Span::styled(" ↵", Style::default().fg(palette::PHOSPHOR).bold()),
-        Span::styled(" send ", Style::default().fg(palette::ASH)),
-        Span::styled("·", Style::default().fg(palette::STEEL)),
+        Span::styled(" send ", Style::default().fg(palette::ASH).dim()),
+        Span::styled("·", Style::default().fg(palette::STEEL).dim()),
         Span::styled(" ^c", Style::default().fg(palette::PHOSPHOR).bold()),
-        Span::styled(" quit ", Style::default().fg(palette::ASH)),
+        Span::styled(" quit ", Style::default().fg(palette::ASH).dim()),
     ]);
 
     let cols =
@@ -1269,10 +1272,16 @@ fn render_input(frame: &mut Frame, area: Rect, state: &UiState) {
         palette::PHOSPHOR
     };
 
+    let border_style = if state.is_streaming {
+        Style::default().fg(border_color).dim()
+    } else {
+        Style::default().fg(border_color)
+    };
+
     let block = Block::default()
         .borders(Borders::ALL)
         .border_type(BorderType::Rounded)
-        .border_style(Style::default().fg(border_color))
+        .border_style(border_style)
         .padding(Padding::horizontal(1));
 
     let line = if state.is_streaming {
@@ -1284,7 +1293,7 @@ fn render_input(frame: &mut Frame, area: Rect, state: &UiState) {
             ),
             Span::styled(
                 "channel open · awaiting model",
-                Style::default().fg(palette::ASH).italic(),
+                Style::default().fg(palette::ASH).dim().italic(),
             ),
         ])
     } else {
@@ -1304,19 +1313,25 @@ fn render_input(frame: &mut Frame, area: Rect, state: &UiState) {
         {
             spans.push(Span::styled(
                 suffix.to_string(),
-                Style::default().fg(palette::STEEL),
+                Style::default().fg(palette::STEEL).dim(),
             ));
             spans.push(Span::raw("    "));
             spans.push(Span::styled(
                 format!("↹ {description}"),
-                Style::default().fg(palette::ASH).italic(),
+                Style::default().fg(palette::ASH).dim().italic(),
             ));
         } else if state.input.is_empty() {
-            spans.push(Span::styled("  try  ", Style::default().fg(palette::STEEL)));
-            spans.push(Span::styled("/help", Style::default().fg(palette::ASH)));
+            spans.push(Span::styled(
+                "  try  ",
+                Style::default().fg(palette::STEEL).dim(),
+            ));
+            spans.push(Span::styled(
+                "/help",
+                Style::default().fg(palette::ASH).dim(),
+            ));
             spans.push(Span::styled(
                 "  or describe a target…",
-                Style::default().fg(palette::STEEL).italic(),
+                Style::default().fg(palette::STEEL).dim().italic(),
             ));
         }
 
@@ -1367,7 +1382,7 @@ fn push_message_lines(
     };
 
     let bullet_style = if role == UiRole::Tool {
-        Style::default().fg(bullet_color)
+        Style::default().fg(bullet_color).dim()
     } else {
         Style::default().fg(bullet_color).bold()
     };
@@ -1391,7 +1406,7 @@ fn push_message_lines(
     if streaming {
         lines.push(Line::from(vec![
             Span::raw("  "),
-            Span::styled("…", Style::default().fg(palette::ASH).italic()),
+            Span::styled("…", Style::default().fg(palette::ASH).dim().italic()),
         ]));
     }
 }
@@ -1404,7 +1419,10 @@ fn styled_content_lines(content: &str, role: UiRole) -> Vec<Line<'static>> {
         UiRole::Error => palette::BLOOD,
     };
 
-    let style = Style::default().fg(color);
+    let style = match role {
+        UiRole::Tool => Style::default().fg(color).dim(),
+        _ => Style::default().fg(color),
+    };
 
     if content.is_empty() {
         return vec![Line::from("")];
@@ -1521,11 +1539,11 @@ fn styled_assistant_lines(content: &str) -> Vec<Line<'static>> {
         if let Some(rest) = trimmed.strip_prefix("> ") {
             let mut spans = vec![
                 Span::raw(leading.clone()),
-                Span::styled("│ ", Style::default().fg(palette::STEEL)),
+                Span::styled("│ ", Style::default().fg(palette::STEEL).dim()),
             ];
             spans.extend(render_inline(
                 rest,
-                Style::default().fg(palette::ASH).italic(),
+                Style::default().fg(palette::ASH).dim().italic(),
             ));
             out.push(Line::from(spans));
             continue;

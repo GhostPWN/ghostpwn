@@ -73,22 +73,22 @@ pub fn render(frame: &mut Frame, area: Rect) {
     );
 
     let tagline = Line::from(vec![
-        Span::styled("◂ ", Style::new().fg(palette::STEEL)),
+        Span::styled("◂ ", Style::new().add_modifier(Modifier::DIM)),
         Span::styled(
             "autonomous",
             Style::new().fg(palette::ION).add_modifier(Modifier::BOLD),
         ),
-        Span::styled("  ·  ", Style::new().fg(palette::STEEL)),
+        Span::styled("  ·  ", Style::new().add_modifier(Modifier::DIM)),
         Span::styled(
             "web penetration",
             Style::new().fg(palette::ION).add_modifier(Modifier::BOLD),
         ),
-        Span::styled("  ·  ", Style::new().fg(palette::STEEL)),
+        Span::styled("  ·  ", Style::new().add_modifier(Modifier::DIM)),
         Span::styled(
             "research lab",
             Style::new().fg(palette::ION).add_modifier(Modifier::BOLD),
         ),
-        Span::styled(" ▸", Style::new().fg(palette::STEEL)),
+        Span::styled(" ▸", Style::new().add_modifier(Modifier::DIM)),
     ]);
     frame.render_widget(
         Paragraph::new(tagline).alignment(Alignment::Center),
@@ -119,9 +119,12 @@ fn render_chips(frame: &mut Frame, area: Rect) {
     let mut spans: Vec<Span<'_>> = Vec::new();
     for (i, (cmd, desc)) in chips.iter().enumerate() {
         if i > 0 {
-            spans.push(Span::styled("   ", Style::new().fg(palette::STEEL)));
+            spans.push(Span::styled(
+                "   ",
+                Style::new().add_modifier(Modifier::DIM),
+            ));
         }
-        spans.push(Span::styled("[ ", Style::new().fg(palette::STEEL)));
+        spans.push(Span::styled("[ ", Style::new().add_modifier(Modifier::DIM)));
         spans.push(Span::styled(
             *cmd,
             Style::new()
@@ -129,8 +132,11 @@ fn render_chips(frame: &mut Frame, area: Rect) {
                 .add_modifier(Modifier::BOLD),
         ));
         spans.push(Span::styled("  ", Style::new()));
-        spans.push(Span::styled(*desc, Style::new().fg(palette::ASH)));
-        spans.push(Span::styled(" ]", Style::new().fg(palette::STEEL)));
+        spans.push(Span::styled(
+            *desc,
+            Style::new().add_modifier(Modifier::DIM),
+        ));
+        spans.push(Span::styled(" ]", Style::new().add_modifier(Modifier::DIM)));
     }
 
     frame.render_widget(
