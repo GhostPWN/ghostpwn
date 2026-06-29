@@ -2,8 +2,6 @@
 
 Autonomous penetration testing agent. A Rust TUI that streams from multiple LLM providers and runs local tools inside a workspace boundary.
 
-> **⚠ Usage boundary** — GhostPWN is built for academic research in offensive security. `runCommand` is **not** an OS-level sandbox. Use it only on targets you are allowed to access.
-
 ## Install
 
 ```bash

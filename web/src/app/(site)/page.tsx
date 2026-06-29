@@ -1,7 +1,12 @@
 import Image from "next/image";
 import Link from "next/link";
 import { Button } from "@/components/ui/button";
-import { Card, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
+import {
+  Card,
+  CardDescription,
+  CardHeader,
+  CardTitle,
+} from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
 import { CodeBlock } from "@/components/code-block";
 import { ThemeToggle } from "@/components/theme-toggle";
@@ -63,7 +68,12 @@ export default function Home() {
       <header className="sticky top-0 z-10 border-b bg-background/80 backdrop-blur">
         <div className="mx-auto flex w-full max-w-5xl items-center justify-between px-6 py-4">
           <div className="flex items-center gap-2.5">
-            <Image src={asset("/ghostpwn-logo.svg")} alt="GhostPWN" width={28} height={28} />
+            <Image
+              src={asset("/ghostpwn-logo.svg")}
+              alt="GhostPWN"
+              width={28}
+              height={28}
+            />
             <span className="font-semibold tracking-tight">GhostPWN</span>
           </div>
           <nav className="flex items-center gap-2">
@@ -71,7 +81,11 @@ export default function Home() {
             <Button variant="ghost" size="sm" render={<Link href={DOCS_URL} />}>
               Docs
             </Button>
-            <Button variant="outline" size="sm" render={<a href={GITHUB_URL} />}>
+            <Button
+              variant="outline"
+              size="sm"
+              render={<a href={GITHUB_URL} />}
+            >
               GitHub
             </Button>
           </nav>
@@ -95,8 +109,9 @@ export default function Home() {
           Autonomous penetration testing agent
         </h1>
         <p className="mt-6 max-w-2xl text-lg text-muted-foreground">
-          GhostPWN is a Rust terminal assistant for offensive security research. It streams from
-          multiple LLM providers and runs local tools inside a workspace boundary.
+          GhostPWN is a Rust terminal assistant for offensive security research.
+          It streams from multiple LLM providers and runs local tools inside a
+          workspace boundary.
         </p>
         <div className="mt-10 flex flex-col gap-3 sm:flex-row">
           <Button size="xl" render={<Link href={DOCS_URL} />}>
@@ -105,15 +120,6 @@ export default function Home() {
           <Button size="xl" variant="outline" render={<a href={GITHUB_URL} />}>
             Star on GitHub
           </Button>
-        </div>
-      </section>
-
-      {/* Boundary note */}
-      <section className="mx-auto w-full max-w-3xl px-6 pb-12">
-        <div className="rounded-2xl border border-amber-500/30 bg-amber-500/10 p-4 text-sm text-amber-700 dark:text-amber-300">
-          <strong>⚠ Usage boundary</strong> — GhostPWN is built for academic research in offensive
-          security. <code>runCommand</code> is not an OS-level sandbox. Use it only on targets you
-          are allowed to access.
         </div>
       </section>
 
