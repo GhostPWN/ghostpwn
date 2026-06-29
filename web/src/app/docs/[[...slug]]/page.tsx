@@ -1,6 +1,7 @@
 import type { Metadata } from "next";
 import { notFound } from "next/navigation";
 import { getDoc, getDocSlugs } from "@/lib/docs";
+import { CodeCopy } from "@/components/code-copy";
 
 export const dynamicParams = false;
 
@@ -24,9 +25,12 @@ export default async function DocPage(props: DocPageProps) {
   if (!doc) notFound();
 
   return (
-    <article
-      className="prose prose-neutral max-w-none dark:prose-invert prose-headings:scroll-mt-24 prose-pre:border prose-pre:bg-card prose-a:text-primary"
-      dangerouslySetInnerHTML={{ __html: doc.html }}
-    />
+    <>
+      <article
+        className="prose prose-neutral max-w-none dark:prose-invert prose-headings:scroll-mt-24 prose-pre:rounded-2xl prose-pre:border prose-pre:bg-card prose-pre:p-6 prose-a:text-primary"
+        dangerouslySetInnerHTML={{ __html: doc.html }}
+      />
+      <CodeCopy />
+    </>
   );
 }

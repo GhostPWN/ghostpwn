@@ -65,8 +65,8 @@ export default function Home() {
   return (
     <main className="flex flex-1 flex-col">
       {/* Nav */}
-      <header className="sticky top-0 z-10 border-b bg-background/80 backdrop-blur">
-        <div className="mx-auto flex w-full max-w-5xl items-center justify-between px-6 py-4">
+      <header className="sticky top-0 z-20 px-4 pt-4">
+        <div className="mx-auto flex w-full max-w-6xl items-center justify-between rounded-2xl border bg-background/70 px-5 py-3 shadow-sm backdrop-blur-md">
           <div className="flex items-center gap-2.5">
             <Image
               src={asset("/ghostpwn-logo.svg")}
