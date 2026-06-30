@@ -16,7 +16,7 @@ interface DocPageProps {
 export async function generateMetadata(props: DocPageProps): Promise<Metadata> {
   const { slug = [] } = await props.params;
   const doc = await getDoc(slug);
-  return { title: doc ? `${doc.title} — WebSkrap` : "WebSkrap Docs" };
+  return { title: doc ? `${doc.title} — GhostPWN` : "GhostPWN Docs" };
 }
 
 export default async function DocPage(props: DocPageProps) {

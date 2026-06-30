@@ -4,6 +4,7 @@ import { unified } from "unified";
 import remarkParse from "remark-parse";
 import remarkGfm from "remark-gfm";
 import remarkRehype from "remark-rehype";
+import rehypeRaw from "rehype-raw";
 import rehypeSlug from "rehype-slug";
 import rehypePrettyCode from "rehype-pretty-code";
 import rehypeStringify from "rehype-stringify";
@@ -16,7 +17,8 @@ const CONTENT_DIR = path.join(process.cwd(), "content");
 const processor = unified()
   .use(remarkParse)
   .use(remarkGfm)
-  .use(remarkRehype)
+  .use(remarkRehype, { allowDangerousHtml: true })
+  .use(rehypeRaw)
   .use(rehypeSlug)
   .use(rehypePrettyCode, {
     theme: { light: "github-light", dark: "github-dark" },
@@ -43,7 +45,7 @@ export async function getDoc(slug: string[]): Promise<RenderedDoc | null> {
     return null;
   }
 
-  const title = raw.match(/^#\s+(.+)$/m)?.[1]?.trim() ?? "WebSkrap Docs";
+  const title = raw.match(/^#\s+(.+)$/m)?.[1]?.trim() ?? "GhostPWN Docs";
   let html = String(await processor.process(raw));
   const basePath = process.env.NEXT_PUBLIC_BASE_PATH || "";
   if (basePath) {

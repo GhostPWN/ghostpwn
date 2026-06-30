@@ -272,3 +272,26 @@ code[data-theme*=" "] span {
 .prose :where(code):not(:where([data-theme], pre *))::after {
   content: none;
 }
+/* coss Kbd look for <kbd> inside docs prose */
+.prose kbd {
+  display: inline-flex;
+  height: 1.25rem;
+  min-width: 1.25rem;
+  align-items: center;
+  justify-content: center;
+  gap: 0.25rem;
+  border-radius: 0.25rem;
+  background-color: var(--muted);
+  padding: 0 0.3rem;
+  font-family: var(--font-sans, ui-sans-serif);
+  font-size: 0.75rem;
+  font-weight: 500;
+  line-height: 1;
+  color: var(--muted-foreground);
+  vertical-align: middle;
+  box-shadow: none;
+}
+.prose kbd::before,
+.prose kbd::after {
+  content: none;
+}
