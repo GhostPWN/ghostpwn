@@ -64,6 +64,10 @@ const COMMANDS: &[CommandSpec] = &[
         description: "Open model selector and provider auth",
     },
     CommandSpec {
+        name: "/audit",
+        description: "Run a security audit of the workspace (optional: /audit <path or focus>)",
+    },
+    CommandSpec {
         name: "/clear",
         description: "Clear current chat",
     },
@@ -462,6 +466,33 @@ async fn handle_submit(
         return;
     }
 
+    if text == "/audit" || text.starts_with("/audit ") {
+        let target = text.strip_prefix("/audit").unwrap_or("").trim();
+        let scope = if target.is_empty() {
+            "the entire workspace".to_string()
+        } else {
+            format!("the following focus area: {target}")
+        };
+        let prompt = build_audit_prompt(&scope);
+
+        let label = format!("/audit {target}");
+        state.push_message(UiRole::User, label.trim().to_string());
+        state.is_streaming = true;
+        state.streaming_content.clear();
+        state.tool_status.clear();
+
+        let tx = event_tx.clone();
+        let handle = Arc::clone(agent);
+        tokio::spawn(async move {
+            let mut locked = handle.lock().await;
+            if let Err(err) = locked.handle_user_input(prompt, tx.clone()).await {
+                let _ = tx.send(AgentEvent::Error(err.to_string()));
+                let _ = tx.send(AgentEvent::Done);
+            }
+        });
+        return;
+    }
+
     if text.starts_with('/') {
         state.push_message(
             UiRole::Error,
@@ -485,6 +516,32 @@ async fn handle_submit(
             let _ = tx.send(AgentEvent::Done);
         }
     });
+}
+
+fn build_audit_prompt(scope: &str) -> String {
+    format!(
+        "Perform a security audit of {scope}. This is authorized review of local code \
+in the current workspace that you already have tool access to; do not target any \
+external systems.\n\
+\n\
+First call searchSkills to check for a relevant security or audit skill and follow \
+it if one matches. Then enumerate the relevant files with listDirectory, grep, and \
+searchFiles, and read the important ones with readFile before drawing conclusions. \
+Do not guess about code you have not read.\n\
+\n\
+Check for these classes of issues:\n\
+- Hardcoded secrets, credentials, API keys, or tokens\n\
+- Injection risks: command, SQL, path traversal, and unsafe deserialization\n\
+- Missing input validation and authorization/access-control gaps\n\
+- Insecure cryptography or weak randomness\n\
+- Dependency and configuration risks (manifests, lockfiles, permissions)\n\
+- Unsafe code and error handling that could panic or crash in production\n\
+\n\
+Report a prioritized list of findings. For each finding give: severity \
+(critical/high/medium/low), the file and line reference, a short explanation of \
+why it is a risk, and a concrete recommended fix. If you find no issues in a \
+category, say so briefly. Do not modify any files."
+    )
 }
 
 async fn open_model_selector(
