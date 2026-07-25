@@ -19,6 +19,11 @@
 
 ---
 
+> **Academic project.** GhostPWN is built as the annual project for the 3rd year
+> of the Bachelor in Cybersecurity at [ESGI Paris](https://esgi.fr/).
+
+---
+
 ## Overview
 
 GhostPWN is a Rust terminal assistant for offensive security research. It uses a `ratatui` + `crossterm` TUI, streams responses from multiple LLM providers, and constrains filesystem tools to a configured workspace boundary.
