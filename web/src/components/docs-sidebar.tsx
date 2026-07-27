@@ -3,20 +3,11 @@
 import Link from "next/link";
 import { usePathname } from "next/navigation";
 import { Menu } from "lucide-react";
-import { useState } from "react";
-import { Button } from "@/components/ui/button";
-import {
-  Sheet,
-  SheetContent,
-  SheetHeader,
-  SheetPanel,
-  SheetTitle,
-  SheetTrigger,
-} from "@/components/ui/sheet";
+import { useRef } from "react";
 import { NAV } from "@/lib/docs-nav";
 import { cn } from "@/lib/utils";
 
-export function DocsSidebar({ onNavigate }: { onNavigate?: () => void }) {
+export function DocsSidebar() {
   const pathname = usePathname();
 
   return (
@@ -34,7 +25,6 @@ export function DocsSidebar({ onNavigate }: { onNavigate?: () => void }) {
               <Link
                 key={item.href}
                 href={item.href}
-                onClick={onNavigate}
                 className={cn(
                   "rounded-md px-2 py-1.5 transition-colors",
                   active
@@ -53,30 +43,20 @@ export function DocsSidebar({ onNavigate }: { onNavigate?: () => void }) {
 }
 
 export function MobileDocsMenu() {
-  const [open, setOpen] = useState(false);
+  const details = useRef<HTMLDetailsElement>(null);
 
   return (
-    <Sheet open={open} onOpenChange={setOpen}>
-      <SheetTrigger
-        render={
-          <Button
-            className="md:hidden"
-            variant="ghost"
-            size="icon-sm"
-            aria-label="Open docs menu"
-          />
-        }
+    <details ref={details} className="relative md:hidden">
+      <summary className="flex size-8 cursor-pointer list-none items-center justify-center rounded-md border hover:bg-accent [&::-webkit-details-marker]:hidden">
+        <Menu className="size-4" />
+        <span className="sr-only">Open documentation menu</span>
+      </summary>
+      <div
+        className="fixed inset-x-4 top-24 max-h-[calc(100vh-7rem)] overflow-y-auto rounded-xl border bg-background p-4 shadow-lg"
+        onClick={() => details.current?.removeAttribute("open")}
       >
-        <Menu />
-      </SheetTrigger>
-      <SheetContent side="left">
-        <SheetHeader>
-          <SheetTitle>Documentation</SheetTitle>
-        </SheetHeader>
-        <SheetPanel>
-          <DocsSidebar onNavigate={() => setOpen(false)} />
-        </SheetPanel>
-      </SheetContent>
-    </Sheet>
+        <DocsSidebar />
+      </div>
+    </details>
   );
 }
