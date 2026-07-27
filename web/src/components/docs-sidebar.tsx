@@ -2,10 +2,21 @@
 
 import Link from "next/link";
 import { usePathname } from "next/navigation";
+import { Menu } from "lucide-react";
+import { useState } from "react";
+import { Button } from "@/components/ui/button";
+import {
+  Sheet,
+  SheetContent,
+  SheetHeader,
+  SheetPanel,
+  SheetTitle,
+  SheetTrigger,
+} from "@/components/ui/sheet";
 import { NAV } from "@/lib/docs-nav";
 import { cn } from "@/lib/utils";
 
-export function DocsSidebar() {
+export function DocsSidebar({ onNavigate }: { onNavigate?: () => void }) {
   const pathname = usePathname();
 
   return (
@@ -23,6 +34,7 @@ export function DocsSidebar() {
               <Link
                 key={item.href}
                 href={item.href}
+                onClick={onNavigate}
                 className={cn(
                   "rounded-md px-2 py-1.5 transition-colors",
                   active
@@ -37,5 +49,34 @@ export function DocsSidebar() {
         </div>
       ))}
     </nav>
+  );
+}
+
+export function MobileDocsMenu() {
+  const [open, setOpen] = useState(false);
+
+  return (
+    <Sheet open={open} onOpenChange={setOpen}>
+      <SheetTrigger
+        render={
+          <Button
+            className="md:hidden"
+            variant="ghost"
+            size="icon-sm"
+            aria-label="Open docs menu"
+          />
+        }
+      >
+        <Menu />
+      </SheetTrigger>
+      <SheetContent side="left">
+        <SheetHeader>
+          <SheetTitle>Documentation</SheetTitle>
+        </SheetHeader>
+        <SheetPanel>
+          <DocsSidebar onNavigate={() => setOpen(false)} />
+        </SheetPanel>
+      </SheetContent>
+    </Sheet>
   );
 }
