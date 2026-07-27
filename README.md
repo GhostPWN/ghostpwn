@@ -47,6 +47,7 @@ The current code base focuses on:
 - Keyboard model selector via `/model`
 - JSON-first agent loop with tool-calling
 - Local tools: `listSkills`, `searchSkills`, `readSkill`, `readFile`, `listDirectory`, `searchFiles`, `grep`, `runCommand`, `fileInfo`, `generateDiff`, `writeFile`, `editFile`, `multiEdit`, `applyPatch`, `webFetch`, `webSearch`
+- Commands and file mutations requested by the model require explicit `y` approval in the TUI
 - Optional local skills loaded from `skills/*/SKILL.md` or `GHOSTPWN_SKILLS_DIR`
 - Claude Code, Codex, and OpenCode-compatible tool aliases for common read/write/edit/shell/search operations
 - Diff rendering for fenced `diff` blocks in assistant output

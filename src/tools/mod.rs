@@ -27,6 +27,13 @@ const DEFAULT_WEB_FETCH_BYTES: usize = 1_000_000;
 const MAX_WEB_FETCH_BYTES: usize = 5_000_000;
 const MAX_WEB_SEARCH_RESULTS: usize = 10;
 
+pub fn tool_requires_approval(name: &str) -> bool {
+    matches!(
+        canonical_tool_name(name),
+        "runCommand" | "writeFile" | "editFile" | "multiEdit" | "applyPatch"
+    )
+}
+
 pub struct ToolRuntime {
     workspace_root: PathBuf,
     http_client: Client,
@@ -1470,6 +1477,7 @@ mod tests {
     use super::command_shell;
     use super::decode_duckduckgo_url;
     use super::parse_duckduckgo_results;
+    use super::tool_requires_approval;
     use super::unified_diff;
     use super::url_encode_query;
     use crate::models::ToolCall;
@@ -1514,6 +1522,15 @@ mod tests {
 
         assert_eq!(invocation.program, "sh");
         assert_eq!(invocation.args, vec!["-c", "printf hello"]);
+    }
+
+    #[test]
+    fn mutations_and_commands_require_approval() {
+        assert!(tool_requires_approval("runCommand"));
+        assert!(tool_requires_approval("Bash"));
+        assert!(tool_requires_approval("apply_patch"));
+        assert!(!tool_requires_approval("readFile"));
+        assert!(!tool_requires_approval("webFetch"));
     }
 
     #[tokio::test]

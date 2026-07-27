@@ -15,6 +15,7 @@
 - The runtime expects model responses as JSON envelopes.
 - When local skills are configured, the system prompt requires `searchSkills`/`readSkill` for matching specialized workflows before the agent proceeds.
 - Assistant text is streamed from provider responses and incrementally rendered in the TUI.
+- Model-requested commands and file mutations pause for explicit user approval.
 - Filesystem tools reject paths outside the configured workspace root.
 - `runCommand` uses the configured workspace as its current directory, runs through PowerShell on Windows and `sh` on Unix/macOS, and enforces a bounded timeout; do not treat it as a security sandbox.
 - `webSearch` uses DuckDuckGo HTML results and may fail if the page structure changes or rate limits requests.

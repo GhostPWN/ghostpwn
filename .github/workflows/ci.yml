@@ -1,12 +1,30 @@
 name: CI
 
 on:
+  pull_request:
   push:
+    branches:
+      - main
     tags:
       - "v*"
   workflow_dispatch:
 
 jobs:
+  version:
+    name: Check versions
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Check manifest and formula versions
+        shell: bash
+        run: |
+          cargo_version="$(sed -n 's/^version = "\(.*\)"/\1/p' Cargo.toml | head -1)"
+          formula_version="$(sed -n 's/.*version "\(.*\)"/\1/p' Formula/ghostpwn.rb)"
+          test "$cargo_version" = "$formula_version"
+          if [[ "$GITHUB_REF_TYPE" == "tag" ]]; then
+            test "v$cargo_version" = "$GITHUB_REF_NAME"
+          fi
+
   validate:
     name: Validate (${{ matrix.os }})
     runs-on: ${{ matrix.os }}
@@ -17,6 +35,7 @@ jobs:
           - ubuntu-latest
           - macos-latest
           - windows-latest
+    needs: version
 
     steps:
       - name: Checkout
@@ -50,3 +69,16 @@ jobs:
         with:
           name: ghostpwn-windows-x86_64
           path: dist/ghostpwn-windows-x86_64.zip
+
+  web:
+    name: Validate website
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: web
+    steps:
+      - uses: actions/checkout@v4
+      - uses: oven-sh/setup-bun@v2
+      - run: bun install --frozen-lockfile
+      - run: bun run lint
+      - run: bun run build

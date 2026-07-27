@@ -1,6 +1,6 @@
 [package]
 name = "ghostpwn"
-version = "0.2.3"
+version = "0.2.5"
 edition = "2024"
 description = "Autonomous pentest agent TUI with multi-provider LLM support"
 license = "MIT"
@@ -11,7 +11,7 @@ repository = "https://github.com/GhostPWN/ghostpwn"
 anyhow = "1.0.100"
 async-trait = "0.1.89"
 base64 = "0.22.1"
-crossterm = "0.29.0"
+crossterm = "0.28.1"
 futures-util = "0.3.31"
 globset = "0.4.16"
 keyring = "3.6.3"
@@ -22,7 +22,7 @@ reqwest = { version = "0.12.24", default-features = false, features = ["json", "
 serde = { version = "1.0.228", features = ["derive"] }
 serde_json = "1.0.145"
 sha2 = "0.10.9"
-tokio = { version = "1.48.0", features = ["full"] }
+tokio = { version = "1.48.0", features = ["fs", "io-util", "macros", "process", "rt-multi-thread", "sync", "time"] }
 url = "2.5.7"
 walkdir = "2.5.0"
 webbrowser = "1.0.6"

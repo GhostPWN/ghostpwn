@@ -30,7 +30,14 @@ impl SkillRuntime {
                 .ok()
                 .filter(|value| !value.trim().is_empty())
                 .map(PathBuf::from)
-                .unwrap_or_else(|| PathBuf::from("src/skills")),
+                .unwrap_or_else(|| {
+                    let root = PathBuf::from("skills");
+                    let development_root = PathBuf::from("src/skills");
+                    if !root.is_dir() && development_root.is_dir() {
+                        return development_root;
+                    }
+                    root
+                }),
         }
     }
 

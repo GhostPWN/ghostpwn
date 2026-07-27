@@ -22,4 +22,6 @@ Local tools available to the agent loop:
 
 `listSkills`, `searchSkills`, `readSkill`, `readFile`, `listDirectory`, `searchFiles`, `grep`, `runCommand`, `fileInfo`, `generateDiff`, `writeFile`, `editFile`, `multiEdit`, `applyPatch`, `webFetch`, `webSearch`.
 
+Model-requested commands and file mutations pause until you approve them with <kbd>y</kbd> or deny them with <kbd>n</kbd>/<kbd>Enter</kbd>/<kbd>Esc</kbd>.
+
 Claude Code, Codex, and OpenCode-compatible tool aliases are provided for common read/write/edit/shell/search operations.

@@ -5,7 +5,7 @@ use crate::config::{ProviderKeys, ProviderKind};
 use crate::models::{AgentEvent, ConversationMessage, ModelEnvelope, ToolCall};
 use crate::providers::{Provider, build_provider_with_secret_store};
 use crate::secrets::{SETTING_MODEL, SETTING_PROVIDER, SecretStore};
-use crate::tools::ToolRuntime;
+use crate::tools::{ToolRuntime, tool_requires_approval};
 
 const MAX_STEPS: usize = 15;
 
@@ -377,6 +377,22 @@ impl Agent {
 
             for call in envelope.tool_calls {
                 let summary = self.tools.arg_summary(&call.name, &call.arguments);
+                if tool_requires_approval(&call.name) {
+                    let (response, approval) = tokio::sync::oneshot::channel();
+                    let _ = events.send(AgentEvent::ApprovalRequired {
+                        name: call.name.clone(),
+                        args_summary: summary.clone(),
+                        response,
+                    });
+                    if !approval.await.unwrap_or(false) {
+                        self.history.push(ConversationMessage::tool(format!(
+                            "tool_error {}: denied by user",
+                            call.name
+                        )));
+                        continue;
+                    }
+                }
+
                 let _ = events.send(AgentEvent::ToolCall {
                     name: call.name.clone(),
                     args_summary: summary,

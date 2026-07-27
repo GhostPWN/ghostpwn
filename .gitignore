@@ -2,6 +2,8 @@
 .env*
 /test
 .DS_Store
+__pycache__/
+*.pyc
 
 # AGENTS
 CLAUDE.md

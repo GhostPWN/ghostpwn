@@ -52,9 +52,14 @@ pub struct ModelEnvelope {
     pub tool_calls: Vec<ToolCall>,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug)]
 pub enum AgentEvent {
     AssistantDelta(String),
+    ApprovalRequired {
+        name: String,
+        args_summary: String,
+        response: tokio::sync::oneshot::Sender<bool>,
+    },
     ToolCall {
         name: String,
         args_summary: String,

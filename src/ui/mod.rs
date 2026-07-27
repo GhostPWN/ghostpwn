@@ -19,6 +19,7 @@ use ratatui::prelude::*;
 use ratatui::widgets::{Block, BorderType, Borders, Clear, Padding, Paragraph, Wrap};
 use tokio::sync::Mutex;
 use tokio::sync::mpsc::{UnboundedReceiver, UnboundedSender, unbounded_channel};
+use tokio::sync::oneshot;
 
 use crate::agent::Agent;
 use crate::config::ProviderKind;
@@ -116,6 +117,10 @@ struct ModelSelectorStatus {
     error: bool,
 }
 
+struct PendingApproval {
+    response: oneshot::Sender<bool>,
+}
+
 struct UiState {
     provider_name: String,
     input: String,
@@ -129,6 +134,7 @@ struct UiState {
     completion_matches: Vec<&'static CommandSpec>,
     completion_index: usize,
     selector: Option<ModelSelector>,
+    pending_approval: Option<PendingApproval>,
     tick: u64,
 }
 
@@ -147,6 +153,7 @@ impl UiState {
             completion_matches: Vec::new(),
             completion_index: 0,
             selector: None,
+            pending_approval: None,
             tick: 0,
         }
     }
@@ -345,6 +352,22 @@ async fn ui_loop<B: Backend>(
                         && key.modifiers.contains(KeyModifiers::CONTROL)
                     {
                         break;
+                    }
+
+                    if state.pending_approval.is_some() {
+                        match key.code {
+                            KeyCode::Char('y') | KeyCode::Char('Y') => {
+                                resolve_approval(state, true);
+                            }
+                            KeyCode::Char('n')
+                            | KeyCode::Char('N')
+                            | KeyCode::Enter
+                            | KeyCode::Esc => {
+                                resolve_approval(state, false);
+                            }
+                            _ => {}
+                        }
+                        continue;
                     }
 
                     let size = terminal.size()?;
@@ -930,6 +953,16 @@ fn apply_agent_event(state: &mut UiState, event: AgentEvent) {
             state.streaming_content.push_str(&delta);
             state.tool_status.clear();
         }
+        AgentEvent::ApprovalRequired {
+            name,
+            args_summary,
+            response,
+        } => {
+            let prompt = format!("Approve {name}({args_summary})? [y/N]");
+            state.tool_status = prompt.clone();
+            state.push_message(UiRole::Tool, prompt);
+            state.pending_approval = Some(PendingApproval { response });
+        }
         AgentEvent::ToolCall { name, args_summary } => {
             state.streaming_content.clear();
             let tool_line = format!("{}({})", name, args_summary);
@@ -975,10 +1008,30 @@ fn apply_agent_event(state: &mut UiState, event: AgentEvent) {
             state.push_message(UiRole::Error, err);
         }
         AgentEvent::Done => {
+            state.pending_approval = None;
             state.flush_streaming_to_messages();
             state.tool_status.clear();
             state.is_streaming = false;
         }
+    }
+}
+
+fn resolve_approval(state: &mut UiState, approved: bool) {
+    if let Some(pending) = state.pending_approval.take() {
+        let _ = pending.response.send(approved);
+        state.push_message(
+            UiRole::Tool,
+            if approved {
+                "Approved.".to_string()
+            } else {
+                "Denied.".to_string()
+            },
+        );
+        state.tool_status = if approved {
+            "running approved tool".to_string()
+        } else {
+            "tool denied".to_string()
+        };
     }
 }
 
@@ -1342,17 +1395,26 @@ fn render_input(frame: &mut Frame, area: Rect, state: &UiState) {
         .padding(Padding::horizontal(1));
 
     let line = if state.is_streaming {
-        let idx = (state.tick / 2) as usize % SPINNER.len();
-        Line::from(vec![
-            Span::styled(
-                format!("{} ", SPINNER[idx]),
-                Style::default().fg(palette::EMBER).bold(),
-            ),
-            Span::styled(
-                "channel open · awaiting model",
-                Style::default().fg(palette::ASH).dim().italic(),
-            ),
-        ])
+        if state.pending_approval.is_some() {
+            Line::from(vec![
+                Span::styled("Approve tool? ", Style::default().fg(palette::EMBER).bold()),
+                Span::styled("y", Style::default().fg(palette::PHOSPHOR).bold()),
+                Span::raw(" / "),
+                Span::styled("N", Style::default().fg(palette::BLOOD).bold()),
+            ])
+        } else {
+            let idx = (state.tick / 2) as usize % SPINNER.len();
+            Line::from(vec![
+                Span::styled(
+                    format!("{} ", SPINNER[idx]),
+                    Style::default().fg(palette::EMBER).bold(),
+                ),
+                Span::styled(
+                    "channel open · awaiting model",
+                    Style::default().fg(palette::ASH).dim().italic(),
+                ),
+            ])
+        }
     } else {
         let caret = if (state.tick / 8).is_multiple_of(2) {
             "▌"
@@ -1976,4 +2038,29 @@ async fn finish_codex_connection(
         error: false,
     });
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{UiState, apply_agent_event, resolve_approval};
+    use crate::models::AgentEvent;
+
+    #[test]
+    fn approval_event_waits_for_user_response() {
+        let mut state = UiState::new("test".to_string());
+        let (response, mut approval) = tokio::sync::oneshot::channel();
+
+        apply_agent_event(
+            &mut state,
+            AgentEvent::ApprovalRequired {
+                name: "runCommand".to_string(),
+                args_summary: "cargo test".to_string(),
+                response,
+            },
+        );
+        assert!(state.pending_approval.is_some());
+
+        resolve_approval(&mut state, true);
+        assert!(approval.try_recv().expect("approval response"));
+    }
 }
