@@ -5,7 +5,7 @@ use std::process::Stdio;
 use std::time::Duration;
 
 use anyhow::{Result, anyhow};
-use futures_util::StreamExt;
+use futures_util::{StreamExt, stream};
 use globset::Glob;
 use regex::Regex;
 use reqwest::Client;
@@ -26,12 +26,37 @@ const MAX_COMMAND_TIMEOUT_MS: u64 = 120_000;
 const DEFAULT_WEB_FETCH_BYTES: usize = 1_000_000;
 const MAX_WEB_FETCH_BYTES: usize = 5_000_000;
 const MAX_WEB_SEARCH_RESULTS: usize = 10;
+const MAX_SEARCH_FILES: usize = 100;
+const MAX_GREP_MATCHES: usize = 50;
+const MAX_AUDIT_LOCKFILES: usize = 25;
+const MAX_AUDIT_PACKAGES: usize = 1_000;
+const MAX_AUDIT_ADVISORIES: usize = 100;
+const OSV_QUERY_BATCH_URL: &str = "https://api.osv.dev/v1/querybatch";
 
 pub fn tool_requires_approval(name: &str) -> bool {
     matches!(
         canonical_tool_name(name),
-        "runCommand" | "writeFile" | "editFile" | "multiEdit" | "applyPatch"
+        "runCommand" | "auditDependencies" | "writeFile" | "editFile" | "multiEdit" | "applyPatch"
     )
+}
+
+pub fn audit_tool_allowed(name: &str, allow_mutations: bool) -> bool {
+    matches!(
+        canonical_tool_name(name),
+        "listSkills"
+            | "searchSkills"
+            | "readSkill"
+            | "readFile"
+            | "listDirectory"
+            | "searchFiles"
+            | "grep"
+            | "fileInfo"
+            | "auditDependencies"
+    ) || allow_mutations
+        && matches!(
+            canonical_tool_name(name),
+            "generateDiff" | "writeFile" | "editFile" | "multiEdit" | "applyPatch"
+        )
 }
 
 pub struct ToolRuntime {
@@ -94,6 +119,7 @@ impl ToolRuntime {
             "searchFiles" => "pattern",
             "grep" => "pattern",
             "runCommand" => "command",
+            "auditDependencies" => "path",
             "fileInfo" => "path",
             "generateDiff" => "path",
             "writeFile" => "path",
@@ -133,6 +159,7 @@ impl ToolRuntime {
             "searchFiles" => self.search_files(&call.arguments).await,
             "grep" => self.grep(&call.arguments).await,
             "runCommand" => self.run_command(&call.arguments).await,
+            "auditDependencies" => self.audit_dependencies(&call.arguments).await,
             "fileInfo" => self.file_info(&call.arguments).await,
             "generateDiff" => self.generate_diff(&call.arguments).await,
             "writeFile" => self.write_file(&call.arguments).await,
@@ -143,6 +170,128 @@ impl ToolRuntime {
             "webSearch" => self.web_search(&call.arguments).await,
             other => Err(anyhow!("Unknown tool '{}'", other)),
         }
+    }
+
+    pub async fn execute_audit(
+        &self,
+        call: &ToolCall,
+        scope: &Path,
+        allow_mutations: bool,
+    ) -> Result<Value> {
+        if !audit_tool_allowed(&call.name, allow_mutations) {
+            return Err(anyhow!(
+                "Tool '{}' is unavailable in this audit mode",
+                call.name
+            ));
+        }
+
+        let mut scoped_call = call.clone();
+        let name = canonical_tool_name(&scoped_call.name);
+        if matches!(
+            name,
+            "listDirectory" | "searchFiles" | "grep" | "auditDependencies"
+        ) && tool_path_arg(name, &scoped_call.arguments).is_none()
+        {
+            scoped_call.arguments["path"] = json!(scope.display().to_string());
+        }
+        if matches!(name, "searchFiles" | "grep") {
+            scoped_call.arguments["excludeGenerated"] = json!(true);
+        }
+        if name == "readFile" {
+            scoped_call.arguments["lineNumbers"] = json!(true);
+        }
+
+        let resolved = match name {
+            "readFile" | "listDirectory" | "searchFiles" | "grep" | "fileInfo"
+            | "auditDependencies" | "generateDiff" | "editFile" | "multiEdit" => {
+                let path = tool_path_arg(name, &scoped_call.arguments).unwrap_or(".");
+                Some(self.resolve_in_workspace(path)?)
+            }
+            "writeFile" => {
+                let path = required_path(&scoped_call.arguments)?;
+                Some(self.resolve_existing_or_missing_in_workspace(path)?)
+            }
+            "applyPatch" => {
+                self.ensure_patch_in_scope(&scoped_call.arguments, scope)?;
+                None
+            }
+            _ => None,
+        };
+        if let Some(resolved) = resolved
+            && !resolved.starts_with(scope)
+        {
+            return Err(anyhow!(
+                "Path '{}' is outside audit scope '{}'",
+                resolved.display(),
+                scope.display()
+            ));
+        }
+
+        self.execute(&scoped_call).await
+    }
+
+    fn ensure_patch_in_scope(&self, args: &Value, scope: &Path) -> Result<()> {
+        let patch_text = required_any_str(args, &["patchText", "patch_text", "patch"])?;
+        for op in parse_apply_patch(patch_text)? {
+            let mut paths = match op {
+                PatchOp::Add { path, .. } => vec![(path, false)],
+                PatchOp::Delete { path } => vec![(path, true)],
+                PatchOp::Update { path, move_to, .. } => {
+                    let mut paths = vec![(path, true)];
+                    if let Some(move_to) = move_to {
+                        paths.push((move_to, false));
+                    }
+                    paths
+                }
+            };
+            for (path, must_exist) in paths.drain(..) {
+                let resolved = if must_exist {
+                    self.resolve_in_workspace(&path)?
+                } else {
+                    self.resolve_existing_or_missing_in_workspace(&path)?
+                };
+                if !resolved.starts_with(scope) {
+                    return Err(anyhow!(
+                        "Path '{}' is outside audit scope '{}'",
+                        resolved.display(),
+                        scope.display()
+                    ));
+                }
+            }
+        }
+        Ok(())
+    }
+
+    pub fn resolve_audit_scope(&self, target: &str) -> Result<(PathBuf, String)> {
+        if target.is_empty() {
+            return Ok((
+                self.workspace_root.clone(),
+                "the entire workspace".to_string(),
+            ));
+        }
+
+        let candidate = self.absolute_input_path(target);
+        if candidate.exists() {
+            let resolved = self.resolve_in_workspace(target)?;
+            let relative = resolved
+                .strip_prefix(&self.workspace_root)
+                .unwrap_or(&resolved);
+            let display = if relative.as_os_str().is_empty() {
+                ".".to_string()
+            } else {
+                relative.display().to_string()
+            };
+            return Ok((resolved, format!("workspace path {display:?}")));
+        }
+
+        if looks_like_path(target) {
+            return Err(anyhow!("Audit path '{}' does not exist", target));
+        }
+
+        Ok((
+            self.workspace_root.clone(),
+            format!("the entire workspace, focused on {target:?}"),
+        ))
     }
 
     async fn read_file(&self, args: &Value) -> Result<Value> {
@@ -162,33 +311,48 @@ impl ToolRuntime {
         let content = fs::read_to_string(&resolved).await?;
         let total_lines = content.lines().count();
 
-        let output = if let Some(limit) = limit {
-            content
-                .lines()
-                .skip(offset)
-                .take(limit)
-                .collect::<Vec<&str>>()
-                .join("\n")
-        } else if offset > 0 {
-            content
-                .lines()
-                .skip(offset)
-                .collect::<Vec<&str>>()
-                .join("\n")
-        } else {
+        let selected = content
+            .lines()
+            .enumerate()
+            .skip(offset)
+            .take(limit.unwrap_or(usize::MAX))
+            .collect::<Vec<(usize, &str)>>();
+        let output = if limit.is_none() && offset == 0 {
             content.clone()
+        } else {
+            selected
+                .iter()
+                .map(|(_, line)| *line)
+                .collect::<Vec<&str>>()
+                .join("\n")
         };
+        let numbered = selected
+            .iter()
+            .map(|(index, line)| format!("{}: {}", index + 1, line))
+            .collect::<Vec<String>>()
+            .join("\n");
+        let end_line = selected.last().map(|(index, _)| index + 1);
+        let include_line_numbers = args
+            .get("lineNumbers")
+            .and_then(Value::as_bool)
+            .unwrap_or(false);
 
         let truncated = limit
             .map(|v| total_lines > offset.saturating_add(v))
             .unwrap_or(false);
 
-        Ok(json!({
+        let mut result = json!({
             "path": resolved.display().to_string(),
             "content": output,
+            "startLine": selected.first().map(|(index, _)| index + 1),
+            "endLine": end_line,
             "totalLines": total_lines,
             "truncated": truncated,
-        }))
+        });
+        if include_line_numbers {
+            result["numberedContent"] = json!(numbered);
+        }
+        Ok(result)
     }
 
     async fn list_directory(&self, args: &Value) -> Result<Value> {
@@ -226,9 +390,18 @@ impl ToolRuntime {
         let matcher = Glob::new(pattern)
             .map_err(|err| anyhow!("Invalid glob pattern '{}': {}", pattern, err))?
             .compile_matcher();
+        let exclude_generated = args
+            .get("excludeGenerated")
+            .and_then(Value::as_bool)
+            .unwrap_or(false);
 
         let mut matches = Vec::<String>::new();
-        for entry in WalkDir::new(&base).follow_links(false) {
+        for entry in WalkDir::new(&base)
+            .follow_links(false)
+            .sort_by_file_name()
+            .into_iter()
+            .filter_entry(|entry| !exclude_generated || include_walk_entry(entry))
+        {
             let entry = match entry {
                 Ok(v) => v,
                 Err(_) => continue,
@@ -245,17 +418,19 @@ impl ToolRuntime {
 
             if matcher.is_match(rel) {
                 matches.push(rel.display().to_string());
-                if matches.len() >= 100 {
+                if matches.len() > MAX_SEARCH_FILES {
                     break;
                 }
             }
         }
+        let truncated = matches.len() > MAX_SEARCH_FILES;
+        matches.truncate(MAX_SEARCH_FILES);
 
         Ok(json!({
             "pattern": pattern,
             "cwd": base.display().to_string(),
             "matches": matches,
-            "truncated": matches.len() >= 100,
+            "truncated": truncated,
         }))
     }
 
@@ -275,6 +450,10 @@ impl ToolRuntime {
             ),
             None => None,
         };
+        let exclude_generated = args
+            .get("excludeGenerated")
+            .and_then(Value::as_bool)
+            .unwrap_or(false);
 
         let mut results = Vec::<Value>::new();
         let walker = if resolved.is_file() {
@@ -283,7 +462,12 @@ impl ToolRuntime {
             WalkDir::new(&resolved)
         };
 
-        for entry in walker.follow_links(false) {
+        for entry in walker
+            .follow_links(false)
+            .sort_by_file_name()
+            .into_iter()
+            .filter_entry(|entry| !exclude_generated || include_walk_entry(entry))
+        {
             let entry = match entry {
                 Ok(v) => v,
                 Err(_) => continue,
@@ -320,21 +504,185 @@ impl ToolRuntime {
                         "line": index + 1,
                         "text": line,
                     }));
-                    if results.len() >= 50 {
+                    if results.len() > MAX_GREP_MATCHES {
                         break;
                     }
                 }
             }
 
-            if results.len() >= 50 {
+            if results.len() > MAX_GREP_MATCHES {
                 break;
             }
         }
+        let truncated = results.len() > MAX_GREP_MATCHES;
+        results.truncate(MAX_GREP_MATCHES);
 
         Ok(json!({
             "pattern": pattern,
             "matches": results,
             "totalMatches": results.len(),
+            "truncated": truncated,
+        }))
+    }
+
+    async fn audit_dependencies(&self, args: &Value) -> Result<Value> {
+        let path = path_arg(args).unwrap_or(".");
+        let scope = self.resolve_in_workspace(path)?;
+        let (lockfiles, lockfiles_truncated) = cargo_lockfiles(&scope);
+        if lockfiles.is_empty() {
+            return Ok(json!({
+                "database": "OSV.dev",
+                "ecosystem": "crates.io",
+                "lockfiles": [],
+                "packagesScanned": 0,
+                "findings": [],
+                "complete": true,
+                "message": "No Cargo.lock files found in scope",
+            }));
+        }
+
+        let mut packages = Vec::<CargoPackage>::new();
+        for lockfile in &lockfiles {
+            let content = fs::read_to_string(lockfile).await?;
+            for (name, version) in parse_cargo_lock(&content) {
+                packages.push(CargoPackage {
+                    lockfile: lockfile.display().to_string(),
+                    name,
+                    version,
+                });
+            }
+        }
+        packages.sort_by(|a, b| {
+            (&a.lockfile, &a.name, &a.version).cmp(&(&b.lockfile, &b.name, &b.version))
+        });
+        packages.dedup_by(|a, b| {
+            a.lockfile == b.lockfile && a.name == b.name && a.version == b.version
+        });
+        let packages_truncated = packages.len() > MAX_AUDIT_PACKAGES;
+        packages.truncate(MAX_AUDIT_PACKAGES);
+        if packages.is_empty() {
+            return Ok(json!({
+                "database": "OSV.dev",
+                "ecosystem": "crates.io",
+                "lockfiles": lockfiles.iter().map(|path| path.display().to_string()).collect::<Vec<String>>(),
+                "packagesScanned": 0,
+                "findings": [],
+                "complete": !lockfiles_truncated,
+                "message": "Cargo.lock contained no packages",
+            }));
+        }
+
+        let queries = packages
+            .iter()
+            .map(|package| {
+                json!({
+                    "version": package.version,
+                    "package": {
+                        "name": package.name,
+                        "ecosystem": "crates.io",
+                    }
+                })
+            })
+            .collect::<Vec<Value>>();
+        let response = self
+            .http_client
+            .post(OSV_QUERY_BATCH_URL)
+            .json(&json!({ "queries": queries }))
+            .send()
+            .await?
+            .error_for_status()?
+            .json::<Value>()
+            .await?;
+        let results = response
+            .get("results")
+            .and_then(Value::as_array)
+            .ok_or_else(|| anyhow!("OSV returned an invalid batch response"))?;
+        if results.len() != packages.len() {
+            return Err(anyhow!(
+                "OSV returned {} results for {} packages",
+                results.len(),
+                packages.len()
+            ));
+        }
+
+        let mut findings = Vec::<Value>::new();
+        let mut advisory_ids = Vec::<String>::new();
+        let mut paginated = false;
+        for (package, result) in packages.iter().zip(results) {
+            paginated |= result
+                .get("next_page_token")
+                .and_then(Value::as_str)
+                .is_some();
+            let ids = result
+                .get("vulns")
+                .and_then(Value::as_array)
+                .into_iter()
+                .flatten()
+                .filter_map(|vulnerability| vulnerability.get("id").and_then(Value::as_str))
+                .map(str::to_string)
+                .collect::<Vec<String>>();
+            if ids.is_empty() {
+                continue;
+            }
+            advisory_ids.extend(ids.iter().cloned());
+            findings.push(json!({
+                "lockfile": package.lockfile,
+                "package": package.name,
+                "version": package.version,
+                "advisoryIds": ids,
+            }));
+        }
+
+        advisory_ids.sort();
+        advisory_ids.dedup();
+        let advisories_truncated = advisory_ids.len() > MAX_AUDIT_ADVISORIES;
+        advisory_ids.truncate(MAX_AUDIT_ADVISORIES);
+        let client = &self.http_client;
+        let details = stream::iter(advisory_ids.into_iter().map(|id| async move {
+            let url = format!("https://api.osv.dev/v1/vulns/{id}");
+            let result = client
+                .get(&url)
+                .send()
+                .await?
+                .error_for_status()?
+                .json::<Value>()
+                .await;
+            result.map(|value| (id, summarize_osv_advisory(&value)))
+        }))
+        .buffer_unordered(8)
+        .collect::<Vec<_>>()
+        .await;
+        let mut advisories = serde_json::Map::new();
+        let mut advisory_errors = Vec::<String>::new();
+        for result in details {
+            match result {
+                Ok((id, detail)) => {
+                    advisories.insert(id, detail);
+                }
+                Err(err) => advisory_errors.push(err.to_string()),
+            }
+        }
+
+        let complete = !lockfiles_truncated
+            && !packages_truncated
+            && !paginated
+            && !advisories_truncated
+            && advisory_errors.is_empty();
+        Ok(json!({
+            "database": "OSV.dev",
+            "ecosystem": "crates.io",
+            "lockfiles": lockfiles.iter().map(|path| path.display().to_string()).collect::<Vec<String>>(),
+            "packagesScanned": packages.len(),
+            "findings": findings,
+            "advisories": advisories,
+            "complete": complete,
+            "truncation": {
+                "lockfiles": lockfiles_truncated,
+                "packages": packages_truncated,
+                "pagination": paginated,
+                "advisories": advisories_truncated,
+            },
+            "errors": advisory_errors,
         }))
     }
 
@@ -763,6 +1111,117 @@ struct WebFetchBody {
     truncated: bool,
 }
 
+#[derive(Debug)]
+struct CargoPackage {
+    lockfile: String,
+    name: String,
+    version: String,
+}
+
+fn include_walk_entry(entry: &walkdir::DirEntry) -> bool {
+    !entry.file_type().is_dir()
+        || !matches!(
+            entry.file_name().to_str(),
+            Some(".git" | "node_modules" | "target")
+        )
+}
+
+fn looks_like_path(target: &str) -> bool {
+    let path = Path::new(target);
+    path.is_absolute()
+        || target.starts_with('.')
+        || target.contains('/')
+        || target.contains('\\')
+        || (!target.chars().any(char::is_whitespace) && path.extension().is_some())
+}
+
+fn cargo_lockfiles(scope: &Path) -> (Vec<PathBuf>, bool) {
+    let mut lockfiles = if scope.is_file() {
+        match scope.file_name().and_then(|name| name.to_str()) {
+            Some("Cargo.lock") => vec![scope.to_path_buf()],
+            _ => Vec::new(),
+        }
+    } else {
+        WalkDir::new(scope)
+            .follow_links(false)
+            .sort_by_file_name()
+            .into_iter()
+            .filter_entry(include_walk_entry)
+            .filter_map(|entry| entry.ok())
+            .filter(|entry| entry.file_type().is_file() && entry.file_name() == "Cargo.lock")
+            .map(|entry| entry.into_path())
+            .take(MAX_AUDIT_LOCKFILES + 1)
+            .collect::<Vec<PathBuf>>()
+    };
+    let truncated = lockfiles.len() > MAX_AUDIT_LOCKFILES;
+    lockfiles.truncate(MAX_AUDIT_LOCKFILES);
+    (lockfiles, truncated)
+}
+
+fn parse_cargo_lock(content: &str) -> Vec<(String, String)> {
+    let mut packages = Vec::<(String, String)>::new();
+    let mut name = None::<String>;
+    let mut version = None::<String>;
+
+    for line in content.lines().map(str::trim) {
+        if line == "[[package]]" {
+            if let (Some(name), Some(version)) = (name.take(), version.take()) {
+                packages.push((name, version));
+            }
+            continue;
+        }
+        if let Some(value) = line.strip_prefix("name = ") {
+            name = parse_toml_string(value);
+        } else if let Some(value) = line.strip_prefix("version = ") {
+            version = parse_toml_string(value);
+        }
+    }
+    if let (Some(name), Some(version)) = (name, version) {
+        packages.push((name, version));
+    }
+    packages
+}
+
+fn parse_toml_string(value: &str) -> Option<String> {
+    value
+        .strip_prefix('"')
+        .and_then(|value| value.strip_suffix('"'))
+        .map(str::to_string)
+}
+
+fn summarize_osv_advisory(advisory: &Value) -> Value {
+    let fixed_versions = advisory
+        .get("affected")
+        .and_then(Value::as_array)
+        .into_iter()
+        .flatten()
+        .flat_map(|affected| {
+            affected
+                .get("ranges")
+                .and_then(Value::as_array)
+                .into_iter()
+                .flatten()
+        })
+        .flat_map(|range| {
+            range
+                .get("events")
+                .and_then(Value::as_array)
+                .into_iter()
+                .flatten()
+        })
+        .filter_map(|event| event.get("fixed").and_then(Value::as_str))
+        .collect::<Vec<&str>>();
+
+    json!({
+        "summary": advisory.get("summary"),
+        "aliases": advisory.get("aliases"),
+        "severity": advisory.get("severity"),
+        "databaseSpecific": advisory.get("database_specific"),
+        "fixedVersions": fixed_versions,
+        "url": advisory.get("id").and_then(Value::as_str).map(|id| format!("https://osv.dev/vulnerability/{id}")),
+    })
+}
+
 #[derive(Debug, PartialEq, Eq)]
 struct CommandShell<'a> {
     program: &'static str,
@@ -842,6 +1301,7 @@ fn canonical_tool_name(name: &str) -> &str {
         "Glob" | "glob" | "searchFiles" => "searchFiles",
         "Grep" | "grep" => "grep",
         "Bash" | "bash" | "runCommand" => "runCommand",
+        "AuditDependencies" | "auditDependencies" => "auditDependencies",
         "fileInfo" => "fileInfo",
         "generateDiff" => "generateDiff",
         "Write" | "write" | "writeFile" => "writeFile",
@@ -907,6 +1367,16 @@ fn path_arg(args: &Value) -> Option<&str> {
     args.get("path")
         .or_else(|| args.get("file_path"))
         .and_then(Value::as_str)
+}
+
+fn tool_path_arg<'a>(name: &str, args: &'a Value) -> Option<&'a str> {
+    if name == "searchFiles" {
+        args.get("cwd")
+            .and_then(Value::as_str)
+            .or_else(|| path_arg(args))
+    } else {
+        path_arg(args)
+    }
 }
 
 fn required_any_str<'a>(args: &'a Value, keys: &[&str]) -> Result<&'a str> {
@@ -1474,8 +1944,10 @@ mod tests {
     use tempfile::tempdir;
 
     use super::ToolRuntime;
+    use super::audit_tool_allowed;
     use super::command_shell;
     use super::decode_duckduckgo_url;
+    use super::parse_cargo_lock;
     use super::parse_duckduckgo_results;
     use super::tool_requires_approval;
     use super::unified_diff;
@@ -1527,10 +1999,163 @@ mod tests {
     #[test]
     fn mutations_and_commands_require_approval() {
         assert!(tool_requires_approval("runCommand"));
+        assert!(tool_requires_approval("auditDependencies"));
         assert!(tool_requires_approval("Bash"));
         assert!(tool_requires_approval("apply_patch"));
         assert!(!tool_requires_approval("readFile"));
         assert!(!tool_requires_approval("webFetch"));
+    }
+
+    #[test]
+    fn audit_mode_allows_only_scoped_read_tools_and_dependency_audit() {
+        assert!(audit_tool_allowed("readFile", false));
+        assert!(audit_tool_allowed("auditDependencies", false));
+        assert!(!audit_tool_allowed("runCommand", false));
+        assert!(!audit_tool_allowed("webFetch", false));
+        assert!(!audit_tool_allowed("writeFile", false));
+
+        for tool in [
+            "generateDiff",
+            "writeFile",
+            "editFile",
+            "multiEdit",
+            "applyPatch",
+        ] {
+            assert!(audit_tool_allowed(tool, true));
+        }
+    }
+
+    #[tokio::test]
+    async fn audit_mode_rejects_tools_and_paths_outside_scope() {
+        let root = tempdir().expect("tempdir");
+        let workspace = root.path().join("workspace");
+        let scope = workspace.join("src");
+        fs::create_dir_all(&scope).expect("scope");
+        fs::write(scope.join("inside.rs"), "safe").expect("inside");
+        fs::write(workspace.join("outside.rs"), "outside").expect("outside");
+
+        let tools = ToolRuntime::new(workspace).expect("runtime");
+        let scope = scope.canonicalize().expect("canonical scope");
+        let blocked_tool = ToolCall {
+            name: "webFetch".to_string(),
+            arguments: json!({"url": "https://example.com"}),
+        };
+        assert!(
+            tools
+                .execute_audit(&blocked_tool, &scope, false)
+                .await
+                .expect_err("web must be blocked")
+                .to_string()
+                .contains("unavailable")
+        );
+
+        let outside_read = ToolCall {
+            name: "readFile".to_string(),
+            arguments: json!({"path": root.path().join("workspace/outside.rs").display().to_string()}),
+        };
+        assert!(
+            tools
+                .execute_audit(&outside_read, &scope, false)
+                .await
+                .expect_err("outside read must be blocked")
+                .to_string()
+                .contains("outside audit scope")
+        );
+
+        let inside_read = ToolCall {
+            name: "readFile".to_string(),
+            arguments: json!({"path": scope.join("inside.rs").display().to_string()}),
+        };
+        assert!(
+            tools
+                .execute_audit(&inside_read, &scope, false)
+                .await
+                .is_ok()
+        );
+
+        let default_list = ToolCall {
+            name: "listDirectory".to_string(),
+            arguments: json!({}),
+        };
+        let result = tools
+            .execute_audit(&default_list, &scope, false)
+            .await
+            .expect("scoped default");
+        assert_eq!(result["path"].as_str(), scope.to_str());
+
+        let inside_write = ToolCall {
+            name: "writeFile".to_string(),
+            arguments: json!({"path": scope.join("fixed.rs").display().to_string(), "content": "fixed"}),
+        };
+        assert!(
+            tools
+                .execute_audit(&inside_write, &scope, true)
+                .await
+                .is_ok()
+        );
+
+        let outside_write = ToolCall {
+            name: "writeFile".to_string(),
+            arguments: json!({
+                "path": root.path().join("workspace/not-scoped.rs").display().to_string(),
+                "content": "blocked",
+            }),
+        };
+        assert!(
+            tools
+                .execute_audit(&outside_write, &scope, true)
+                .await
+                .expect_err("outside write must be blocked")
+                .to_string()
+                .contains("outside audit scope")
+        );
+
+        let outside_patch = ToolCall {
+            name: "applyPatch".to_string(),
+            arguments: json!({
+                "patch": "*** Begin Patch\n*** Add File: not-scoped.rs\n+blocked\n*** End Patch"
+            }),
+        };
+        assert!(
+            tools
+                .execute_audit(&outside_patch, &scope, true)
+                .await
+                .expect_err("outside patch must be blocked")
+                .to_string()
+                .contains("outside audit scope")
+        );
+    }
+
+    #[test]
+    fn resolves_audit_paths_and_rejects_missing_path_like_targets() {
+        let root = tempdir().expect("tempdir");
+        let workspace = root.path().join("workspace");
+        fs::create_dir_all(workspace.join("src")).expect("workspace");
+        let tools = ToolRuntime::new(workspace.clone()).expect("runtime");
+
+        let (scope, _) = tools.resolve_audit_scope("src").expect("existing path");
+        assert_eq!(scope, workspace.join("src").canonicalize().expect("scope"));
+        assert!(tools.resolve_audit_scope("missing/file.rs").is_err());
+
+        let (focus_scope, label) = tools.resolve_audit_scope("authentication").expect("focus");
+        assert_eq!(focus_scope, workspace.canonicalize().expect("workspace"));
+        assert!(label.contains("authentication"));
+    }
+
+    #[test]
+    fn parses_rust_packages_from_cargo_lock() {
+        let packages = parse_cargo_lock(
+            "version = 4\n\n[[package]]\nname = \"alpha\"\nversion = \"1.2.3\"\n\
+             \n[[package]]\nname = \"beta\"\nversion = \"2.0.0\"\n",
+        );
+
+        assert_eq!(
+            packages,
+            vec![
+                ("alpha".to_string(), "1.2.3".to_string()),
+                ("beta".to_string(), "2.0.0".to_string()),
+            ]
+        );
     }
 
     #[tokio::test]
@@ -1632,6 +2257,7 @@ mod tests {
             arguments: json!({
                 "path": "notes.txt",
                 "maxLines": 2,
+                "lineNumbers": true,
             }),
         };
 
@@ -1645,6 +2271,43 @@ mod tests {
             result.get("content").and_then(|v| v.as_str()),
             Some("line1\nline2")
         );
+        assert_eq!(
+            result.get("numberedContent").and_then(|v| v.as_str()),
+            Some("1: line1\n2: line2")
+        );
+        assert_eq!(result.get("startLine").and_then(|v| v.as_u64()), Some(1));
+        assert_eq!(result.get("endLine").and_then(|v| v.as_u64()), Some(2));
+    }
+
+    #[tokio::test]
+    async fn search_and_grep_report_truncation() {
+        let root = tempdir().expect("tempdir");
+        let workspace = root.path().join("workspace");
+        fs::create_dir_all(&workspace).expect("workspace");
+        for index in 0..=100 {
+            fs::write(workspace.join(format!("{index:03}.txt")), "match\n").expect("file");
+        }
+
+        let tools = ToolRuntime::new(workspace).expect("runtime");
+        let search = tools
+            .execute(&ToolCall {
+                name: "searchFiles".to_string(),
+                arguments: json!({"pattern": "*.txt"}),
+            })
+            .await
+            .expect("search");
+        assert_eq!(search["matches"].as_array().map(Vec::len), Some(100));
+        assert_eq!(search["truncated"].as_bool(), Some(true));
+
+        let grep = tools
+            .execute(&ToolCall {
+                name: "grep".to_string(),
+                arguments: json!({"pattern": "match", "glob": "*.txt"}),
+            })
+            .await
+            .expect("grep");
+        assert_eq!(grep["matches"].as_array().map(Vec::len), Some(50));
+        assert_eq!(grep["truncated"].as_bool(), Some(true));
     }
 
     #[tokio::test]

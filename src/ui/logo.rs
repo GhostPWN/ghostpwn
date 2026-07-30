@@ -111,9 +111,9 @@ fn render_ghost(frame: &mut Frame, area: Rect) {
 
 fn render_chips(frame: &mut Frame, area: Rect) {
     let chips: [(&str, &str); 3] = [
-        ("/model", "models and provider auth"),
-        ("c/d", "connect or disconnect"),
-        ("/help", "see every command"),
+        ("/model", "models"),
+        ("/audit", "security review"),
+        ("/help", "commands"),
     ];
 
     let mut spans: Vec<Span<'_>> = Vec::new();

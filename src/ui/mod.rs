@@ -2,6 +2,7 @@ mod logo;
 
 use std::collections::HashMap;
 use std::io;
+use std::path::Path;
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -66,7 +67,7 @@ const COMMANDS: &[CommandSpec] = &[
     },
     CommandSpec {
         name: "/audit",
-        description: "Run a security audit of the workspace (optional: /audit <path or focus>)",
+        description: "Audit workspace; add --fix to apply approved fixes",
     },
     CommandSpec {
         name: "/clear",
@@ -489,16 +490,21 @@ async fn handle_submit(
         return;
     }
 
-    if text == "/audit" || text.starts_with("/audit ") {
-        let target = text.strip_prefix("/audit").unwrap_or("").trim();
-        let scope = if target.is_empty() {
-            "the entire workspace".to_string()
-        } else {
-            format!("the following focus area: {target}")
+    if let Some((apply_fixes, target)) = parse_audit_command(&text) {
+        let (scope_root, scope) = {
+            let locked = agent.lock().await;
+            match locked.resolve_audit_scope(target) {
+                Ok(scope) => scope,
+                Err(err) => {
+                    state.push_message(UiRole::Error, err.to_string());
+                    return;
+                }
+            }
         };
-        let prompt = build_audit_prompt(&scope);
+        let prompt = build_audit_prompt(&scope, &scope_root, apply_fixes);
 
-        let label = format!("/audit {target}");
+        let flag = if apply_fixes { " --fix" } else { "" };
+        let label = format!("/audit{flag} {target}");
         state.push_message(UiRole::User, label.trim().to_string());
         state.is_streaming = true;
         state.streaming_content.clear();
@@ -508,7 +514,10 @@ async fn handle_submit(
         let handle = Arc::clone(agent);
         tokio::spawn(async move {
             let mut locked = handle.lock().await;
-            if let Err(err) = locked.handle_user_input(prompt, tx.clone()).await {
+            if let Err(err) = locked
+                .handle_audit(prompt, scope_root, apply_fixes, tx.clone())
+                .await
+            {
                 let _ = tx.send(AgentEvent::Error(err.to_string()));
                 let _ = tx.send(AgentEvent::Done);
             }
@@ -541,16 +550,47 @@ async fn handle_submit(
     });
 }
 
-fn build_audit_prompt(scope: &str) -> String {
+fn parse_audit_command(text: &str) -> Option<(bool, &str)> {
+    let rest = text.strip_prefix("/audit")?;
+    if !rest.is_empty() && !rest.starts_with(' ') {
+        return None;
+    }
+
+    let rest = rest.trim();
+    if rest == "--fix" {
+        Some((true, ""))
+    } else if let Some(target) = rest.strip_prefix("--fix ") {
+        Some((true, target.trim()))
+    } else {
+        Some((false, rest))
+    }
+}
+
+fn build_audit_prompt(scope: &str, scope_root: &Path, apply_fixes: bool) -> String {
+    let mode = if apply_fixes {
+        "Fix mode permits generateDiff and the file mutation tools only inside the audit \
+root. Apply the minimum fix for each confirmed issue; generate a diff before non-trivial \
+changes. Every mutation requires user approval. Shell commands and general web access \
+remain blocked."
+    } else {
+        "Read-only mode blocks shell commands, general web access, and all file mutations."
+    };
+
     format!(
-        "Perform a security audit of {scope}. This is authorized review of local code \
-in the current workspace that you already have tool access to; do not target any \
-external systems.\n\
+        "Perform a security audit of {scope}. The enforced audit root is \
+{scope_root:?}; inspect nothing outside it. This is authorized review of local code. \
+{mode}\n\
 \n\
-First call searchSkills to check for a relevant security or audit skill and follow \
-it if one matches. Then enumerate the relevant files with listDirectory, grep, and \
-searchFiles, and read the important ones with readFile before drawing conclusions. \
-Do not guess about code you have not read.\n\
+First call searchSkills with the query \"source code dependency vulnerability security \
+audit\" and follow the best relevant skill without running its scripts. Then enumerate \
+the relevant files with listDirectory, grep, and searchFiles, and read important files \
+with readFile before drawing conclusions. Use numberedContent for exact line references. \
+If a tool result is truncated, narrow or paginate the search; never imply full coverage \
+of unseen code.\n\
+\n\
+If Cargo.lock exists in scope, call auditDependencies on {scope_root:?}. It performs \
+an explicitly approved, read-only query against OSV.dev. If approval is denied or the \
+result says complete=false, disclose that dependency coverage is incomplete.\n\
 \n\
 Check for these classes of issues:\n\
 - Hardcoded secrets, credentials, API keys, or tokens\n\
@@ -563,7 +603,10 @@ Check for these classes of issues:\n\
 Report a prioritized list of findings. For each finding give: severity \
 (critical/high/medium/low), the file and line reference, a short explanation of \
 why it is a risk, and a concrete recommended fix. If you find no issues in a \
-category, say so briefly. Do not modify any files."
+category, say so briefly. End with a Coverage section listing inspected files, whether \
+dependency scanning ran, and every truncation, denial, or tool error. Mark the audit \
+incomplete if any relevant content was not inspected. If fix mode is enabled, also list \
+every changed file and any validation that remains to be run."
     )
 }
 
@@ -2042,7 +2085,11 @@ async fn finish_codex_connection(
 
 #[cfg(test)]
 mod tests {
-    use super::{UiState, apply_agent_event, resolve_approval};
+    use std::path::Path;
+
+    use super::{
+        UiState, apply_agent_event, build_audit_prompt, parse_audit_command, resolve_approval,
+    };
     use crate::models::AgentEvent;
 
     #[test]
@@ -2062,5 +2109,41 @@ mod tests {
 
         resolve_approval(&mut state, true);
         assert!(approval.try_recv().expect("approval response"));
+    }
+
+    #[test]
+    fn tab_completes_audit_command() {
+        let mut state = UiState::new("test".to_string());
+        state.input = "/au".to_string();
+
+        state.apply_completion();
+
+        assert_eq!(state.input, "/audit ");
+    }
+
+    #[test]
+    fn audit_prompt_requires_scope_evidence_and_coverage() {
+        let prompt =
+            build_audit_prompt("workspace path \"src\"", Path::new("/workspace/src"), false);
+
+        assert!(prompt.contains("Read-only mode blocks shell commands"));
+        assert!(prompt.contains("numberedContent"));
+        assert!(prompt.contains("auditDependencies"));
+        assert!(prompt.contains("Coverage section"));
+    }
+
+    #[test]
+    fn audit_fix_flag_is_parsed_and_enables_approved_mutations() {
+        assert_eq!(parse_audit_command("/audit --fix src"), Some((true, "src")));
+        assert_eq!(
+            parse_audit_command("/audit authentication"),
+            Some((false, "authentication"))
+        );
+        assert_eq!(parse_audit_command("/auditor"), None);
+
+        let prompt =
+            build_audit_prompt("workspace path \"src\"", Path::new("/workspace/src"), true);
+        assert!(prompt.contains("Fix mode permits generateDiff"));
+        assert!(prompt.contains("Every mutation requires user approval"));
     }
 }

@@ -58,6 +58,8 @@ ghostpwn`;
 
 const COMMANDS = `/help     # show all commands
 /model    # provider + model selector
+/audit    # read-only workspace security audit
+/audit --fix # audit and apply approved fixes
 /clear    # reset conversation
 /quit     # exit the TUI`;
 

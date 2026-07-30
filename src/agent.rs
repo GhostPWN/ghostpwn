@@ -1,3 +1,5 @@
+use std::path::{Path, PathBuf};
+
 use anyhow::Result;
 use tokio::sync::mpsc::UnboundedSender;
 
@@ -5,9 +7,10 @@ use crate::config::{ProviderKeys, ProviderKind};
 use crate::models::{AgentEvent, ConversationMessage, ModelEnvelope, ToolCall};
 use crate::providers::{Provider, build_provider_with_secret_store};
 use crate::secrets::{SETTING_MODEL, SETTING_PROVIDER, SecretStore};
-use crate::tools::{ToolRuntime, tool_requires_approval};
+use crate::tools::{ToolRuntime, audit_tool_allowed, tool_requires_approval};
 
 const MAX_STEPS: usize = 15;
+const AUDIT_MAX_STEPS: usize = 30;
 
 const SYSTEM_PROMPT: &str = r#"You are GhostPWN, an interactive CLI agent for authorized web security research and software engineering inside a user-selected workspace.
 
@@ -17,7 +20,7 @@ Response contract:
 {
   "assistant": "string",
   "tool_calls": [
-    { "name": "listSkills|searchSkills|readSkill|readFile|listDirectory|searchFiles|grep|runCommand|fileInfo|generateDiff|writeFile|editFile|multiEdit|applyPatch|webFetch|webSearch", "arguments": { ... } }
+    { "name": "listSkills|searchSkills|readSkill|readFile|listDirectory|searchFiles|grep|runCommand|auditDependencies|fileInfo|generateDiff|writeFile|editFile|multiEdit|applyPatch|webFetch|webSearch", "arguments": { ... } }
   ]
 }
 - The assistant field is user-facing. Keep it concise and technical.
@@ -76,6 +79,7 @@ Core tool argument shapes:
 - writeFile: {"path":"relative/path","content":"full file content"}
 - editFile: {"path":"relative/path","oldString":"exact text","newString":"replacement","replaceAll":false}
 - runCommand: {"command":"cargo test","cwd":".","timeout":30000}
+- auditDependencies: {"path":"workspace path containing Cargo.lock files"}
 
 End state:
 - Run focused validation when behavior changes.
@@ -339,9 +343,42 @@ impl Agent {
         user_text: String,
         events: UnboundedSender<AgentEvent>,
     ) -> Result<()> {
+        self.handle_input(user_text, events, None, false, MAX_STEPS)
+            .await
+    }
+
+    pub fn resolve_audit_scope(&self, target: &str) -> Result<(PathBuf, String)> {
+        self.tools.resolve_audit_scope(target)
+    }
+
+    pub async fn handle_audit(
+        &mut self,
+        prompt: String,
+        scope: PathBuf,
+        allow_mutations: bool,
+        events: UnboundedSender<AgentEvent>,
+    ) -> Result<()> {
+        self.handle_input(
+            prompt,
+            events,
+            Some(&scope),
+            allow_mutations,
+            AUDIT_MAX_STEPS,
+        )
+        .await
+    }
+
+    async fn handle_input(
+        &mut self,
+        user_text: String,
+        events: UnboundedSender<AgentEvent>,
+        audit_scope: Option<&Path>,
+        allow_audit_mutations: bool,
+        max_steps: usize,
+    ) -> Result<()> {
         self.history.push(ConversationMessage::user(user_text));
 
-        for _ in 0..MAX_STEPS {
+        for _ in 0..max_steps {
             let system_prompt = self.system_prompt().await;
             let mut stream_extractor = AssistantStreamExtractor::default();
             let mut on_delta = |chunk: String| {
@@ -376,6 +413,14 @@ impl Agent {
             }
 
             for call in envelope.tool_calls {
+                if audit_scope.is_some() && !audit_tool_allowed(&call.name, allow_audit_mutations) {
+                    self.history.push(ConversationMessage::tool(format!(
+                        "tool_error {}: unavailable in this audit mode",
+                        call.name
+                    )));
+                    continue;
+                }
+
                 let summary = self.tools.arg_summary(&call.name, &call.arguments);
                 if tool_requires_approval(&call.name) {
                     let (response, approval) = tokio::sync::oneshot::channel();
@@ -398,7 +443,15 @@ impl Agent {
                     args_summary: summary,
                 });
 
-                match self.tools.execute(&call).await {
+                let result = match audit_scope {
+                    Some(scope) => {
+                        self.tools
+                            .execute_audit(&call, scope, allow_audit_mutations)
+                            .await
+                    }
+                    None => self.tools.execute(&call).await,
+                };
+                match result {
                     Ok(result) => {
                         let text = format!(
                             "tool_result {}: {}",
@@ -415,7 +468,12 @@ impl Agent {
             }
         }
 
-        let _ = events.send(AgentEvent::Error("step limit reached".to_string()));
+        let message = if audit_scope.is_some() {
+            "audit incomplete: step limit reached"
+        } else {
+            "step limit reached"
+        };
+        let _ = events.send(AgentEvent::Error(message.to_string()));
         let _ = events.send(AgentEvent::Done);
         Ok(())
     }
