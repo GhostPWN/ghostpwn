@@ -9,12 +9,10 @@ Repository: https://github.com/Masriyan/Claude-Code-CyberSecurity-Skill
 import argparse
 import json
 import logging
-import socket
 import sys
 import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from typing import Dict, List, Optional, Set
-from urllib.parse import urljoin
 
 try:
     import requests

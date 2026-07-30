@@ -5,8 +5,8 @@ use reqwest::header::CONTENT_TYPE;
 use serde_json::{Value, json};
 
 use crate::models::{ConversationMessage, MessageRole};
-use crate::providers::Provider;
 use crate::providers::sse::consume_sse;
+use crate::providers::{Provider, provider_http_client};
 
 pub struct OpenAiProvider {
     api_key: String,
@@ -19,7 +19,7 @@ impl OpenAiProvider {
         Self {
             api_key,
             model,
-            client: Client::new(),
+            client: provider_http_client(),
         }
     }
 }

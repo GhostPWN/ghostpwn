@@ -10,7 +10,6 @@ import argparse
 import json
 import logging
 import os
-import sys
 import time
 from collections import Counter, defaultdict
 from typing import Any, Dict, List
@@ -23,8 +22,8 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 
 try:
-    from scapy.all import rdpcap, IP, TCP, UDP, DNS, DNSQR, Raw
-    from scapy.layers.http import HTTPRequest, HTTPResponse
+    from scapy.all import rdpcap, IP, TCP, UDP, DNS, DNSQR
+    from scapy.layers.http import HTTPRequest
     HAS_SCAPY = True
 except ImportError:
     HAS_SCAPY = False

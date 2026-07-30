@@ -5,8 +5,8 @@ use reqwest::header::CONTENT_TYPE;
 use serde_json::{Value, json};
 
 use crate::models::{ConversationMessage, MessageRole};
-use crate::providers::Provider;
 use crate::providers::sse::consume_sse;
+use crate::providers::{Provider, provider_http_client};
 
 pub struct GoogleProvider {
     api_key: String,
@@ -19,7 +19,7 @@ impl GoogleProvider {
         Self {
             api_key,
             model,
-            client: Client::new(),
+            client: provider_http_client(),
         }
     }
 }
@@ -31,12 +31,12 @@ impl Provider for GoogleProvider {
     }
 
     async fn list_models(&self) -> Result<Vec<String>> {
-        let url = format!(
-            "https://generativelanguage.googleapis.com/v1beta/models?key={}",
-            self.api_key
-        );
-
-        let response = self.client.get(url).send().await?;
+        let response = self
+            .client
+            .get("https://generativelanguage.googleapis.com/v1beta/models")
+            .header("x-goog-api-key", &self.api_key)
+            .send()
+            .await?;
         if !response.status().is_success() {
             let status = response.status();
             let body = response.text().await.unwrap_or_default();
@@ -66,11 +66,17 @@ impl Provider for GoogleProvider {
         });
 
         let url = format!(
-            "https://generativelanguage.googleapis.com/v1beta/models/{}:streamGenerateContent?alt=sse&key={}",
-            self.model, self.api_key
+            "https://generativelanguage.googleapis.com/v1beta/models/{}:streamGenerateContent?alt=sse",
+            self.model
         );
 
-        let response = self.client.post(url).json(&payload).send().await?;
+        let response = self
+            .client
+            .post(url)
+            .header("x-goog-api-key", &self.api_key)
+            .json(&payload)
+            .send()
+            .await?;
         if !response.status().is_success() {
             let status = response.status();
             let body = response.text().await.unwrap_or_default();

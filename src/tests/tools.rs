@@ -9,6 +9,7 @@ use super::command_shell;
 use super::decode_duckduckgo_url;
 use super::parse_cargo_lock;
 use super::parse_duckduckgo_results;
+use super::resolve_public_host;
 use super::tool_requires_approval;
 use super::unified_diff;
 use super::url_encode_query;
@@ -64,6 +65,24 @@ fn mutations_and_commands_require_approval() {
     assert!(tool_requires_approval("apply_patch"));
     assert!(!tool_requires_approval("readFile"));
     assert!(!tool_requires_approval("webFetch"));
+}
+
+#[test]
+fn approval_summaries_expose_command_risk_and_mutation_size() {
+    let root = tempdir().expect("tempdir");
+    let tools = ToolRuntime::new(root.path().to_path_buf()).expect("runtime");
+
+    assert_eq!(
+        tools.arg_summary("runCommand", &json!({"command": "cargo test"})),
+        "UNSANDBOXED shell command: cargo test"
+    );
+    assert_eq!(
+        tools.arg_summary(
+            "writeFile",
+            &json!({"path": "src/main.rs", "content": "hello"})
+        ),
+        "src/main.rs (5 bytes)"
+    );
 }
 
 #[test]
@@ -302,6 +321,29 @@ async fn run_command_reports_timeout() {
 }
 
 #[tokio::test]
+async fn run_command_caps_output_without_deadlocking() {
+    if cfg!(windows) {
+        return;
+    }
+
+    let root = tempdir().expect("tempdir");
+    let workspace = root.path().join("workspace");
+    fs::create_dir_all(&workspace).expect("workspace");
+    let tools = ToolRuntime::new(workspace).expect("runtime");
+    let call = ToolCall {
+        name: "runCommand".to_string(),
+        arguments: json!({
+            "command": "yes x | head -c 20000",
+        }),
+    };
+
+    let result = tools.execute(&call).await.expect("tool result");
+
+    assert_eq!(result["stdout"].as_str().map(str::len), Some(10_000));
+    assert_eq!(result["truncated"].as_bool(), Some(true));
+}
+
+#[tokio::test]
 async fn read_file_truncates_and_counts_lines() {
     let root = tempdir().expect("tempdir");
     let workspace = root.path().join("workspace");
@@ -336,6 +378,33 @@ async fn read_file_truncates_and_counts_lines() {
     );
     assert_eq!(result.get("startLine").and_then(|v| v.as_u64()), Some(1));
     assert_eq!(result.get("endLine").and_then(|v| v.as_u64()), Some(2));
+}
+
+#[tokio::test]
+async fn read_file_rejects_oversized_input() {
+    let root = tempdir().expect("tempdir");
+    let workspace = root.path().join("workspace");
+    fs::create_dir_all(&workspace).expect("workspace");
+    fs::write(workspace.join("large.txt"), vec![b'x'; 5_000_001]).expect("large file");
+
+    let tools = ToolRuntime::new(workspace).expect("runtime");
+    let call = ToolCall {
+        name: "readFile".to_string(),
+        arguments: json!({"path": "large.txt"}),
+    };
+
+    let error = tools.execute(&call).await.expect_err("oversized file");
+    assert!(error.to_string().contains("safety limit"));
+
+    let grep = tools
+        .execute(&ToolCall {
+            name: "grep".to_string(),
+            arguments: json!({"path": ".", "pattern": "x"}),
+        })
+        .await
+        .expect("grep result");
+    assert_eq!(grep["complete"].as_bool(), Some(false));
+    assert_eq!(grep["skippedFiles"].as_u64(), Some(1));
 }
 
 #[tokio::test]
@@ -624,6 +693,33 @@ async fn apply_patch_add_update_delete_and_move() {
 }
 
 #[tokio::test]
+async fn apply_patch_failed_move_keeps_source_file() {
+    let root = tempdir().expect("tempdir");
+    let workspace = root.path().join("workspace");
+    fs::create_dir_all(&workspace).expect("workspace");
+    fs::write(workspace.join("old.txt"), "keep me\n").expect("source");
+    fs::write(workspace.join("blocker"), "not a directory").expect("blocker");
+
+    let tools = ToolRuntime::new(workspace.clone()).expect("runtime");
+    let call = ToolCall {
+        name: "applyPatch".to_string(),
+        arguments: json!({
+            "patchText": "*** Begin Patch\n*** Update File: old.txt\n*** Move to: blocker/new.txt\n@@\n keep me\n*** End Patch"
+        }),
+    };
+
+    tools
+        .execute(&call)
+        .await
+        .expect_err("move target should fail");
+
+    assert_eq!(
+        fs::read_to_string(workspace.join("old.txt")).expect("source remains"),
+        "keep me\n"
+    );
+}
+
+#[tokio::test]
 async fn skill_tools_search_and_read_local_skills() {
     let root = tempdir().expect("tempdir");
     let workspace = root.path().join("workspace");
@@ -777,6 +873,12 @@ fn ssrf_helper_classifies_ip_ranges() {
     assert!(is_public_ip(IpAddr::V6(
         "2606:4700:4700::1111".parse().unwrap()
     )));
+}
+
+#[test]
+fn dns_resolver_rejects_hostnames_resolving_to_private_addresses() {
+    let error = resolve_public_host("localhost").expect_err("localhost must be rejected");
+    assert_eq!(error.kind(), std::io::ErrorKind::PermissionDenied);
 }
 
 #[tokio::test]

@@ -1,7 +1,8 @@
 use std::path::Path;
 
 use super::{
-    UiState, apply_agent_event, build_audit_prompt, parse_audit_command, resolve_approval,
+    UiRole, UiState, apply_agent_event, build_audit_prompt, parse_audit_command, resolve_approval,
+    transcript_line_count,
 };
 use crate::models::AgentEvent;
 
@@ -56,4 +57,12 @@ fn audit_fix_flag_is_parsed_and_enables_approved_mutations() {
     let prompt = build_audit_prompt("workspace path \"src\"", Path::new("/workspace/src"), true);
     assert!(prompt.contains("Fix mode permits generateDiff"));
     assert!(prompt.contains("Every mutation requires user approval"));
+}
+
+#[test]
+fn transcript_count_includes_wrapped_display_lines() {
+    let mut state = UiState::new("test".to_string());
+    state.push_message(UiRole::User, "one two three four five six".to_string());
+
+    assert!(transcript_line_count(&state, 8) > transcript_line_count(&state, 80));
 }

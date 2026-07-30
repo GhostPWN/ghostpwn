@@ -11,6 +11,7 @@ use crate::tools::{ToolRuntime, audit_tool_allowed, tool_requires_approval};
 
 const MAX_STEPS: usize = 15;
 const AUDIT_MAX_STEPS: usize = 30;
+const MAX_HISTORY_MESSAGES: usize = 100;
 
 const SYSTEM_PROMPT: &str = r#"You are GhostPWN, an interactive CLI agent for authorized web security research and software engineering inside a user-selected workspace.
 
@@ -57,6 +58,7 @@ Tool policy:
 - For workspace summaries, list the directory first and only read files that the listing or search results show exist.
 - Use runCommand for local, reversible commands such as builds, tests, formatters, and safe inspection.
 - runCommand uses PowerShell on Windows and sh on Unix/macOS.
+- runCommand is not an OS sandbox: its working directory is workspace-scoped, but the shell can access other paths. Keep commands explicit and rely on user approval.
 - Use writeFile, editFile, multiEdit, and applyPatch for direct workspace edits only when the user asks for code changes.
 - Use webFetch for user-provided URLs and webSearch for current public web lookups.
 - When the user asks to search the web, include a webSearch tool call in the same JSON response. Do not only say that you are searching.
@@ -183,6 +185,9 @@ impl Agent {
     }
 
     pub fn switch_model(&mut self, provider: ProviderKind, model: Option<String>) -> String {
+        if provider != self.provider_kind {
+            self.history.clear();
+        }
         self.provider_kind = provider;
         self.model = model.unwrap_or_else(|| provider.default_model().to_string());
         self.provider = build_provider_with_secret_store(
@@ -284,6 +289,7 @@ impl Agent {
     }
 
     fn activate_connected_provider(&mut self, provider: ProviderKind, api_key: String) {
+        self.history.clear();
         self.provider_keys.set(provider, api_key);
         self.provider_kind = provider;
         self.model = provider.default_model().to_string();
@@ -379,6 +385,7 @@ impl Agent {
         self.history.push(ConversationMessage::user(user_text));
 
         for _ in 0..max_steps {
+            self.trim_history();
             let system_prompt = self.system_prompt().await;
             let mut stream_extractor = AssistantStreamExtractor::default();
             let mut on_delta = |chunk: String| {
@@ -476,6 +483,13 @@ impl Agent {
         let _ = events.send(AgentEvent::Error(message.to_string()));
         let _ = events.send(AgentEvent::Done);
         Ok(())
+    }
+
+    fn trim_history(&mut self) {
+        let excess = self.history.len().saturating_sub(MAX_HISTORY_MESSAGES);
+        if excess > 0 {
+            self.history.drain(..excess);
+        }
     }
 
     async fn system_prompt(&self) -> String {

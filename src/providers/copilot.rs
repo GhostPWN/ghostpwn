@@ -10,8 +10,8 @@ use serde_json::{Value, json};
 use tokio::sync::Mutex;
 
 use crate::models::{ConversationMessage, MessageRole};
-use crate::providers::Provider;
 use crate::providers::sse::consume_sse;
+use crate::providers::{Provider, provider_http_client};
 
 const CLIENT_ID: &str = "Iv1.b507a08c87ecfe98";
 const DEVICE_CODE_URL: &str = "https://github.com/login/device/code";
@@ -67,7 +67,7 @@ pub enum PollResult {
 }
 
 pub async fn authorize() -> Result<DeviceAuth> {
-    let client = Client::new();
+    let client = provider_http_client();
     let resp = client
         .post(DEVICE_CODE_URL)
         .header("Accept", "application/json")
@@ -97,7 +97,7 @@ pub async fn authorize() -> Result<DeviceAuth> {
 }
 
 pub async fn poll_authorization(device_code: &str) -> Result<PollResult> {
-    let client = Client::new();
+    let client = provider_http_client();
     let resp = client
         .post(ACCESS_TOKEN_URL)
         .header("Accept", "application/json")
@@ -175,7 +175,7 @@ impl CopilotProvider {
         Self {
             refresh_token,
             model,
-            client: Client::new(),
+            client: provider_http_client(),
             token_cache: Mutex::new(None),
         }
     }

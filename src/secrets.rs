@@ -3,6 +3,7 @@ use std::env;
 use std::fs;
 use std::io::{ErrorKind, Write};
 use std::path::{Path, PathBuf};
+use std::time::{SystemTime, UNIX_EPOCH};
 
 use anyhow::{Context, Result, anyhow};
 use keyring::{Entry, Error as KeyringError};
@@ -107,12 +108,20 @@ impl SecretStore {
             }
         }
 
-        match self.save_file_key(provider, value) {
-            Ok(()) => {
-                report.file_saved = true;
+        if report.keychain_saved {
+            if let Err(err) = self.delete_file_key(provider) {
+                report.file_error = Some(format!(
+                    "key saved to keychain, but stale local copy removal failed: {err}"
+                ));
             }
-            Err(err) => {
-                report.file_error = Some(err.to_string());
+        } else {
+            match self.save_file_key(provider, value) {
+                Ok(()) => {
+                    report.file_saved = true;
+                }
+                Err(err) => {
+                    report.file_error = Some(err.to_string());
+                }
             }
         }
 
@@ -329,18 +338,81 @@ fn save_file_state(path: &Path, state: &FileState) -> Result<()> {
         secure_directory(parent);
     }
 
+    let file_name = path
+        .file_name()
+        .and_then(|name| name.to_str())
+        .unwrap_or("state.json");
+    let nonce = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|duration| duration.as_nanos())
+        .unwrap_or(0);
+    let temporary =
+        path.with_file_name(format!(".{file_name}.{}.{}.tmp", std::process::id(), nonce));
     let mut file = secure_file_options()
-        .create(true)
-        .truncate(true)
+        .create_new(true)
         .write(true)
-        .open(path)
-        .with_context(|| format!("failed to open local state file '{}'", path.display()))?;
+        .open(&temporary)
+        .with_context(|| {
+            format!(
+                "failed to open temporary local state file '{}'",
+                temporary.display()
+            )
+        })?;
     let content = serde_json::to_vec_pretty(state)?;
-    file.write_all(&content)
-        .with_context(|| format!("failed to write local state file '{}'", path.display()))?;
-    file.write_all(b"\n")
-        .with_context(|| format!("failed to finish local state file '{}'", path.display()))?;
+    let write_result = file
+        .write_all(&content)
+        .and_then(|()| file.write_all(b"\n"))
+        .and_then(|()| file.sync_all());
+    if let Err(error) = write_result {
+        let _ = fs::remove_file(&temporary);
+        return Err(error)
+            .with_context(|| format!("failed to write local state file '{}'", path.display()));
+    }
+    secure_file(&temporary);
+    if let Err(error) = replace_file(&temporary, path) {
+        let _ = fs::remove_file(&temporary);
+        return Err(error);
+    }
     secure_file(path);
+    Ok(())
+}
+
+#[cfg(not(windows))]
+fn replace_file(temporary: &Path, destination: &Path) -> Result<()> {
+    fs::rename(temporary, destination).with_context(|| {
+        format!(
+            "failed to replace local state file '{}'",
+            destination.display()
+        )
+    })
+}
+
+#[cfg(windows)]
+fn replace_file(temporary: &Path, destination: &Path) -> Result<()> {
+    let backup = temporary.with_extension("backup");
+    let had_destination = destination.exists();
+    if had_destination {
+        fs::rename(destination, &backup).with_context(|| {
+            format!(
+                "failed to prepare local state file '{}'",
+                destination.display()
+            )
+        })?;
+    }
+    if let Err(error) = fs::rename(temporary, destination) {
+        if had_destination {
+            let _ = fs::rename(&backup, destination);
+        }
+        return Err(error).with_context(|| {
+            format!(
+                "failed to replace local state file '{}'",
+                destination.display()
+            )
+        });
+    }
+    if had_destination {
+        let _ = fs::remove_file(backup);
+    }
     Ok(())
 }
 

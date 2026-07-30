@@ -12,13 +12,33 @@ import logging
 import os
 import platform
 import re
+import shutil
 import subprocess
-import sys
 import time
 from typing import Any, Dict, List
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(message)s")
 logger = logging.getLogger(__name__)
+
+
+def firewall_active(command: str, output: str) -> bool:
+    output = output.lower()
+    if command == "ufw":
+        return "status: active" in output
+    if command == "iptables":
+        input_chain = re.search(
+            r"chain input\b.*?(?=\nchain |\Z)", output, re.DOTALL
+        )
+        return bool(input_chain and re.search(
+            r"policy (?!accept)|^\s*(?:drop|reject)\b",
+            input_chain.group(0),
+            re.MULTILINE,
+        ))
+    return any(
+        "hook input" in chain
+        and re.search(r"policy (?:drop|reject)", chain)
+        for chain in re.findall(r"chain\b.*?\{.*?\}", output, re.DOTALL)
+    )
 
 
 class LinuxHardeningChecker:
@@ -28,39 +48,58 @@ class LinuxHardeningChecker:
         self.findings: List[Dict] = []
 
     def check_ssh_config(self) -> None:
-        config = "/etc/ssh/sshd_config"
-        if not os.path.exists(config):
-            self.findings.append({"id": "SSH-000", "severity": "INFO", "title": "SSH config not found", "status": "SKIP"})
-            return
         try:
-            with open(config, "r") as f:
-                content = f.read()
-        except PermissionError:
+            result = subprocess.run(
+                ["sshd", "-T"], capture_output=True, text=True, timeout=5
+            )
+        except (FileNotFoundError, PermissionError, subprocess.TimeoutExpired):
             self.findings.append({"id": "SSH-000", "severity": "INFO",
-                                  "title": "SSH config unreadable (run as root for SSH checks)", "status": "SKIP"})
+                                  "title": "Effective SSH config unavailable", "status": "SKIP"})
             return
+        if result.returncode != 0:
+            self.findings.append({"id": "SSH-000", "severity": "INFO",
+                                  "title": "Effective SSH config unavailable", "status": "SKIP"})
+            return
+
+        config = {}
+        for line in result.stdout.splitlines():
+            key, _, value = line.partition(" ")
+            if value:
+                config[key.lower()] = value.strip().lower()
+
+        def int_at_most(key: str, maximum: int) -> bool:
+            try:
+                return 0 < int(config.get(key, "0")) <= maximum
+            except ValueError:
+                return False
+
         checks = [
-            ("SSH-001", "HIGH", "Root login disabled", r"PermitRootLogin\s+no"),
-            ("SSH-002", "HIGH", "Password auth disabled", r"PasswordAuthentication\s+no"),
-            ("SSH-003", "MEDIUM", "X11 forwarding disabled", r"X11Forwarding\s+no"),
-            ("SSH-004", "MEDIUM", "Max auth tries limited", r"MaxAuthTries\s+[1-4]"),
-            ("SSH-005", "MEDIUM", "SSH protocol version 2", r"Protocol\s+2"),
-            ("SSH-006", "LOW", "Login grace time limited", r"LoginGraceTime\s+\d+"),
-            ("SSH-007", "MEDIUM", "Strong ciphers only (no CBC/arcfour)", r"Ciphers\s+(?!.*(cbc|arcfour|3des)).+"),
-            ("SSH-008", "MEDIUM", "Modern KEX algorithms set", r"KexAlgorithms\s+.*(curve25519|sntrup|ecdh-sha2)"),
-            ("SSH-009", "LOW", "ClientAlive idle timeout set", r"ClientAliveInterval\s+[1-9]\d*"),
+            ("SSH-001", "HIGH", "Root login disabled", config.get("permitrootlogin") == "no"),
+            ("SSH-002", "HIGH", "Password auth disabled", config.get("passwordauthentication") == "no"),
+            ("SSH-003", "MEDIUM", "X11 forwarding disabled", config.get("x11forwarding") == "no"),
+            ("SSH-004", "MEDIUM", "Max auth tries limited", int_at_most("maxauthtries", 4)),
+            ("SSH-006", "LOW", "Login grace time limited", int_at_most("logingracetime", 60)),
+            ("SSH-007", "MEDIUM", "Strong ciphers only (no CBC/arcfour)",
+             bool(config.get("ciphers")) and not re.search(r"cbc|arcfour|3des", config["ciphers"])),
+            ("SSH-008", "MEDIUM", "Modern KEX algorithms enabled",
+             bool(re.search(r"curve25519|sntrup|ecdh-sha2", config.get("kexalgorithms", "")))),
+            ("SSH-009", "LOW", "ClientAlive idle timeout set",
+             config.get("clientaliveinterval", "0").isdigit()
+             and int(config["clientaliveinterval"]) > 0),
         ]
-        for cid, sev, title, pattern in checks:
-            status = "PASS" if re.search(pattern, content) else "FAIL"
+        for cid, sev, title, passed in checks:
+            status = "PASS" if passed else "FAIL"
             self.findings.append({"id": cid, "severity": sev, "title": title, "status": status})
 
     def check_firewall(self) -> None:
         for fw_cmd in ["ufw status", "iptables -L -n", "nft list ruleset"]:
             cmd = fw_cmd.split()[0]
-            if os.path.exists(f"/usr/sbin/{cmd}") or os.path.exists(f"/sbin/{cmd}"):
+            if shutil.which(cmd):
                 try:
                     result = subprocess.run(fw_cmd.split(), capture_output=True, text=True, timeout=5)
-                    active = "inactive" not in result.stdout.lower() and result.stdout.strip()
+                    if result.returncode != 0:
+                        continue
+                    active = firewall_active(cmd, result.stdout)
                     self.findings.append({"id": "FW-001", "severity": "HIGH", "title": f"Firewall active ({cmd})", "status": "PASS" if active else "FAIL"})
                     return
                 except (subprocess.TimeoutExpired, FileNotFoundError, PermissionError):
@@ -89,22 +128,32 @@ class LinuxHardeningChecker:
         unnecessary = ["telnet", "rsh", "rlogin", "tftp", "vsftpd"]
         for svc in unnecessary:
             try:
-                result = subprocess.run(["systemctl", "is-active", svc], capture_output=True, text=True, timeout=3)
-                active = result.stdout.strip() == "active"
+                result = subprocess.run(
+                    ["systemctl", "show", svc, "--property=LoadState,ActiveState"],
+                    capture_output=True, text=True, timeout=3
+                )
+                state = dict(
+                    line.split("=", 1) for line in result.stdout.splitlines() if "=" in line
+                )
+                if result.returncode != 0 or not state:
+                    status = "SKIP"
+                else:
+                    status = "FAIL" if state.get("ActiveState") == "active" else "PASS"
                 self.findings.append({"id": f"SVC-{svc}", "severity": "MEDIUM",
-                                     "title": f"Unnecessary service: {svc}", "status": "FAIL" if active else "PASS"})
+                                     "title": f"Unnecessary service: {svc}", "status": status})
             except (FileNotFoundError, subprocess.TimeoutExpired):
-                pass
+                self.findings.append({"id": f"SVC-{svc}", "severity": "MEDIUM",
+                                     "title": f"Unnecessary service: {svc}", "status": "SKIP"})
 
     def check_audit(self) -> None:
-        auditd_running = False
         try:
             result = subprocess.run(["systemctl", "is-active", "auditd"], capture_output=True, text=True, timeout=3)
-            auditd_running = result.stdout.strip() == "active"
+            state = result.stdout.strip()
+            status = "PASS" if state == "active" else ("FAIL" if state in ("inactive", "failed") else "SKIP")
         except (FileNotFoundError, subprocess.TimeoutExpired):
-            pass
+            status = "SKIP"
         self.findings.append({"id": "AUD-001", "severity": "HIGH", "title": "Audit daemon (auditd) running",
-                             "status": "PASS" if auditd_running else "FAIL"})
+                             "status": status})
 
     def check_sysctl(self) -> None:
         """Validate kernel network/exec hardening sysctls (CIS-aligned)."""
@@ -130,9 +179,14 @@ class LinuxHardeningChecker:
         """Flag risky/legacy filesystem & network modules that should be disabled."""
         risky = ["cramfs", "freevxfs", "hfs", "hfsplus", "squashfs", "udf", "usb-storage", "dccp", "sctp"]
         try:
-            loaded = subprocess.run(["lsmod"], capture_output=True, text=True, timeout=3).stdout
+            result = subprocess.run(["lsmod"], capture_output=True, text=True, timeout=3)
         except (FileNotFoundError, subprocess.TimeoutExpired):
-            loaded = ""
+            result = None
+        if result is None or result.returncode != 0:
+            self.findings.append({"id": "MOD-000", "severity": "INFO",
+                                  "title": "Loaded kernel modules unavailable", "status": "SKIP"})
+            return
+        loaded = result.stdout
         for mod in risky:
             present = bool(re.search(rf"^{re.escape(mod)}\b", loaded, re.MULTILINE))
             self.findings.append({"id": f"MOD-{mod}", "severity": "LOW",

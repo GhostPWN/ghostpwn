@@ -1,4 +1,4 @@
-use super::{ProviderKind, resolve_provider_and_model};
+use super::{ProviderKind, resolve_config_provider_and_model, resolve_provider_and_model};
 
 #[test]
 fn saved_provider_and_model_are_used() {
@@ -32,6 +32,19 @@ fn provided_provider_and_model_take_precedence() {
 
     assert_eq!(provider, ProviderKind::OpenAi);
     assert_eq!(model, "gpt-5-mini");
+}
+
+#[test]
+fn environment_provider_does_not_reuse_another_providers_saved_model() {
+    let (provider, model) = resolve_config_provider_and_model(
+        Some(ProviderKind::Anthropic),
+        None,
+        Some(ProviderKind::Google),
+        Some("gemini-2.5-pro".to_string()),
+    );
+
+    assert_eq!(provider, ProviderKind::Anthropic);
+    assert_eq!(model, ProviderKind::Anthropic.default_model());
 }
 
 #[test]

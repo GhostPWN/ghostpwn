@@ -34,7 +34,7 @@ const FEATURES = [
   {
     title: "Local tools",
     description:
-      "Read, list, search, diff, edit, and run commands, all bounded to a configured workspace root.",
+      "Read, list, search, diff, and edit inside a configured workspace. Shell commands require approval but are not sandboxed.",
   },
   {
     title: "OAuth providers",

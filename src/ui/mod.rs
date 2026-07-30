@@ -317,7 +317,10 @@ async fn ui_loop<B: Backend>(
     event_tx: &UnboundedSender<AgentEvent>,
     event_rx: &mut UnboundedReceiver<AgentEvent>,
     state: &mut UiState,
-) -> Result<()> {
+) -> Result<()>
+where
+    B::Error: Send + Sync + 'static,
+{
     loop {
         while let Ok(ev) = event_rx.try_recv() {
             apply_agent_event(state, ev);
@@ -647,7 +650,7 @@ async fn open_model_selector(
         mode: ModelSelectorMode::Browse,
         status: None,
     });
-    fetch_initial_selector_models(state, agent, event_tx, current_provider);
+    fetch_selector_models_if_needed(state, agent, event_tx, current_provider);
 }
 
 async fn handle_selector_key(
@@ -927,15 +930,6 @@ fn start_selector_codex_auth(
             });
         }
     });
-}
-
-fn fetch_initial_selector_models(
-    state: &mut UiState,
-    agent: &Arc<Mutex<Agent>>,
-    event_tx: &UnboundedSender<AgentEvent>,
-    current_provider: ProviderKind,
-) {
-    fetch_selector_models_if_needed(state, agent, event_tx, current_provider);
 }
 
 fn fetch_selector_models_if_needed(
@@ -1323,16 +1317,16 @@ fn render_transcript(frame: &mut Frame, area: Rect, state: &mut UiState) {
     }
 
     let inner = block.inner(area);
-    let lines = build_transcript_lines(state, inner.width);
-    let line_count = lines.len() as u16;
+    let lines = build_transcript_lines(state);
+    let paragraph = Paragraph::new(lines)
+        .block(block)
+        .wrap(Wrap { trim: false });
+    let line_count = paragraph.line_count(inner.width).min(u16::MAX as usize) as u16;
     let visible = inner.height;
     let max_scroll = line_count.saturating_sub(visible);
     let scroll = state.scroll_offset.min(max_scroll);
 
-    let paragraph = Paragraph::new(lines)
-        .block(block)
-        .scroll((scroll, 0))
-        .wrap(Wrap { trim: false });
+    let paragraph = paragraph.scroll((scroll, 0));
     frame.render_widget(paragraph, area);
 
     if line_count > visible {
@@ -1504,7 +1498,7 @@ fn render_input(frame: &mut Frame, area: Rect, state: &UiState) {
     frame.render_widget(para, area);
 }
 
-fn build_transcript_lines(state: &UiState, width: u16) -> Vec<Line<'static>> {
+fn build_transcript_lines(state: &UiState) -> Vec<Line<'static>> {
     let mut lines = Vec::<Line<'static>>::new();
 
     for msg in &state.messages {
@@ -1521,7 +1515,6 @@ fn build_transcript_lines(state: &UiState, width: u16) -> Vec<Line<'static>> {
         );
     }
 
-    let _ = width;
     lines
 }
 
@@ -1780,7 +1773,10 @@ fn find_marker(text: &str, start: usize, marker: &str) -> Option<usize> {
 }
 
 fn transcript_line_count(state: &UiState, width: u16) -> u16 {
-    build_transcript_lines(state, width).len() as u16
+    Paragraph::new(build_transcript_lines(state))
+        .wrap(Wrap { trim: false })
+        .line_count(width)
+        .min(u16::MAX as usize) as u16
 }
 
 fn message_visible_lines(total_height: u16) -> u16 {

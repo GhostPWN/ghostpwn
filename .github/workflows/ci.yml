@@ -53,6 +53,12 @@ jobs:
       - name: Run tests
         run: cargo test
 
+      - name: Test bundled security scripts
+        if: matrix.os == 'ubuntu-latest'
+        run: |
+          python3 -m compileall -q src/skills
+          python3 src/tests/security_scripts.py
+
       - name: Build release
         run: cargo build --release
 

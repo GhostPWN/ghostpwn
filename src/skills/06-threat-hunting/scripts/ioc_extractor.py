@@ -12,9 +12,8 @@ import io
 import json
 import logging
 import re
-import sys
 import time
-from typing import Any, Dict, List, Set
+from typing import Any, Dict, List
 
 logging.basicConfig(
     level=logging.INFO,

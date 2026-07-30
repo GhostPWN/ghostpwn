@@ -4,8 +4,8 @@ use reqwest::Client;
 use serde_json::Value;
 
 use crate::models::{ConversationMessage, MessageRole};
-use crate::providers::Provider;
 use crate::providers::sse::consume_sse;
+use crate::providers::{Provider, provider_http_client};
 
 pub struct OllamaProvider {
     model: String,
@@ -16,7 +16,7 @@ impl OllamaProvider {
     pub fn new(model: String) -> Self {
         Self {
             model,
-            client: Client::new(),
+            client: provider_http_client(),
         }
     }
 }

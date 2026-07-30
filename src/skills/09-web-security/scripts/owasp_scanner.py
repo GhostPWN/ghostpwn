@@ -9,8 +9,6 @@ Repository: https://github.com/Masriyan/Claude-Code-CyberSecurity-Skill
 import argparse
 import json
 import logging
-import re
-import sys
 import time
 from typing import Any, Dict, List
 from urllib.parse import urljoin, urlparse

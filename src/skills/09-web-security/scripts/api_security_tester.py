@@ -14,7 +14,7 @@ import re
 import sys
 import time
 from typing import Any, Dict, List, Optional
-from urllib.parse import urljoin, urlparse
+from urllib.parse import urljoin
 
 try:
     import requests

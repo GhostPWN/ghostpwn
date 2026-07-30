@@ -9,6 +9,7 @@ pub async fn consume_sse(
     let mut stream = response.bytes_stream();
     let mut decoder = Utf8StreamDecoder::default();
     let mut buffer = String::new();
+    let mut pending_cr = false;
 
     while let Some(chunk) = stream.next().await {
         let chunk = chunk?;
@@ -16,11 +17,7 @@ pub async fn consume_sse(
             continue;
         };
 
-        buffer.push_str(&text);
-
-        if buffer.contains('\r') {
-            buffer = buffer.replace("\r\n", "\n").replace('\r', "\n");
-        }
+        push_normalized_lines(&mut buffer, &text, &mut pending_cr);
 
         while let Some(end_index) = buffer.find("\n\n") {
             let block = buffer[..end_index].to_string();
@@ -35,6 +32,9 @@ pub async fn consume_sse(
     }
 
     decoder.finish()?;
+    if pending_cr {
+        buffer.push('\n');
+    }
 
     if !buffer.trim().is_empty()
         && let Some(data) = extract_data_lines(buffer.trim())
@@ -43,6 +43,30 @@ pub async fn consume_sse(
     }
 
     Ok(())
+}
+
+fn push_normalized_lines(buffer: &mut String, text: &str, pending_cr: &mut bool) {
+    let mut chars = text.chars().peekable();
+    if *pending_cr {
+        buffer.push('\n');
+        if chars.peek() == Some(&'\n') {
+            chars.next();
+        }
+        *pending_cr = false;
+    }
+
+    while let Some(ch) = chars.next() {
+        if ch != '\r' {
+            buffer.push(ch);
+        } else if chars.peek() == Some(&'\n') {
+            chars.next();
+            buffer.push('\n');
+        } else if chars.peek().is_none() {
+            *pending_cr = true;
+        } else {
+            buffer.push('\n');
+        }
+    }
 }
 
 #[derive(Default)]

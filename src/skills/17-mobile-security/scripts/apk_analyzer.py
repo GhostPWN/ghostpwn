@@ -18,6 +18,10 @@ import re
 import sys
 import zipfile
 
+MAX_ARCHIVE_ENTRY_BYTES = 5 * 1024 * 1024
+MAX_ARCHIVE_SCAN_BYTES = 50 * 1024 * 1024
+MAX_SOURCE_FILE_CHARS = 2 * 1024 * 1024
+
 DANGEROUS_PERMISSIONS = {
     "android.permission.READ_SMS", "android.permission.SEND_SMS",
     "android.permission.RECEIVE_SMS", "android.permission.READ_CONTACTS",
@@ -54,7 +58,13 @@ def manifest_from_zip(apk_path: str) -> str:
     """Fallback: pull printable strings out of the binary manifest."""
     try:
         with zipfile.ZipFile(apk_path) as zf:
-            raw = zf.read("AndroidManifest.xml")
+            info = zf.getinfo("AndroidManifest.xml")
+            if info.file_size > MAX_ARCHIVE_ENTRY_BYTES:
+                return ""
+            with zf.open(info) as entry:
+                raw = entry.read(MAX_ARCHIVE_ENTRY_BYTES + 1)
+            if len(raw) > MAX_ARCHIVE_ENTRY_BYTES:
+                return ""
         strings = re.findall(rb"[\x20-\x7e]{4,}", raw)
         return " ".join(s.decode("ascii", "ignore") for s in strings)
     except Exception:  # noqa: BLE001
@@ -70,7 +80,9 @@ def scan_secrets(root: str) -> list[dict]:
             fp = os.path.join(dirpath, fn)
             try:
                 with open(fp, encoding="utf-8", errors="ignore") as fh:
-                    content = fh.read()
+                    content = fh.read(MAX_SOURCE_FILE_CHARS + 1)
+                if len(content) > MAX_SOURCE_FILE_CHARS:
+                    continue
             except Exception:  # noqa: BLE001
                 continue
             for label, pat in SECRET_PATTERNS.items():
@@ -83,7 +95,8 @@ def scan_secrets(root: str) -> list[dict]:
 def analyze(apk_path: str, sources: str | None) -> dict:
     report = {"apk": apk_path, "package": None, "version": None,
               "permissions": [], "dangerous_permissions": [],
-              "manifest_flags": [], "exported_components": [], "secrets": []}
+              "manifest_flags": [], "exported_components": [], "secrets": [],
+              "scan_warnings": []}
 
     apk = try_pyaxml(apk_path)
     manifest_text = ""
@@ -131,10 +144,30 @@ def analyze(apk_path: str, sources: str | None) -> dict:
         # Best-effort: scan strings inside the APK zip entries
         try:
             tmp = []
+            scanned_bytes = 0
             with zipfile.ZipFile(apk_path) as zf:
-                for nm in zf.namelist():
+                for info in zf.infolist():
+                    nm = info.filename
                     if nm.endswith((".xml", ".json", ".properties", ".txt")):
-                        txt = zf.read(nm).decode("utf-8", "ignore")
+                        if info.file_size > MAX_ARCHIVE_ENTRY_BYTES:
+                            report["scan_warnings"].append(
+                                f"Skipped oversized archive entry: {nm}"
+                            )
+                            continue
+                        scanned_bytes += info.file_size
+                        if scanned_bytes > MAX_ARCHIVE_SCAN_BYTES:
+                            report["scan_warnings"].append(
+                                "Stopped archive secret scan at size limit"
+                            )
+                            break
+                        with zf.open(info) as entry:
+                            raw = entry.read(MAX_ARCHIVE_ENTRY_BYTES + 1)
+                        if len(raw) > MAX_ARCHIVE_ENTRY_BYTES:
+                            report["scan_warnings"].append(
+                                f"Skipped oversized expanded entry: {nm}"
+                            )
+                            continue
+                        txt = raw.decode("utf-8", "ignore")
                         for label, pat in SECRET_PATTERNS.items():
                             for m in re.finditer(pat, txt):
                                 tmp.append({"type": label, "file": nm, "match": m.group(0)[:80]})

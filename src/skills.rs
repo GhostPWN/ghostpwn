@@ -1,7 +1,9 @@
 use std::env;
+use std::fs as std_fs;
 use std::path::{Path, PathBuf};
 
 use anyhow::{Result, anyhow};
+use include_dir::{Dir, include_dir};
 use serde::Serialize;
 use serde_json::{Value, json};
 use tokio::fs;
@@ -10,6 +12,7 @@ use walkdir::WalkDir;
 const MAX_SKILL_CONTENT_BYTES: usize = 200_000;
 const DEFAULT_SKILL_SEARCH_LIMIT: usize = 8;
 const MAX_SKILL_SEARCH_LIMIT: usize = 25;
+static BUNDLED_SKILLS: Dir<'_> = include_dir!("$CARGO_MANIFEST_DIR/src/skills");
 
 #[derive(Debug, Clone, Serialize, PartialEq, Eq)]
 pub struct SkillSummary {
@@ -35,6 +38,11 @@ impl SkillRuntime {
                     let development_root = PathBuf::from("src/skills");
                     if !root.is_dir() && development_root.is_dir() {
                         return development_root;
+                    }
+                    if !root.is_dir()
+                        && let Some(bundled_root) = install_bundled_skills()
+                    {
+                        return bundled_root;
                     }
                     root
                 }),
@@ -203,6 +211,36 @@ impl SkillRuntime {
         }
         Ok(canonical_path)
     }
+}
+
+fn install_bundled_skills() -> Option<PathBuf> {
+    let cache_root = env::var_os("GHOSTPWN_SKILLS_CACHE_DIR")
+        .map(PathBuf::from)
+        .or_else(|| env::var_os("XDG_CACHE_HOME").map(PathBuf::from))
+        .or_else(|| env::var_os("LOCALAPPDATA").map(PathBuf::from))
+        .or_else(|| env::var_os("HOME").map(|home| PathBuf::from(home).join(".cache")))
+        .unwrap_or_else(env::temp_dir)
+        .join("ghostpwn")
+        .join(concat!("skills-", env!("CARGO_PKG_VERSION")));
+
+    extract_dir(&BUNDLED_SKILLS, &cache_root).ok()?;
+    Some(cache_root)
+}
+
+fn extract_dir(directory: &Dir<'_>, root: &Path) -> std::io::Result<()> {
+    for file in directory.files() {
+        let path = root.join(file.path());
+        if let Some(parent) = path.parent() {
+            std_fs::create_dir_all(parent)?;
+        }
+        if !path.exists() {
+            std_fs::write(path, file.contents())?;
+        }
+    }
+    for child in directory.dirs() {
+        extract_dir(child, root)?;
+    }
+    Ok(())
 }
 
 fn parse_skill_summary(content: &str, relative_path: &str) -> SkillSummary {

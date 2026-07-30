@@ -16,7 +16,6 @@ import argparse
 import json
 import logging
 import subprocess
-import sys
 import time
 from typing import Any, Dict, List, Optional
 

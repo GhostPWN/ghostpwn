@@ -11,11 +11,10 @@ import json
 import logging
 import math
 import os
-import struct
 import sys
 import time
 from collections import Counter
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List
 
 logging.basicConfig(
     level=logging.INFO,

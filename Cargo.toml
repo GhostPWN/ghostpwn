@@ -1,6 +1,6 @@
 [package]
 name = "ghostpwn"
-version = "0.2.7"
+version = "0.2.8"
 edition = "2024"
 description = "Autonomous pentest agent TUI with multi-provider LLM support"
 license = "MIT"
@@ -8,24 +8,25 @@ homepage = "https://ghostpwn.vercel.app/"
 repository = "https://github.com/GhostPWN/ghostpwn"
 
 [dependencies]
-anyhow = "1.0.100"
-async-trait = "0.1.89"
+anyhow = "1.0.104"
+async-trait = "0.1.91"
 base64 = "0.22.1"
-crossterm = "0.28.1"
-futures-util = "0.3.31"
-globset = "0.4.16"
+crossterm = "0.29.0"
+futures-util = "0.3.33"
+globset = "0.4.19"
+include_dir = "0.7.4"
 keyring = "3.6.3"
-rand = "0.9.2"
-ratatui = "0.29.0"
-regex = "1.11.3"
-reqwest = { version = "0.12.24", default-features = false, features = ["json", "rustls-tls", "stream"] }
-serde = { version = "1.0.228", features = ["derive"] }
-serde_json = "1.0.145"
+rand = "0.9.5"
+ratatui = { version = "0.30.2", default-features = false, features = ["crossterm_0_29", "unstable-rendered-line-info"] }
+regex = "1.13.1"
+reqwest = { version = "0.12.28", default-features = false, features = ["json", "rustls-tls", "stream"] }
+serde = { version = "1.0.229", features = ["derive"] }
+serde_json = "1.0.151"
 sha2 = "0.10.9"
-tokio = { version = "1.48.0", features = ["fs", "io-util", "macros", "process", "rt-multi-thread", "sync", "time"] }
-url = "2.5.7"
+tokio = { version = "1.53.1", features = ["fs", "io-util", "macros", "process", "rt-multi-thread", "sync", "time"] }
+url = "2.5.8"
 walkdir = "2.5.0"
-webbrowser = "1.0.6"
+webbrowser = "1.2.2"
 
 [dev-dependencies]
-tempfile = "3.23.0"
+tempfile = "3.27.0"

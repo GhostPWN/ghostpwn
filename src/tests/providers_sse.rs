@@ -1,4 +1,4 @@
-use super::{Utf8StreamDecoder, extract_data_lines};
+use super::{Utf8StreamDecoder, extract_data_lines, push_normalized_lines};
 
 #[test]
 fn utf8_decoder_waits_for_split_codepoint() {
@@ -26,4 +26,16 @@ fn data_lines_are_joined_without_event_metadata() {
         extract_data_lines(block).as_deref(),
         Some("{\"a\":1}\n{\"b\":2}")
     );
+}
+
+#[test]
+fn split_crlf_is_normalized_as_one_line_ending() {
+    let mut buffer = String::new();
+    let mut pending_cr = false;
+
+    push_normalized_lines(&mut buffer, "data: one\r", &mut pending_cr);
+    push_normalized_lines(&mut buffer, "\n\r\ndata: two\r\n\r\n", &mut pending_cr);
+
+    assert_eq!(buffer, "data: one\n\ndata: two\n\n");
+    assert!(!pending_cr);
 }

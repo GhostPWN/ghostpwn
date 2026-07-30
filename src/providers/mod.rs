@@ -6,8 +6,11 @@ mod ollama;
 mod openai;
 mod sse;
 
+use std::time::Duration;
+
 use anyhow::{Result, anyhow};
 use async_trait::async_trait;
+use reqwest::Client;
 
 use crate::config::{ProviderKeys, ProviderKind};
 use crate::models::ConversationMessage;
@@ -19,6 +22,14 @@ pub use copilot::CopilotProvider;
 pub use google::GoogleProvider;
 pub use ollama::OllamaProvider;
 pub use openai::OpenAiProvider;
+
+fn provider_http_client() -> Client {
+    Client::builder()
+        .connect_timeout(Duration::from_secs(10))
+        .read_timeout(Duration::from_secs(90))
+        .build()
+        .unwrap_or_default()
+}
 
 #[async_trait]
 pub trait Provider: Send + Sync {

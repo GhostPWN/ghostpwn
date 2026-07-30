@@ -11,9 +11,8 @@ import json
 import logging
 import socket
 import ssl
-import sys
 import time
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List
 
 logging.basicConfig(
     level=logging.INFO,

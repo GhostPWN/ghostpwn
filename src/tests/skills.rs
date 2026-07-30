@@ -3,7 +3,7 @@ use std::fs;
 use serde_json::json;
 use tempfile::tempdir;
 
-use super::SkillRuntime;
+use super::{BUNDLED_SKILLS, SkillRuntime, extract_dir};
 
 #[tokio::test]
 async fn list_reads_skill_frontmatter() {
@@ -58,5 +58,19 @@ async fn search_and_read_skill_by_name() {
     assert_eq!(
         read["content"].as_str(),
         Some("---\nname: path-traversal\ndescription: Directory traversal testing\n---\n# Steps\n")
+    );
+}
+
+#[test]
+fn bundled_skills_extract_with_scripts() {
+    let root = tempdir().expect("tempdir");
+
+    extract_dir(&BUNDLED_SKILLS, root.path()).expect("extract skills");
+
+    assert!(root.path().join("01-recon-osint/SKILL.md").is_file());
+    assert!(
+        root.path()
+            .join("02-vulnerability-scanner/scripts/cvss_calculator.py")
+            .is_file()
     );
 }

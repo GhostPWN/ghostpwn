@@ -20,6 +20,7 @@ import zipfile
 
 UNSAFE_EXT = {".pkl", ".pickle", ".pt", ".pth", ".bin", ".ckpt", ".joblib", ".dill", ".npy"}
 SAFE_EXT = {".safetensors", ".onnx", ".gguf", ".ggml", ".json"}
+MAX_PICKLE_BYTES = 50 * 1024 * 1024
 
 # Globals that enable code execution when present in a pickle stream.
 DANGEROUS_GLOBALS = {
@@ -72,15 +73,34 @@ def scan_file(path: str) -> dict:
         # PyTorch .pt/.pth are usually zip archives containing pickle(s).
         if zipfile.is_zipfile(path):
             with zipfile.ZipFile(path) as zf:
-                for nm in zf.namelist():
+                for info in zf.infolist():
+                    nm = info.filename
                     if nm.endswith(("data.pkl", ".pkl", ".pickle")) or "pickle" in nm:
-                        f = scan_pickle_bytes(zf.read(nm))
+                        if info.file_size > MAX_PICKLE_BYTES:
+                            result["findings"].append(
+                                f"[{nm}] skipped: entry exceeds {MAX_PICKLE_BYTES} bytes"
+                            )
+                            continue
+                        with zf.open(info) as entry:
+                            data = entry.read(MAX_PICKLE_BYTES + 1)
+                        if len(data) > MAX_PICKLE_BYTES:
+                            result["findings"].append(
+                                f"[{nm}] skipped: expanded entry exceeds {MAX_PICKLE_BYTES} bytes"
+                            )
+                            continue
+                        f = scan_pickle_bytes(data)
                         result["findings"] += [f"[{nm}] {x}" for x in f]
             if not result["findings"]:
                 result["findings"].append("zip archive, no embedded pickle entries detected")
         else:
             with open(path, "rb") as fh:
-                head = fh.read()
+                head = fh.read(MAX_PICKLE_BYTES + 1)
+            if len(head) > MAX_PICKLE_BYTES:
+                result["findings"].append(
+                    f"skipped: file exceeds {MAX_PICKLE_BYTES} bytes"
+                )
+                result["verdict"] = "review"
+                return result
             result["findings"] += scan_pickle_bytes(head)
     except Exception as e:  # noqa: BLE001
         result["findings"].append(f"error: {e}")

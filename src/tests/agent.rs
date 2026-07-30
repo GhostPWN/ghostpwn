@@ -1,4 +1,5 @@
 use crate::config::{ProviderKeys, ProviderKind};
+use crate::models::ConversationMessage;
 use crate::secrets::SecretStore;
 use crate::tools::ToolRuntime;
 
@@ -74,6 +75,7 @@ fn normalize_model_name_strips_common_prefix_and_whitespace() {
 #[test]
 fn connected_provider_becomes_active_with_default_model() {
     let mut agent = test_agent(ProviderKind::Google);
+    agent.history.push(ConversationMessage::user("old account"));
 
     agent.activate_connected_provider(ProviderKind::OpenAi, "sk-test-token".to_string());
 
@@ -84,6 +86,44 @@ fn connected_provider_becomes_active_with_default_model() {
             .provider_keys_snapshot()
             .is_connected(ProviderKind::OpenAi)
     );
+    assert!(agent.history.is_empty());
+}
+
+#[test]
+fn switching_provider_clears_history() {
+    let mut agent = test_agent(ProviderKind::Google);
+    agent
+        .history
+        .push(ConversationMessage::user("provider-specific context"));
+
+    agent.switch_model(ProviderKind::Anthropic, None);
+
+    assert!(agent.history.is_empty());
+}
+
+#[test]
+fn switching_model_on_same_provider_preserves_history() {
+    let mut agent = test_agent(ProviderKind::Google);
+    agent.history.push(ConversationMessage::user("keep me"));
+
+    agent.switch_model(ProviderKind::Google, Some("gemini-test".to_string()));
+
+    assert_eq!(agent.history.len(), 1);
+}
+
+#[test]
+fn history_is_bounded_to_recent_messages() {
+    let mut agent = test_agent(ProviderKind::Google);
+    for index in 0..105 {
+        agent
+            .history
+            .push(ConversationMessage::user(index.to_string()));
+    }
+
+    agent.trim_history();
+
+    assert_eq!(agent.history.len(), 100);
+    assert_eq!(agent.history[0].content, "5");
 }
 
 #[test]

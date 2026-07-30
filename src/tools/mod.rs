@@ -1,7 +1,8 @@
-use std::io::ErrorKind;
-use std::net::{IpAddr, ToSocketAddrs};
+use std::io::{Error as IoError, ErrorKind};
+use std::net::{IpAddr, SocketAddr, ToSocketAddrs};
 use std::path::{Component, Path, PathBuf};
 use std::process::Stdio;
+use std::sync::Arc;
 use std::time::Duration;
 
 use anyhow::{Result, anyhow};
@@ -9,11 +10,12 @@ use futures_util::{StreamExt, stream};
 use globset::Glob;
 use regex::Regex;
 use reqwest::Client;
+use reqwest::dns::{Addrs, Name, Resolve, Resolving};
 use serde::Serialize;
 use serde_json::{Value, json};
 use tokio::fs;
 use tokio::fs::OpenOptions;
-use tokio::io::AsyncWriteExt;
+use tokio::io::{AsyncRead, AsyncReadExt, AsyncWriteExt};
 use tokio::process::Command;
 use tokio::time::timeout;
 use walkdir::WalkDir;
@@ -23,6 +25,9 @@ use crate::skills::SkillRuntime;
 
 const DEFAULT_COMMAND_TIMEOUT_MS: u64 = 30_000;
 const MAX_COMMAND_TIMEOUT_MS: u64 = 120_000;
+const MAX_COMMAND_STDOUT_BYTES: usize = 10_000;
+const MAX_COMMAND_STDERR_BYTES: usize = 5_000;
+const MAX_TEXT_FILE_BYTES: usize = 5_000_000;
 const DEFAULT_WEB_FETCH_BYTES: usize = 1_000_000;
 const MAX_WEB_FETCH_BYTES: usize = 5_000_000;
 const MAX_WEB_SEARCH_RESULTS: usize = 10;
@@ -31,6 +36,8 @@ const MAX_GREP_MATCHES: usize = 50;
 const MAX_AUDIT_LOCKFILES: usize = 25;
 const MAX_AUDIT_PACKAGES: usize = 1_000;
 const MAX_AUDIT_ADVISORIES: usize = 100;
+const DEFAULT_READ_FILE_LINES: usize = 200;
+const MAX_DIFF_LINES: usize = 5_000;
 const OSV_QUERY_BATCH_URL: &str = "https://api.osv.dev/v1/querybatch";
 
 pub fn tool_requires_approval(name: &str) -> bool {
@@ -87,6 +94,7 @@ impl ToolRuntime {
         let http_client = Client::builder()
             .user_agent("GhostPWN/0.1")
             .timeout(Duration::from_secs(30))
+            .dns_resolver(Arc::new(PublicDnsResolver))
             .redirect(reqwest::redirect::Policy::custom(|attempt| {
                 if attempt.previous().len() >= 5 {
                     return attempt.error("too many redirects");
@@ -110,7 +118,62 @@ impl ToolRuntime {
     }
 
     pub fn arg_summary(&self, name: &str, args: &Value) -> String {
-        let key = match canonical_tool_name(name) {
+        let canonical = canonical_tool_name(name);
+        let detailed = match canonical {
+            "runCommand" => Some(format!(
+                "UNSANDBOXED shell command: {}",
+                args.get("command")
+                    .and_then(Value::as_str)
+                    .unwrap_or_default()
+            )),
+            "writeFile" => Some(format!(
+                "{} ({} bytes)",
+                path_arg(args).unwrap_or_default(),
+                args.get("content")
+                    .and_then(Value::as_str)
+                    .map(str::len)
+                    .unwrap_or(0)
+            )),
+            "editFile" => Some(format!(
+                "{} (replace {} chars with {} chars, replaceAll={})",
+                path_arg(args).unwrap_or_default(),
+                args.get("oldString")
+                    .and_then(Value::as_str)
+                    .map(str::len)
+                    .unwrap_or(0),
+                args.get("newString")
+                    .and_then(Value::as_str)
+                    .map(str::len)
+                    .unwrap_or(0),
+                bool_arg(args, &["replaceAll", "replace_all"]).unwrap_or(false)
+            )),
+            "multiEdit" => Some(format!(
+                "{} ({} edits)",
+                path_arg(args).unwrap_or_default(),
+                args.get("edits")
+                    .and_then(Value::as_array)
+                    .map(Vec::len)
+                    .unwrap_or(0)
+            )),
+            "applyPatch" => Some(format!(
+                "patch ({} chars): {}",
+                args.get("patchText")
+                    .or_else(|| args.get("patch"))
+                    .and_then(Value::as_str)
+                    .map(str::len)
+                    .unwrap_or(0),
+                args.get("patchText")
+                    .or_else(|| args.get("patch"))
+                    .and_then(Value::as_str)
+                    .unwrap_or_default()
+            )),
+            _ => None,
+        };
+        if let Some(summary) = detailed {
+            return summary.chars().take(240).collect();
+        }
+
+        let key = match canonical {
             "listSkills" => "",
             "searchSkills" => "query",
             "readSkill" => "name",
@@ -140,13 +203,19 @@ impl ToolRuntime {
         }
 
         if key == "path" {
-            return path_arg(args).unwrap_or_default().to_string();
+            return path_arg(args)
+                .unwrap_or_default()
+                .chars()
+                .take(240)
+                .collect();
         }
 
         args.get(key)
             .and_then(Value::as_str)
             .unwrap_or_default()
-            .to_string()
+            .chars()
+            .take(240)
+            .collect()
     }
 
     pub async fn execute(&self, call: &ToolCall) -> Result<Value> {
@@ -300,7 +369,8 @@ impl ToolRuntime {
             .get("maxLines")
             .or_else(|| args.get("limit"))
             .and_then(Value::as_u64)
-            .map(|v| v as usize);
+            .map(|v| v as usize)
+            .unwrap_or(DEFAULT_READ_FILE_LINES);
         let offset = args
             .get("offset")
             .and_then(Value::as_u64)
@@ -308,24 +378,20 @@ impl ToolRuntime {
             .unwrap_or(0);
 
         let resolved = self.resolve_in_workspace(path)?;
-        let content = fs::read_to_string(&resolved).await?;
+        let content = read_text_file(&resolved).await?;
         let total_lines = content.lines().count();
 
         let selected = content
             .lines()
             .enumerate()
             .skip(offset)
-            .take(limit.unwrap_or(usize::MAX))
+            .take(limit)
             .collect::<Vec<(usize, &str)>>();
-        let output = if limit.is_none() && offset == 0 {
-            content.clone()
-        } else {
-            selected
-                .iter()
-                .map(|(_, line)| *line)
-                .collect::<Vec<&str>>()
-                .join("\n")
-        };
+        let output = selected
+            .iter()
+            .map(|(_, line)| *line)
+            .collect::<Vec<&str>>()
+            .join("\n");
         let numbered = selected
             .iter()
             .map(|(index, line)| format!("{}: {}", index + 1, line))
@@ -337,9 +403,7 @@ impl ToolRuntime {
             .and_then(Value::as_bool)
             .unwrap_or(false);
 
-        let truncated = limit
-            .map(|v| total_lines > offset.saturating_add(v))
-            .unwrap_or(false);
+        let truncated = total_lines > offset.saturating_add(limit);
 
         let mut result = json!({
             "path": resolved.display().to_string(),
@@ -456,6 +520,7 @@ impl ToolRuntime {
             .unwrap_or(false);
 
         let mut results = Vec::<Value>::new();
+        let mut skipped_files = 0usize;
         let walker = if resolved.is_file() {
             WalkDir::new(resolved.parent().unwrap_or(self.workspace_root.as_path()))
         } else {
@@ -492,9 +557,12 @@ impl ToolRuntime {
                 }
             }
 
-            let content = match fs::read_to_string(path).await {
+            let content = match read_text_file(path).await {
                 Ok(v) => v,
-                Err(_) => continue,
+                Err(_) => {
+                    skipped_files += 1;
+                    continue;
+                }
             };
 
             for (index, line) in content.lines().enumerate() {
@@ -522,6 +590,8 @@ impl ToolRuntime {
             "matches": results,
             "totalMatches": results.len(),
             "truncated": truncated,
+            "complete": !truncated && skipped_files == 0,
+            "skippedFiles": skipped_files,
         }))
     }
 
@@ -543,7 +613,7 @@ impl ToolRuntime {
 
         let mut packages = Vec::<CargoPackage>::new();
         for lockfile in &lockfiles {
-            let content = fs::read_to_string(lockfile).await?;
+            let content = read_text_file(lockfile).await?;
             for (name, version) in parse_cargo_lock(&content) {
                 packages.push(CargoPackage {
                     lockfile: lockfile.display().to_string(),
@@ -707,31 +777,49 @@ impl ToolRuntime {
             .stderr(Stdio::piped())
             .kill_on_drop(true);
 
-        let output =
-            match timeout(Duration::from_millis(timeout_ms), command_builder.output()).await {
-                Ok(result) => result?,
-                Err(_) => {
-                    return Ok(json!({
-                        "stdout": "",
-                        "stderr": "Command timed out",
-                        "exitCode": -1,
-                        "truncated": false,
-                    }));
-                }
-            };
+        let mut child = command_builder.spawn()?;
+        let stdout = child
+            .stdout
+            .take()
+            .ok_or_else(|| anyhow!("Failed to capture command stdout"))?;
+        let stderr = child
+            .stderr
+            .take()
+            .ok_or_else(|| anyhow!("Failed to capture command stderr"))?;
 
-        let stdout = String::from_utf8_lossy(&output.stdout).to_string();
-        let stderr = String::from_utf8_lossy(&output.stderr).to_string();
-
-        let truncated = stdout.len() > 10_000 || stderr.len() > 5_000;
-        let stdout_out = truncate_string(&stdout, 10_000);
-        let stderr_out = truncate_string(&stderr, 5_000);
+        let result = timeout(Duration::from_millis(timeout_ms), async {
+            tokio::join!(
+                read_capped(stdout, MAX_COMMAND_STDOUT_BYTES),
+                read_capped(stderr, MAX_COMMAND_STDERR_BYTES),
+                child.wait()
+            )
+        })
+        .await;
+        let (stdout, stderr, status) = match result {
+            Ok((stdout, stderr, status)) => {
+                let (stdout, stdout_truncated) = stdout?;
+                let (stderr, stderr_truncated) = stderr?;
+                (
+                    stdout,
+                    stderr,
+                    (status?, stdout_truncated || stderr_truncated),
+                )
+            }
+            Err(_) => {
+                return Ok(json!({
+                    "stdout": "",
+                    "stderr": "Command timed out",
+                    "exitCode": -1,
+                    "truncated": false,
+                }));
+            }
+        };
 
         Ok(json!({
-            "stdout": stdout_out,
-            "stderr": stderr_out,
-            "exitCode": output.status.code().unwrap_or(-1),
-            "truncated": truncated,
+            "stdout": String::from_utf8_lossy(&stdout),
+            "stderr": String::from_utf8_lossy(&stderr),
+            "exitCode": status.0.code().unwrap_or(-1),
+            "truncated": status.1,
         }))
     }
 
@@ -773,7 +861,13 @@ impl ToolRuntime {
         let path = required_path(args)?;
         let proposed = required_str(args, "content")?;
         let resolved = self.resolve_in_workspace(path)?;
-        let original = fs::read_to_string(&resolved).await?;
+        let original = read_text_file(&resolved).await?;
+        if original.lines().count() > MAX_DIFF_LINES || proposed.lines().count() > MAX_DIFF_LINES {
+            return Err(anyhow!(
+                "Diff input exceeds the {}-line safety limit; split the edit into smaller files",
+                MAX_DIFF_LINES
+            ));
+        }
         let diff = unified_diff(path, &original, proposed);
 
         Ok(json!({
@@ -809,7 +903,7 @@ impl ToolRuntime {
         let replace_all = bool_arg(args, &["replaceAll", "replace_all"]).unwrap_or(false);
 
         let resolved = self.resolve_in_workspace(path)?;
-        let content = fs::read_to_string(&resolved).await?;
+        let content = read_text_file(&resolved).await?;
         let (updated, replacements) = apply_string_edit(&content, old, new, replace_all)?;
         fs::write(&resolved, updated).await?;
 
@@ -827,7 +921,7 @@ impl ToolRuntime {
             .ok_or_else(|| anyhow!("Missing required array argument 'edits'"))?;
 
         let resolved = self.resolve_in_workspace(path)?;
-        let mut content = fs::read_to_string(&resolved).await?;
+        let mut content = read_text_file(&resolved).await?;
         let mut total = 0usize;
 
         for edit in edits {
@@ -876,7 +970,7 @@ impl ToolRuntime {
                     changes,
                 } => {
                     let source = self.resolve_in_workspace(&path)?;
-                    let original = fs::read_to_string(&source).await?;
+                    let original = read_text_file(&source).await?;
                     let updated = apply_patch_lines(&original, &changes)?;
                     let target = if let Some(move_to) = move_to {
                         let target = self.resolve_existing_or_missing_in_workspace(&move_to)?;
@@ -893,7 +987,13 @@ impl ToolRuntime {
 
                     let create_new = target != source;
                     if create_new {
+                        actions.push(PatchAction::Write {
+                            path: target,
+                            content: updated,
+                            create_new,
+                        });
                         actions.push(PatchAction::Delete { path: source });
+                        continue;
                     }
                     actions.push(PatchAction::Write {
                         path: target,
@@ -1437,10 +1537,6 @@ fn apply_string_edit(
     Ok((updated, if replace_all { count } else { 1 }))
 }
 
-fn truncate_string(input: &str, max: usize) -> String {
-    input.chars().take(max).collect()
-}
-
 fn unified_diff(path: &str, original: &str, proposed: &str) -> String {
     if original == proposed {
         return format!("--- a/{path}\n+++ b/{path}\n");
@@ -1858,20 +1954,73 @@ fn validate_public_url(url: &reqwest::Url) -> std::result::Result<(), String> {
         return Ok(());
     }
 
-    let port = url.port_or_known_default().unwrap_or(0);
-    let addrs = (host, port)
-        .to_socket_addrs()
-        .map_err(|err| format!("failed to resolve '{host}': {err}"))?
-        .collect::<Vec<_>>();
-    if addrs.is_empty() {
-        return Err(format!("host '{host}' did not resolve"));
-    }
-    for addr in addrs {
-        if !is_public_ip(addr.ip()) {
-            return Err(format!("host '{host}' resolves to a non-public address"));
-        }
-    }
     Ok(())
+}
+
+struct PublicDnsResolver;
+
+impl Resolve for PublicDnsResolver {
+    fn resolve(&self, name: Name) -> Resolving {
+        let host = name.as_str().to_string();
+        Box::pin(async move {
+            let addrs = tokio::task::spawn_blocking(move || resolve_public_host(&host))
+                .await
+                .map_err(|err| IoError::other(format!("DNS resolver task failed: {err}")))??;
+            Ok(Box::new(addrs.into_iter()) as Addrs)
+        })
+    }
+}
+
+fn resolve_public_host(host: &str) -> std::io::Result<Vec<SocketAddr>> {
+    let addrs = (host, 0).to_socket_addrs()?.collect::<Vec<_>>();
+    if addrs.is_empty() {
+        return Err(IoError::new(
+            ErrorKind::NotFound,
+            format!("host '{host}' did not resolve"),
+        ));
+    }
+    if addrs.iter().any(|addr| !is_public_ip(addr.ip())) {
+        return Err(IoError::new(
+            ErrorKind::PermissionDenied,
+            format!("host '{host}' resolves to a non-public address"),
+        ));
+    }
+    Ok(addrs)
+}
+
+async fn read_capped(mut reader: impl AsyncRead + Unpin, limit: usize) -> Result<(Vec<u8>, bool)> {
+    let mut output = Vec::with_capacity(limit);
+    let mut buffer = [0_u8; 8_192];
+    let mut truncated = false;
+
+    loop {
+        let read = reader.read(&mut buffer).await?;
+        if read == 0 {
+            break;
+        }
+        let remaining = limit.saturating_sub(output.len());
+        output.extend_from_slice(&buffer[..read.min(remaining)]);
+        truncated |= read > remaining;
+    }
+
+    Ok((output, truncated))
+}
+
+async fn read_text_file(path: &Path) -> Result<String> {
+    let file = fs::File::open(path).await?;
+    let mut bytes = Vec::new();
+    file.take(MAX_TEXT_FILE_BYTES as u64 + 1)
+        .read_to_end(&mut bytes)
+        .await?;
+    if bytes.len() > MAX_TEXT_FILE_BYTES {
+        return Err(anyhow!(
+            "Text file '{}' exceeds the {}-byte safety limit",
+            path.display(),
+            MAX_TEXT_FILE_BYTES
+        ));
+    }
+    String::from_utf8(bytes)
+        .map_err(|err| anyhow!("Text file '{}' is not valid UTF-8: {}", path.display(), err))
 }
 
 fn is_public_ip(ip: IpAddr) -> bool {

@@ -18,8 +18,8 @@ use url::Url;
 
 use crate::config::ProviderKind;
 use crate::models::{ConversationMessage, MessageRole};
-use crate::providers::Provider;
 use crate::providers::sse::consume_sse;
+use crate::providers::{Provider, provider_http_client};
 use crate::secrets::SecretStore;
 
 const CLIENT_ID: &str = "app_EMoamEEZ73f0CkXaXp7hrann";
@@ -125,7 +125,7 @@ impl CodexProvider {
         Self {
             credentials_json,
             model,
-            client: Client::new(),
+            client: provider_http_client(),
             secret_store,
             credentials_cache: Mutex::new(None),
         }
@@ -284,7 +284,7 @@ pub async fn exchange_browser_code(
     verifier: &str,
     redirect_uri: &str,
 ) -> Result<CodexCredentials> {
-    let client = Client::new();
+    let client = provider_http_client();
     let response = client
         .post(TOKEN_URL)
         .header(ACCEPT, "application/json")
@@ -308,7 +308,7 @@ pub async fn exchange_browser_code(
 }
 
 pub async fn authorize_device() -> Result<DeviceAuth> {
-    let client = Client::new();
+    let client = provider_http_client();
     let response = client
         .post(DEVICE_CODE_URL)
         .header(ACCEPT, "application/json")
@@ -343,7 +343,7 @@ pub async fn authorize_device() -> Result<DeviceAuth> {
 }
 
 pub async fn poll_device_authorization(device_code: &str) -> Result<DevicePollResult> {
-    let client = Client::new();
+    let client = provider_http_client();
     let response = client
         .post(DEVICE_TOKEN_URL)
         .header(ACCEPT, "application/json")

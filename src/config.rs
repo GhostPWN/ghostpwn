@@ -174,7 +174,7 @@ impl Config {
             .and_then(|value| ProviderKind::parse(&value));
         let saved_model = secret_store.load_setting(SETTING_MODEL);
         let (provider, model) =
-            resolve_provider_and_model(env_provider.or(saved_provider), env_model.or(saved_model));
+            resolve_config_provider_and_model(env_provider, env_model, saved_provider, saved_model);
 
         let workspace_root = env::var("GHOSTPWN_WORKSPACE")
             .ok()
@@ -206,6 +206,22 @@ fn resolve_provider_and_model(
     let model = saved_model.unwrap_or_else(|| provider.default_model().to_string());
 
     (provider, model)
+}
+
+fn resolve_config_provider_and_model(
+    env_provider: Option<ProviderKind>,
+    env_model: Option<String>,
+    saved_provider: Option<ProviderKind>,
+    saved_model: Option<String>,
+) -> (ProviderKind, String) {
+    let model = env_model.or_else(|| {
+        if env_provider.is_none() {
+            saved_model
+        } else {
+            None
+        }
+    });
+    resolve_provider_and_model(env_provider.or(saved_provider), model)
 }
 
 #[cfg(test)]
