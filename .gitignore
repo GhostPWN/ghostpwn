@@ -1,14 +1,9 @@
 /target
 .env*
 /test
-/src/tests/
 .DS_Store
 __pycache__/
 *.pyc
-
-# AGENTS
-CLAUDE.md
-AGENTS.md
 
 # Zensical docs build output
 site/
