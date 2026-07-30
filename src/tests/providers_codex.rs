@@ -1,0 +1,102 @@
+use base64::Engine;
+use base64::engine::general_purpose::URL_SAFE_NO_PAD;
+use serde_json::json;
+
+use super::{
+    CodexCredentials, extract_account_id, extract_response_text, extract_response_text_from_body,
+    extract_stream_delta, parse_credentials, pkce_challenge, serialize_credentials,
+};
+
+#[test]
+fn pkce_challenge_is_s256_base64url() {
+    assert_eq!(
+        pkce_challenge("test-verifier"),
+        "JBbiqONGWPaAmwXk_8bT6UnlPfrn65D32eZlJS-zGG0"
+    );
+}
+
+#[test]
+fn credential_json_round_trips() {
+    let credentials = CodexCredentials {
+        refresh_token: "refresh".to_string(),
+        access_token: "access".to_string(),
+        expires_at: 42,
+        account_id: Some("account".to_string()),
+    };
+
+    let serialized = serialize_credentials(&credentials).unwrap();
+    let parsed = parse_credentials(&serialized).unwrap();
+
+    assert_eq!(parsed.refresh_token, "refresh");
+    assert_eq!(parsed.access_token, "access");
+    assert_eq!(parsed.expires_at, 42);
+    assert_eq!(parsed.account_id.as_deref(), Some("account"));
+}
+
+#[test]
+fn extracts_account_id_from_jwt_payload() {
+    let payload = URL_SAFE_NO_PAD.encode(
+        serde_json::to_vec(&json!({
+            "https://api.openai.com/auth/account_id": "acct_123"
+        }))
+        .unwrap(),
+    );
+    let token = format!("header.{payload}.sig");
+
+    assert_eq!(extract_account_id(&token).as_deref(), Some("acct_123"));
+}
+
+#[test]
+fn parses_stream_text_delta_events() {
+    let event = json!({
+        "type": "response.output_text.delta",
+        "delta": "hello"
+    });
+
+    assert_eq!(extract_stream_delta(&event).as_deref(), Some("hello"));
+}
+
+#[test]
+fn parses_non_stream_response_text() {
+    let body = json!({
+        "output": [{
+            "content": [
+                { "text": "hello " },
+                { "text": "world" }
+            ]
+        }]
+    });
+
+    assert_eq!(extract_response_text(&body).as_deref(), Some("hello world"));
+}
+
+#[test]
+fn parses_buffered_sse_response_text() {
+    let body = concat!(
+        "event: response.output_text.delta\n",
+        "data: {\"type\":\"response.output_text.delta\",\"delta\":\"hello\"}\n\n",
+        "event: response.output_text.delta\n",
+        "data: {\"type\":\"response.output_text.delta\",\"delta\":\" world\"}\n\n",
+        "data: [DONE]\n\n",
+    );
+
+    assert_eq!(
+        extract_response_text_from_body(body).unwrap(),
+        "hello world".to_string()
+    );
+}
+
+#[test]
+fn parses_buffered_sse_final_response_text() {
+    let body = concat!(
+        "event: response.created\n",
+        "data: {\"type\":\"response.created\",\"response\":{\"status\":\"in_progress\"}}\n\n",
+        "event: response.completed\n",
+        "data: {\"type\":\"response.completed\",\"output_text\":\"done\"}\n\n",
+    );
+
+    assert_eq!(
+        extract_response_text_from_body(body).unwrap(),
+        "done".to_string()
+    );
+}

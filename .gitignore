@@ -1,6 +1,7 @@
 /target
 .env*
 /test
+/src/tests/
 .DS_Store
 __pycache__/
 *.pyc
