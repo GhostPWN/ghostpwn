@@ -22,13 +22,34 @@
 
 ## Install
 
+### macOS
+
 ```bash
 brew install GhostPWN/tap/ghostpwn
 ghostpwn
 ```
 
-Linux, Windows, configuration, commands, and architecture are covered in the
-[documentation](https://ghostpwn.github.io/ghostpwn/docs/).
+### Linux
+
+```bash
+sudo apt-get install -y build-essential pkg-config
+curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh
+source "$HOME/.cargo/env"
+cargo install --git https://github.com/GhostPWN/ghostpwn
+ghostpwn
+```
+
+### Windows
+
+Install [Rust](https://rustup.rs/), then:
+
+```powershell
+cargo install --git https://github.com/GhostPWN/ghostpwn
+ghostpwn
+```
+
+See the [documentation](https://ghostpwn.github.io/ghostpwn/docs/) for detailed
+requirements, configuration, commands, and architecture.
 
 ## Contributing
 
