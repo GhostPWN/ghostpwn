@@ -25,3 +25,5 @@ Local tools available to the agent loop:
 Model-requested commands and file mutations pause until you approve them with <kbd>y</kbd> or deny them with <kbd>n</kbd>/<kbd>Enter</kbd>/<kbd>Esc</kbd>.
 
 Claude Code, Codex, and OpenCode-compatible tool aliases are provided for common read/write/edit/shell/search operations.
+
+Fenced `diff` blocks in assistant responses are rendered as highlighted diffs.
