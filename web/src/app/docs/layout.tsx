@@ -18,9 +18,9 @@ export default function DocsLayout({
         <div className="mx-auto flex w-full max-w-6xl items-center justify-between rounded-2xl border bg-background/70 px-5 py-3 shadow-sm backdrop-blur-md">
           <Link href="/" className="flex items-center gap-2.5">
             <Image src={asset("/ghostpwn-logo.svg")} alt="GhostPWN" width={28} height={28} />
-            <span className="font-semibold tracking-tight">GhostPWN</span>
+            <span className="font-semibold">GhostPWN</span>
           </Link>
-          <nav className="flex items-center gap-2">
+          <nav aria-label="Documentation actions" className="flex items-center gap-2">
             <MobileDocsMenu />
             <ThemeToggle />
             <Button variant="outline" size="sm" render={<a href={GITHUB_URL} />}>
@@ -36,7 +36,9 @@ export default function DocsLayout({
             <DocsSidebar />
           </div>
         </aside>
-        <main className="min-w-0 flex-1 py-10">{children}</main>
+        <main id="main-content" tabIndex={-1} className="min-w-0 flex-1 py-10">
+          {children}
+        </main>
       </div>
     </div>
   );

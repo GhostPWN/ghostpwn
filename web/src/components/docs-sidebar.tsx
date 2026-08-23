@@ -9,22 +9,24 @@ import { cn } from "@/lib/utils";
 
 export function DocsSidebar() {
   const pathname = usePathname();
+  const currentPath = pathname.replace(/\/$/, "") || "/";
 
   return (
-    <nav className="flex flex-col gap-6 text-sm">
+    <nav aria-label="Documentation" className="flex flex-col gap-6 text-sm">
       {NAV.map((section, i) => (
         <div key={section.title ?? i} className="flex flex-col gap-1">
           {section.title && (
-            <p className="mb-1 px-2 text-xs font-semibold uppercase tracking-wide text-muted-foreground">
+            <p className="mb-1 px-2 text-xs font-semibold uppercase text-muted-foreground">
               {section.title}
             </p>
           )}
           {section.items.map((item) => {
-            const active = pathname === item.href;
+            const active = currentPath === item.href;
             return (
               <Link
                 key={item.href}
                 href={item.href}
+                aria-current={active ? "page" : undefined}
                 className={cn(
                   "rounded-md px-2 py-1.5 transition-colors",
                   active
@@ -47,8 +49,11 @@ export function MobileDocsMenu() {
 
   return (
     <details ref={details} className="relative md:hidden">
-      <summary className="flex size-8 cursor-pointer list-none items-center justify-center rounded-md border hover:bg-accent [&::-webkit-details-marker]:hidden">
-        <Menu className="size-4" />
+      <summary
+        aria-label="Open documentation menu"
+        className="flex size-8 cursor-pointer list-none items-center justify-center rounded-md border outline-none hover:bg-accent focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-1 focus-visible:ring-offset-background [&::-webkit-details-marker]:hidden"
+      >
+        <Menu aria-hidden="true" className="size-4" />
         <span className="sr-only">Open documentation menu</span>
       </summary>
       <div

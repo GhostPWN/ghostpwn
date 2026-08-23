@@ -56,6 +56,14 @@
     .scanline-overlay {
       animation: scanMove 0.15s linear infinite;
     }
+    @media (prefers-reduced-motion: reduce) {
+      .ghost-group,
+      .glow-aura,
+      .eyes,
+      .scanline-overlay {
+        animation: none;
+      }
+    }
   </style>
   <g class="ghost-group">
     <defs>

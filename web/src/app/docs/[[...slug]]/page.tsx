@@ -16,7 +16,27 @@ interface DocPageProps {
 export async function generateMetadata(props: DocPageProps): Promise<Metadata> {
   const { slug = [] } = await props.params;
   const doc = await getDoc(slug);
-  return { title: doc ? `${doc.title} — GhostPWN` : "GhostPWN Docs" };
+  const title = doc ? (slug.length ? doc.title : "Documentation") : "Documentation";
+  const description =
+    doc && slug.length
+      ? `Learn about ${doc.title.toLowerCase()} in the GhostPWN documentation.`
+      : "Install, configure, and use GhostPWN.";
+  const path = slug.length ? `/docs/${slug.join("/")}` : "/docs";
+  const url = `https://ghostpwn.github.io/ghostpwn${path}`;
+
+  return {
+    title,
+    description,
+    alternates: { canonical: url },
+    openGraph: {
+      type: "website",
+      siteName: "GhostPWN",
+      title,
+      description,
+      url,
+    },
+    twitter: { card: "summary", title, description },
+  };
 }
 
 export default async function DocPage(props: DocPageProps) {
