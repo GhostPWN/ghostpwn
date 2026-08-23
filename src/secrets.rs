@@ -45,6 +45,18 @@ impl SecretMutationReport {
             "no persistent backend"
         }
     }
+
+    pub fn failure_summary(&self) -> Option<String> {
+        let mut errors = Vec::with_capacity(2);
+        if let Some(error) = self.keychain_error.as_deref() {
+            errors.push(format!("OS keychain: {error}"));
+        }
+        if let Some(error) = self.file_error.as_deref() {
+            errors.push(format!("local state file: {error}"));
+        }
+
+        (!errors.is_empty()).then(|| errors.join("; "))
+    }
 }
 
 impl SecretStore {
@@ -56,7 +68,7 @@ impl SecretStore {
     }
 
     #[cfg(test)]
-    fn file_only(path: PathBuf) -> Self {
+    pub(crate) fn file_only(path: PathBuf) -> Self {
         Self {
             state_file: Some(path),
             keychain_enabled: false,
@@ -125,7 +137,16 @@ impl SecretStore {
             }
         }
 
-        Ok(report)
+        if report.persisted() {
+            Ok(report)
+        } else {
+            Err(anyhow!(
+                "failed to persist API key ({})",
+                report
+                    .failure_summary()
+                    .unwrap_or_else(|| "no persistent backend succeeded".to_string())
+            ))
+        }
     }
 
     pub fn delete_key(&self, provider: ProviderKind) -> Result<SecretMutationReport> {
@@ -152,7 +173,16 @@ impl SecretStore {
             Err(err) => report.file_error = Some(err.to_string()),
         }
 
-        Ok(report)
+        if report.persisted() {
+            Ok(report)
+        } else {
+            Err(anyhow!(
+                "failed to remove API key ({})",
+                report
+                    .failure_summary()
+                    .unwrap_or_else(|| "no persistent backend succeeded".to_string())
+            ))
+        }
     }
 
     pub fn load_setting(&self, key: &str) -> Option<String> {

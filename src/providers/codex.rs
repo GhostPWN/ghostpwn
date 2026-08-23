@@ -150,8 +150,7 @@ impl CodexProvider {
         if !credentials.is_fresh(now) {
             credentials = refresh_credentials(&self.client, &credentials).await?;
             if let Some(secret_store) = self.secret_store.as_ref() {
-                let serialized = serialize_credentials(&credentials)?;
-                let _ = secret_store.save_key(ProviderKind::Codex, &serialized);
+                persist_credentials(secret_store, &credentials)?;
             }
         }
 
@@ -337,7 +336,7 @@ pub async fn authorize_device() -> Result<DeviceAuth> {
             .verification_uri
             .unwrap_or_else(|| "https://auth.openai.com/activate".to_string()),
         verification_uri_complete: data.verification_uri_complete,
-        interval: data.interval.unwrap_or(5),
+        interval: data.interval.unwrap_or(5).max(1),
         expires_in: data.expires_in,
     })
 }
@@ -387,6 +386,14 @@ pub fn serialize_credentials(credentials: &CodexCredentials) -> Result<String> {
 
 pub fn parse_credentials(value: &str) -> Result<CodexCredentials> {
     serde_json::from_str(value).context("failed to parse Codex credentials")
+}
+
+fn persist_credentials(secret_store: &SecretStore, credentials: &CodexCredentials) -> Result<()> {
+    let serialized = serialize_credentials(credentials)?;
+    secret_store
+        .save_key(ProviderKind::Codex, &serialized)
+        .context("failed to persist refreshed Codex credentials")?;
+    Ok(())
 }
 
 fn bind_redirect_listener() -> Result<(TcpListener, String)> {
@@ -491,7 +498,7 @@ fn credentials_from_token_response(data: TokenResponse) -> Result<CodexCredentia
     Ok(CodexCredentials {
         refresh_token,
         access_token: data.access_token,
-        expires_at: unix_now()? + data.expires_in.unwrap_or(3600),
+        expires_at: unix_now()?.saturating_add(data.expires_in.unwrap_or(3600)),
         account_id: data.id_token.as_deref().and_then(extract_account_id),
     })
 }
@@ -506,7 +513,7 @@ fn credentials_from_device_response(
         refresh_token: refresh_token
             .ok_or_else(|| anyhow!("Codex device response is missing refresh token"))?,
         access_token,
-        expires_at: unix_now()? + expires_in.unwrap_or(3600),
+        expires_at: unix_now()?.saturating_add(expires_in.unwrap_or(3600)),
         account_id: id_token.as_deref().and_then(extract_account_id),
     })
 }

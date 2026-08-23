@@ -91,7 +91,7 @@ pub async fn authorize() -> Result<DeviceAuth> {
         device_code: data.device_code,
         user_code: data.user_code,
         verification_uri: data.verification_uri,
-        interval: data.interval.unwrap_or(5),
+        interval: data.interval.unwrap_or(5).max(1),
         expires_in: data.expires_in,
     })
 }

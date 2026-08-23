@@ -533,6 +533,23 @@ fn unified_diff_handles_equal_content() {
     );
 }
 
+#[test]
+fn unified_diff_bounds_matrix_for_large_replacements() {
+    let original = (0..1_100)
+        .map(|index| format!("old-{index}"))
+        .collect::<Vec<_>>()
+        .join("\n");
+    let proposed = (0..1_100)
+        .map(|index| format!("new-{index}"))
+        .collect::<Vec<_>>()
+        .join("\n");
+
+    let diff = unified_diff("large.txt", &original, &proposed);
+
+    assert!(diff.contains("-old-1099"));
+    assert!(diff.contains("+new-1099"));
+}
+
 #[tokio::test]
 async fn write_file_creates_parent_inside_workspace() {
     let root = tempdir().expect("tempdir");
@@ -554,6 +571,37 @@ async fn write_file_creates_parent_inside_workspace() {
         fs::read_to_string(workspace.join("src/app.txt")).expect("read file"),
         "hello"
     );
+}
+
+#[tokio::test]
+async fn file_tools_accept_empty_output() {
+    let root = tempdir().expect("tempdir");
+    let workspace = root.path().join("workspace");
+    fs::create_dir_all(&workspace).expect("workspace");
+    fs::write(workspace.join("app.txt"), "remove me").expect("source");
+    let tools = ToolRuntime::new(workspace.clone()).expect("runtime");
+
+    tools
+        .execute(&ToolCall {
+            name: "editFile".to_string(),
+            arguments: json!({
+                "path": "app.txt",
+                "oldString": "remove me",
+                "newString": ""
+            }),
+        })
+        .await
+        .expect("empty replacement");
+    tools
+        .execute(&ToolCall {
+            name: "writeFile".to_string(),
+            arguments: json!({"path": "empty.txt", "content": ""}),
+        })
+        .await
+        .expect("empty file");
+
+    assert_eq!(fs::read(workspace.join("app.txt")).expect("edited"), b"");
+    assert_eq!(fs::read(workspace.join("empty.txt")).expect("written"), b"");
 }
 
 #[tokio::test]
@@ -716,6 +764,32 @@ async fn apply_patch_failed_move_keeps_source_file() {
     assert_eq!(
         fs::read_to_string(workspace.join("old.txt")).expect("source remains"),
         "keep me\n"
+    );
+}
+
+#[tokio::test]
+async fn apply_patch_rejects_duplicate_targets_before_writing() {
+    let root = tempdir().expect("tempdir");
+    let workspace = root.path().join("workspace");
+    fs::create_dir_all(&workspace).expect("workspace");
+    fs::write(workspace.join("app.txt"), "one\n").expect("source");
+    let tools = ToolRuntime::new(workspace.clone()).expect("runtime");
+    let call = ToolCall {
+        name: "applyPatch".to_string(),
+        arguments: json!({
+            "patchText": "*** Begin Patch\n*** Update File: app.txt\n@@\n-one\n+two\n*** Update File: app.txt\n@@\n-one\n+three\n*** End Patch"
+        }),
+    };
+
+    let error = tools
+        .execute(&call)
+        .await
+        .expect_err("duplicate target must fail");
+
+    assert!(error.to_string().contains("conflicting actions"));
+    assert_eq!(
+        fs::read_to_string(workspace.join("app.txt")).expect("unchanged"),
+        "one\n"
     );
 }
 

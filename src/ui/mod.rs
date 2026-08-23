@@ -7,6 +7,7 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use anyhow::Result;
+use crossterm::cursor::Show;
 use crossterm::event::{
     self, DisableMouseCapture, EnableMouseCapture, Event, KeyCode, KeyEventKind, KeyModifiers,
     MouseEventKind,
@@ -288,9 +289,8 @@ pub async fn run_ui(agent: Arc<Mutex<Agent>>) -> Result<()> {
         locked.provider_name()
     };
 
-    enable_raw_mode()?;
-    let mut stdout = io::stdout();
-    execute!(stdout, EnterAlternateScreen, EnableMouseCapture)?;
+    let mut session = TerminalSession::enter()?;
+    let stdout = io::stdout();
 
     let backend = CrosstermBackend::new(stdout);
     let mut terminal = Terminal::new(backend)?;
@@ -300,15 +300,57 @@ pub async fn run_ui(agent: Arc<Mutex<Agent>>) -> Result<()> {
 
     let run_result = ui_loop(&mut terminal, &agent, &event_tx, &mut event_rx, &mut state).await;
 
-    disable_raw_mode()?;
-    execute!(
-        terminal.backend_mut(),
-        DisableMouseCapture,
-        LeaveAlternateScreen
-    )?;
-    terminal.show_cursor()?;
+    let restore_result = session.restore();
+    match (run_result, restore_result) {
+        (Ok(()), Ok(())) => Ok(()),
+        (Err(error), Ok(())) | (Ok(()), Err(error)) => Err(error),
+        (Err(error), Err(cleanup_error)) => {
+            Err(error.context(format!("terminal cleanup also failed: {cleanup_error}")))
+        }
+    }
+}
 
-    run_result
+struct TerminalSession {
+    active: bool,
+}
+
+impl TerminalSession {
+    fn enter() -> Result<Self> {
+        enable_raw_mode()?;
+        let mut stdout = io::stdout();
+        if let Err(error) = execute!(stdout, EnterAlternateScreen, EnableMouseCapture) {
+            let _ = disable_raw_mode();
+            return Err(error.into());
+        }
+        Ok(Self { active: true })
+    }
+
+    fn restore(&mut self) -> Result<()> {
+        let raw_result = disable_raw_mode();
+        let mut stdout = io::stdout();
+        let screen_result = execute!(stdout, DisableMouseCapture, LeaveAlternateScreen, Show);
+        if raw_result.is_ok() && screen_result.is_ok() {
+            self.active = false;
+        }
+        raw_result?;
+        screen_result?;
+        Ok(())
+    }
+}
+
+impl Drop for TerminalSession {
+    fn drop(&mut self) {
+        if !self.active {
+            return;
+        }
+        let _ = disable_raw_mode();
+        let _ = execute!(
+            io::stdout(),
+            DisableMouseCapture,
+            LeaveAlternateScreen,
+            Show
+        );
+    }
 }
 
 async fn ui_loop<B: Backend>(
@@ -347,15 +389,15 @@ where
                         continue;
                     }
 
-                    if state.selector.is_some() {
-                        handle_selector_key(key.code, state, agent, event_tx).await;
-                        continue;
-                    }
-
                     if key.code == KeyCode::Char('c')
                         && key.modifiers.contains(KeyModifiers::CONTROL)
                     {
                         break;
+                    }
+
+                    if state.selector.is_some() {
+                        handle_selector_key(key.code, state, agent, event_tx).await;
+                        continue;
                     }
 
                     if state.pending_approval.is_some() {
@@ -1825,8 +1867,8 @@ async fn copilot_device_flow(
         error: false,
     });
 
-    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(auth.expires_in);
-    let interval = std::time::Duration::from_secs(auth.interval);
+    let deadline = oauth_deadline(auth.expires_in)?;
+    let interval = std::time::Duration::from_secs(auth.interval.max(1));
 
     loop {
         tokio::time::sleep(interval).await;
@@ -1847,10 +1889,19 @@ async fn copilot_device_flow(
 
         match copilot::poll_authorization(&auth.device_code).await? {
             copilot::PollResult::Success(refresh_token) => {
-                let mut locked = agent.lock().await;
-                let msg = locked.connect_key(ProviderKind::Copilot, refresh_token);
-                let provider_name = locked.provider_name();
-                let model_msg = match locked.fetch_provider_models(ProviderKind::Copilot).await {
+                let (msg, provider_name, provider_keys) = {
+                    let mut locked = agent.lock().await;
+                    let msg = locked.connect_key(ProviderKind::Copilot, refresh_token);
+                    let provider_name = locked.provider_name();
+                    let provider_keys = locked.provider_keys_snapshot();
+                    (msg, provider_name, provider_keys)
+                };
+                let model_msg = match Agent::fetch_provider_models_with_keys(
+                    ProviderKind::Copilot,
+                    &provider_keys,
+                )
+                .await
+                {
                     Ok(models) if !models.is_empty() => {
                         let _ = events.send(AgentEvent::ModelList {
                             provider: ProviderKind::Copilot,
@@ -1979,8 +2030,8 @@ async fn codex_device_flow(
         error: false,
     });
 
-    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(auth.expires_in);
-    let interval = std::time::Duration::from_secs(auth.interval);
+    let deadline = oauth_deadline(auth.expires_in)?;
+    let interval = std::time::Duration::from_secs(auth.interval.max(1));
 
     loop {
         tokio::time::sleep(interval).await;
@@ -2029,46 +2080,51 @@ async fn finish_codex_connection(
     credentials: codex::CodexCredentials,
 ) -> Result<()> {
     let serialized = codex::serialize_credentials(&credentials)?;
-    let mut locked = agent.lock().await;
-    let msg = locked.connect_key(ProviderKind::Codex, serialized);
-    let provider_name = locked.provider_name();
-    let model_msg = match locked.fetch_provider_models(ProviderKind::Codex).await {
-        Ok(models) if !models.is_empty() => {
-            let _ = events.send(AgentEvent::ModelList {
-                provider: ProviderKind::Codex,
-                models: models.clone(),
-                error: None,
-            });
-            let preview = models
-                .iter()
-                .take(8)
-                .cloned()
-                .collect::<Vec<_>>()
-                .join(", ");
-            format!(
-                "Fetched {} Codex models. Use /model to select one.\n{}",
-                models.len(),
-                preview
-            )
-        }
-        Ok(_) => {
-            let _ = events.send(AgentEvent::ModelList {
-                provider: ProviderKind::Codex,
-                models: Vec::new(),
-                error: None,
-            });
-            "Codex connected, but no models were returned.".to_string()
-        }
-        Err(err) => {
-            let message = format!("Codex connected, but model fetch failed: {}", err);
-            let _ = events.send(AgentEvent::ModelList {
-                provider: ProviderKind::Codex,
-                models: Vec::new(),
-                error: Some(message.clone()),
-            });
-            message
-        }
+    let (msg, provider_name, provider_keys) = {
+        let mut locked = agent.lock().await;
+        let msg = locked.connect_key(ProviderKind::Codex, serialized);
+        let provider_name = locked.provider_name();
+        let provider_keys = locked.provider_keys_snapshot();
+        (msg, provider_name, provider_keys)
     };
+    let model_msg =
+        match Agent::fetch_provider_models_with_keys(ProviderKind::Codex, &provider_keys).await {
+            Ok(models) if !models.is_empty() => {
+                let _ = events.send(AgentEvent::ModelList {
+                    provider: ProviderKind::Codex,
+                    models: models.clone(),
+                    error: None,
+                });
+                let preview = models
+                    .iter()
+                    .take(8)
+                    .cloned()
+                    .collect::<Vec<_>>()
+                    .join(", ");
+                format!(
+                    "Fetched {} Codex models. Use /model to select one.\n{}",
+                    models.len(),
+                    preview
+                )
+            }
+            Ok(_) => {
+                let _ = events.send(AgentEvent::ModelList {
+                    provider: ProviderKind::Codex,
+                    models: Vec::new(),
+                    error: None,
+                });
+                "Codex connected, but no models were returned.".to_string()
+            }
+            Err(err) => {
+                let message = format!("Codex connected, but model fetch failed: {}", err);
+                let _ = events.send(AgentEvent::ModelList {
+                    provider: ProviderKind::Codex,
+                    models: Vec::new(),
+                    error: Some(message.clone()),
+                });
+                message
+            }
+        };
 
     let _ = events.send(AgentEvent::ProviderName(provider_name));
     let _ = events.send(AgentEvent::ProviderStatus {
@@ -2077,6 +2133,12 @@ async fn finish_codex_connection(
         error: false,
     });
     Ok(())
+}
+
+fn oauth_deadline(expires_in: u64) -> Result<std::time::Instant> {
+    std::time::Instant::now()
+        .checked_add(std::time::Duration::from_secs(expires_in))
+        .ok_or_else(|| anyhow::anyhow!("OAuth expiry exceeds the supported clock range"))
 }
 
 #[cfg(test)]

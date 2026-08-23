@@ -1,8 +1,8 @@
 use std::path::Path;
 
 use super::{
-    UiRole, UiState, apply_agent_event, build_audit_prompt, parse_audit_command, resolve_approval,
-    transcript_line_count,
+    UiRole, UiState, apply_agent_event, build_audit_prompt, oauth_deadline, parse_audit_command,
+    resolve_approval, transcript_line_count,
 };
 use crate::models::AgentEvent;
 
@@ -65,4 +65,9 @@ fn transcript_count_includes_wrapped_display_lines() {
     state.push_message(UiRole::User, "one two three four five six".to_string());
 
     assert!(transcript_line_count(&state, 8) > transcript_line_count(&state, 80));
+}
+
+#[test]
+fn oauth_deadline_rejects_unrepresentable_expiry() {
+    assert!(oauth_deadline(u64::MAX).is_err());
 }

@@ -3,7 +3,10 @@ use std::path::PathBuf;
 
 use tempfile::tempdir;
 
-use super::{SETTING_MODEL, SETTING_PROVIDER, SecretStore, default_state_file_path_with};
+use super::{
+    SETTING_MODEL, SETTING_PROVIDER, SecretMutationReport, SecretStore,
+    default_state_file_path_with,
+};
 use crate::config::ProviderKind;
 
 fn state_path_from(entries: &[(&str, &str)]) -> Option<PathBuf> {
@@ -104,5 +107,35 @@ fn file_store_persists_keys_without_keychain() {
             .load_key(ProviderKind::Copilot)
             .as_deref(),
         Some("ghu-test-token")
+    );
+}
+
+#[test]
+fn failed_file_key_save_returns_error() {
+    let dir = tempdir().expect("temp dir");
+    let blocker = dir.path().join("blocker");
+    std::fs::write(&blocker, "not a directory").expect("blocker");
+    let store = SecretStore::file_only(blocker.join("state.json"));
+
+    let error = store
+        .save_key(ProviderKind::OpenAi, "sk-test-token")
+        .expect_err("save must fail when no backend persists the key");
+
+    assert!(error.to_string().contains("failed to persist API key"));
+    assert!(error.to_string().contains("local state file"));
+}
+
+#[test]
+fn mutation_report_includes_every_backend_error() {
+    let report = SecretMutationReport {
+        keychain_saved: false,
+        keychain_error: Some("keychain unavailable".to_string()),
+        file_saved: false,
+        file_error: Some("state file read-only".to_string()),
+    };
+
+    assert_eq!(
+        report.failure_summary().as_deref(),
+        Some("OS keychain: keychain unavailable; local state file: state file read-only")
     );
 }

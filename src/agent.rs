@@ -6,7 +6,7 @@ use tokio::sync::mpsc::UnboundedSender;
 use crate::config::{ProviderKeys, ProviderKind};
 use crate::models::{AgentEvent, ConversationMessage, ModelEnvelope, ToolCall};
 use crate::providers::{Provider, build_provider_with_secret_store};
-use crate::secrets::{SETTING_MODEL, SETTING_PROVIDER, SecretStore};
+use crate::secrets::{SETTING_MODEL, SETTING_PROVIDER, SecretMutationReport, SecretStore};
 use crate::tools::{ToolRuntime, audit_tool_allowed, tool_requires_approval};
 
 const MAX_STEPS: usize = 15;
@@ -145,10 +145,6 @@ impl Agent {
         self.history.clear();
     }
 
-    pub async fn fetch_provider_models(&mut self, provider: ProviderKind) -> Result<Vec<String>> {
-        Self::fetch_provider_models_with_keys(provider, &self.provider_keys).await
-    }
-
     pub async fn fetch_provider_models_with_keys(
         provider: ProviderKind,
         provider_keys: &ProviderKeys,
@@ -239,18 +235,8 @@ impl Agent {
                         provider.as_str(),
                         report.backend_name()
                     );
-                    if !report.keychain_saved
-                        && let Some(err) = report.keychain_error
-                    {
-                        message.push_str(&format!(" OS keychain save failed: {}.", err));
-                    }
+                    append_secret_warnings(&mut message, &report);
                     message
-                } else if let Some(err) = report.keychain_error {
-                    format!(
-                        "Connected {} for this session only; it will disconnect after restart because keychain save failed: {}",
-                        provider.as_str(),
-                        err
-                    )
                 } else {
                     format!("Connected {} for this session only.", provider.as_str())
                 }
@@ -320,21 +306,17 @@ impl Agent {
 
         match delete_result {
             Ok(report) => {
-                if report.keychain_saved || report.file_saved {
+                let mut message = if report.persisted() {
                     format!(
                         "Disconnected {} and removed key from {}.",
                         provider.as_str(),
                         report.backend_name()
                     )
-                } else if let Some(err) = report.keychain_error {
-                    format!(
-                        "Disconnected {} for this session, but keychain removal failed: {}",
-                        provider.as_str(),
-                        err
-                    )
                 } else {
                     format!("Disconnected {}.", provider.as_str())
-                }
+                };
+                append_secret_warnings(&mut message, &report);
+                message
             }
             Err(err) => format!(
                 "Disconnected {} for this session, but key removal failed: {}",
@@ -498,6 +480,15 @@ impl Agent {
             SYSTEM_PROMPT,
             self.tools.prompt_skill_section().await
         )
+    }
+}
+
+fn append_secret_warnings(message: &mut String, report: &SecretMutationReport) {
+    if let Some(error) = report.keychain_error.as_deref() {
+        message.push_str(&format!(" OS keychain operation failed: {error}."));
+    }
+    if let Some(error) = report.file_error.as_deref() {
+        message.push_str(&format!(" Local state operation failed: {error}."));
     }
 }
 

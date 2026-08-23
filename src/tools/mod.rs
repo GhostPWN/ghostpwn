@@ -38,6 +38,7 @@ const MAX_AUDIT_PACKAGES: usize = 1_000;
 const MAX_AUDIT_ADVISORIES: usize = 100;
 const DEFAULT_READ_FILE_LINES: usize = 200;
 const MAX_DIFF_LINES: usize = 5_000;
+const MAX_DIFF_MATRIX_CELLS: usize = 1_000_000;
 const OSV_QUERY_BATCH_URL: &str = "https://api.osv.dev/v1/querybatch";
 
 pub fn tool_requires_approval(name: &str) -> bool {
@@ -859,7 +860,7 @@ impl ToolRuntime {
 
     async fn generate_diff(&self, args: &Value) -> Result<Value> {
         let path = required_path(args)?;
-        let proposed = required_str(args, "content")?;
+        let proposed = required_any_string(args, &["content"])?;
         let resolved = self.resolve_in_workspace(path)?;
         let original = read_text_file(&resolved).await?;
         if original.lines().count() > MAX_DIFF_LINES || proposed.lines().count() > MAX_DIFF_LINES {
@@ -878,7 +879,7 @@ impl ToolRuntime {
 
     async fn write_file(&self, args: &Value) -> Result<Value> {
         let path = required_path(args)?;
-        let content = required_str(args, "content")?;
+        let content = required_any_string(args, &["content"])?;
         let resolved = self.resolve_existing_or_missing_in_workspace(path)?;
 
         if let Some(parent) = resolved.parent() {
@@ -899,7 +900,7 @@ impl ToolRuntime {
     async fn edit_file(&self, args: &Value) -> Result<Value> {
         let path = required_path(args)?;
         let old = required_any_str(args, &["oldString", "old_string"])?;
-        let new = required_any_str(args, &["newString", "new_string"])?;
+        let new = required_any_string(args, &["newString", "new_string"])?;
         let replace_all = bool_arg(args, &["replaceAll", "replace_all"]).unwrap_or(false);
 
         let resolved = self.resolve_in_workspace(path)?;
@@ -926,7 +927,7 @@ impl ToolRuntime {
 
         for edit in edits {
             let old = required_any_str(edit, &["oldString", "old_string"])?;
-            let new = required_any_str(edit, &["newString", "new_string"])?;
+            let new = required_any_string(edit, &["newString", "new_string"])?;
             let replace_all = bool_arg(edit, &["replaceAll", "replace_all"]).unwrap_or(false);
             let (next, replacements) = apply_string_edit(&content, old, new, replace_all)?;
             content = next;
@@ -1003,6 +1004,8 @@ impl ToolRuntime {
                 }
             }
         }
+
+        validate_patch_actions(&actions)?;
 
         let mut changed = Vec::<String>::new();
         for action in actions {
@@ -1496,6 +1499,19 @@ fn required_any_str<'a>(args: &'a Value, keys: &[&str]) -> Result<&'a str> {
     ))
 }
 
+fn required_any_string<'a>(args: &'a Value, keys: &[&str]) -> Result<&'a str> {
+    for key in keys {
+        if let Some(value) = args.get(*key).and_then(Value::as_str) {
+            return Ok(value);
+        }
+    }
+
+    Err(anyhow!(
+        "Missing required string argument '{}'",
+        keys.join("|")
+    ))
+}
+
 fn required_str<'a>(args: &'a Value, key: &str) -> Result<&'a str> {
     args.get(key)
         .and_then(Value::as_str)
@@ -1544,50 +1560,92 @@ fn unified_diff(path: &str, original: &str, proposed: &str) -> String {
 
     let old = original.lines().collect::<Vec<&str>>();
     let new = proposed.lines().collect::<Vec<&str>>();
-    let mut lcs = vec![vec![0usize; new.len() + 1]; old.len() + 1];
+    let prefix_len = old
+        .iter()
+        .zip(&new)
+        .take_while(|(old_line, new_line)| old_line == new_line)
+        .count();
+    let suffix_len = old[prefix_len..]
+        .iter()
+        .rev()
+        .zip(new[prefix_len..].iter().rev())
+        .take_while(|(old_line, new_line)| old_line == new_line)
+        .count();
+    let old_middle = &old[prefix_len..old.len() - suffix_len];
+    let new_middle = &new[prefix_len..new.len() - suffix_len];
 
-    for i in (0..old.len()).rev() {
-        for j in (0..new.len()).rev() {
-            lcs[i][j] = if old[i] == new[j] {
-                lcs[i + 1][j + 1] + 1
+    let mut out = Vec::with_capacity(old.len().saturating_add(new.len()).saturating_add(3));
+    out.push(format!("--- a/{path}"));
+    out.push(format!("+++ b/{path}"));
+    out.push(format!("@@ -1,{} +1,{} @@", old.len(), new.len()));
+    out.extend(old[..prefix_len].iter().map(|line| format!(" {line}")));
+
+    if old_middle.len().saturating_mul(new_middle.len()) <= MAX_DIFF_MATRIX_CELLS {
+        let mut lcs = vec![vec![0usize; new_middle.len() + 1]; old_middle.len() + 1];
+        for i in (0..old_middle.len()).rev() {
+            for j in (0..new_middle.len()).rev() {
+                lcs[i][j] = if old_middle[i] == new_middle[j] {
+                    lcs[i + 1][j + 1] + 1
+                } else {
+                    lcs[i + 1][j].max(lcs[i][j + 1])
+                };
+            }
+        }
+
+        let mut i = 0;
+        let mut j = 0;
+        while i < old_middle.len() && j < new_middle.len() {
+            if old_middle[i] == new_middle[j] {
+                out.push(format!(" {}", old_middle[i]));
+                i += 1;
+                j += 1;
+            } else if lcs[i + 1][j] >= lcs[i][j + 1] {
+                out.push(format!("-{}", old_middle[i]));
+                i += 1;
             } else {
-                lcs[i + 1][j].max(lcs[i][j + 1])
-            };
+                out.push(format!("+{}", new_middle[j]));
+                j += 1;
+            }
         }
+        out.extend(old_middle[i..].iter().map(|line| format!("-{line}")));
+        out.extend(new_middle[j..].iter().map(|line| format!("+{line}")));
+    } else {
+        out.extend(old_middle.iter().map(|line| format!("-{line}")));
+        out.extend(new_middle.iter().map(|line| format!("+{line}")));
     }
 
-    let mut out = vec![
-        format!("--- a/{path}"),
-        format!("+++ b/{path}"),
-        format!("@@ -1,{} +1,{} @@", old.len(), new.len()),
-    ];
-
-    let mut i = 0;
-    let mut j = 0;
-    while i < old.len() && j < new.len() {
-        if old[i] == new[j] {
-            out.push(format!(" {}", old[i]));
-            i += 1;
-            j += 1;
-        } else if lcs[i + 1][j] >= lcs[i][j + 1] {
-            out.push(format!("-{}", old[i]));
-            i += 1;
-        } else {
-            out.push(format!("+{}", new[j]));
-            j += 1;
-        }
-    }
-
-    while i < old.len() {
-        out.push(format!("-{}", old[i]));
-        i += 1;
-    }
-    while j < new.len() {
-        out.push(format!("+{}", new[j]));
-        j += 1;
-    }
+    out.extend(
+        old[old.len() - suffix_len..]
+            .iter()
+            .map(|line| format!(" {line}")),
+    );
 
     out.join("\n")
+}
+
+fn validate_patch_actions(actions: &[PatchAction]) -> Result<()> {
+    for (index, action) in actions.iter().enumerate() {
+        let path = action.path();
+        for other in &actions[..index] {
+            let other_path = other.path();
+            if path == other_path || path.starts_with(other_path) || other_path.starts_with(path) {
+                return Err(anyhow!(
+                    "Patch contains conflicting actions for '{}' and '{}'",
+                    other_path.display(),
+                    path.display()
+                ));
+            }
+        }
+    }
+    Ok(())
+}
+
+impl PatchAction {
+    fn path(&self) -> &Path {
+        match self {
+            Self::Write { path, .. } | Self::Delete { path } => path,
+        }
+    }
 }
 
 fn parse_apply_patch(patch: &str) -> Result<Vec<PatchOp>> {

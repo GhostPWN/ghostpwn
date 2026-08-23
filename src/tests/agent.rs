@@ -1,11 +1,11 @@
 use crate::config::{ProviderKeys, ProviderKind};
 use crate::models::ConversationMessage;
-use crate::secrets::SecretStore;
+use crate::secrets::{SecretMutationReport, SecretStore};
 use crate::tools::ToolRuntime;
 
 use super::{
-    Agent, AssistantStreamExtractor, extract_partial_assistant_value, normalize_model_name,
-    parse_envelope,
+    Agent, AssistantStreamExtractor, append_secret_warnings, extract_partial_assistant_value,
+    normalize_model_name, parse_envelope,
 };
 
 fn test_agent(provider: ProviderKind) -> Agent {
@@ -165,5 +165,23 @@ fn connected_codex_becomes_active_with_default_model() {
     assert_eq!(
         agent.provider_name(),
         format!("codex / {}", ProviderKind::Codex.default_model())
+    );
+}
+
+#[test]
+fn partial_secret_backend_failures_are_visible() {
+    let report = SecretMutationReport {
+        keychain_saved: false,
+        keychain_error: Some("locked".to_string()),
+        file_saved: true,
+        file_error: None,
+    };
+    let mut message = "Connected openai.".to_string();
+
+    append_secret_warnings(&mut message, &report);
+
+    assert_eq!(
+        message,
+        "Connected openai. OS keychain operation failed: locked."
     );
 }
