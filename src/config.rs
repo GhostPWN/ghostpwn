@@ -52,11 +52,11 @@ impl ProviderKind {
 
     pub fn default_model(self) -> &'static str {
         match self {
-            Self::Anthropic => "claude-3-7-sonnet-latest",
-            Self::OpenAi => "gpt-4.1-mini",
+            Self::Anthropic => "claude-sonnet-4-6",
+            Self::OpenAi => "gpt-5.6-luna",
             Self::Google => "gemini-2.5-flash",
-            Self::Copilot => "gpt-4o",
-            Self::Codex => "gpt-5.3-codex",
+            Self::Copilot => "gpt-5.4",
+            Self::Codex => "gpt-5.6-sol",
             Self::Ollama => "llama3",
         }
     }

@@ -11,12 +11,13 @@ use super::{
 fn test_agent(provider: ProviderKind) -> Agent {
     let workspace = tempfile::tempdir().expect("temp workspace");
     let tools = ToolRuntime::new(workspace.path().to_path_buf()).expect("tool runtime");
+    let secret_store = SecretStore::file_only(workspace.path().join("state.json"));
 
     Agent::new(
         provider,
         provider.default_model().to_string(),
         ProviderKeys::default(),
-        SecretStore::new(),
+        secret_store,
         tools,
     )
 }
@@ -109,6 +110,31 @@ fn switching_model_on_same_provider_preserves_history() {
     agent.switch_model(ProviderKind::Google, Some("gemini-test".to_string()));
 
     assert_eq!(agent.history.len(), 1);
+}
+
+#[test]
+fn unavailable_current_model_is_replaced_by_first_discovered_model() {
+    let mut agent = test_agent(ProviderKind::Google);
+    agent.switch_model(ProviderKind::Google, Some("retired-model".to_string()));
+    let models = vec!["gemini-current".to_string(), "gemini-other".to_string()];
+
+    let message = agent
+        .reconcile_current_model(ProviderKind::Google, &models)
+        .expect("model should change");
+
+    assert_eq!(agent.current_model(), "gemini-current");
+    assert!(message.contains("gemini-current"));
+}
+
+#[test]
+fn available_current_model_is_not_replaced() {
+    let mut agent = test_agent(ProviderKind::Google);
+    let current = ProviderKind::Google.default_model().to_string();
+
+    assert_eq!(
+        agent.reconcile_current_model(ProviderKind::Google, &[current]),
+        None
+    );
 }
 
 #[test]

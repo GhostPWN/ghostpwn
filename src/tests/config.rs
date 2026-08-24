@@ -56,5 +56,5 @@ fn codex_provider_is_parsed_and_has_separate_secret_key() {
     );
     assert_eq!(ProviderKind::Codex.as_str(), "codex");
     assert_eq!(ProviderKind::Codex.env_key(), "CODEX_OAUTH_TOKEN");
-    assert_eq!(ProviderKind::Codex.default_model(), "gpt-5.3-codex");
+    assert_eq!(ProviderKind::Codex.default_model(), "gpt-5.6-sol");
 }
