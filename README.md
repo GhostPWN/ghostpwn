@@ -10,11 +10,10 @@
 </p>
 
 <p align="center">
-  <img src="https://img.shields.io/badge/runtime-Rust-000000?style=flat-square" alt="Rust">
-  <img src="https://img.shields.io/badge/lang-2024%20Edition-dea584?style=flat-square" alt="Rust 2024 Edition">
-  <img src="https://img.shields.io/badge/ui-ratatui%20%2B%20crossterm-4a5568?style=flat-square" alt="ratatui + crossterm">
-  <img src="https://img.shields.io/badge/providers-OpenAI%20%7C%20Anthropic%20%7C%20Google%20%7C%20Copilot%20%7C%20Ollama-7c3aed?style=flat-square" alt="Providers">
-  <img src="https://img.shields.io/badge/license-MIT-7c3aed?style=flat-square" alt="License">
+  <a href="https://www.rust-lang.org/"><img alt="Rust 2024" src="https://shieldcn.dev/badge/Rust-2024-dea584.svg?variant=secondary&amp;logo=rust&amp;logoColor=171717"></a>
+  <a href="https://ratatui.rs/"><img alt="Ratatui 0.30" src="https://shieldcn.dev/badge/Ratatui-0.30-171717.svg?variant=secondary&amp;logo=ri:TerminalBoxLine"></a>
+  <a href="https://ghostpwn.github.io/ghostpwn/docs/configuration/"><img alt="Six AI providers" src="https://shieldcn.dev/badge/AI_Providers-6-7c3aed.svg?variant=secondary&amp;logo=ri:Sparkling2Line"></a>
+  <a href="https://github.com/GhostPWN/ghostpwn/blob/main/LICENSE"><img alt="MIT License" src="https://shieldcn.dev/github/license/GhostPWN/ghostpwn.svg?variant=secondary"></a>
 </p>
 
 > **Academic project.** GhostPWN is the annual project for the 3rd year of the
