@@ -31,20 +31,43 @@ impl Provider for GoogleProvider {
     }
 
     async fn list_models(&self) -> Result<Vec<String>> {
-        let response = self
-            .client
-            .get("https://generativelanguage.googleapis.com/v1beta/models")
-            .header("x-goog-api-key", &self.api_key)
-            .send()
-            .await?;
-        if !response.status().is_success() {
-            let status = response.status();
-            let body = response.text().await.unwrap_or_default();
-            return Err(anyhow!("Google models API error {}: {}", status, body));
+        let mut models = Vec::new();
+        let mut page_token = None::<String>;
+        let mut seen_page_tokens = std::collections::HashSet::new();
+
+        loop {
+            let mut request = self
+                .client
+                .get("https://generativelanguage.googleapis.com/v1beta/models")
+                .header("x-goog-api-key", &self.api_key)
+                .query(&[("pageSize", "1000")]);
+            if let Some(token) = page_token.as_deref() {
+                request = request.query(&[("pageToken", token)]);
+            }
+            let response = request.send().await?;
+            if !response.status().is_success() {
+                let status = response.status();
+                let body = response.text().await.unwrap_or_default();
+                return Err(anyhow!("Google models API error {}: {}", status, body));
+            }
+
+            let body: Value = response.json().await?;
+            models.extend(parse_gemini_models(&body));
+            let Some(next) = body
+                .get("nextPageToken")
+                .and_then(Value::as_str)
+                .filter(|token| !token.is_empty())
+            else {
+                break;
+            };
+            if !seen_page_tokens.insert(next.to_string()) {
+                return Err(anyhow!("Google models API returned a repeated page token"));
+            }
+            page_token = Some(next.to_string());
         }
 
-        let body: Value = response.json().await?;
-        Ok(parse_gemini_models(&body))
+        dedup_preserve_order(&mut models);
+        Ok(models)
     }
 
     async fn stream_complete(
@@ -170,20 +193,34 @@ fn map_messages(history: &[ConversationMessage]) -> Vec<Value> {
 }
 
 fn parse_gemini_models(body: &Value) -> Vec<String> {
-    let mut out = body
-        .get("models")
+    body.get("models")
         .and_then(|v| v.as_array())
         .map(|arr| {
             arr.iter()
+                .filter(|model| {
+                    model
+                        .get("supportedGenerationMethods")
+                        .and_then(Value::as_array)
+                        .is_none_or(|methods| {
+                            methods
+                                .iter()
+                                .any(|method| method.as_str() == Some("generateContent"))
+                        })
+                })
                 .filter_map(|model| model.get("name").and_then(|v| v.as_str()))
                 .filter_map(|name| name.strip_prefix("models/"))
                 .filter(|id| id.contains("gemini"))
                 .map(ToString::to_string)
                 .collect::<Vec<String>>()
         })
-        .unwrap_or_default();
-
-    out.sort();
-    out.dedup();
-    out
+        .unwrap_or_default()
 }
+
+fn dedup_preserve_order(values: &mut Vec<String>) {
+    let mut seen = std::collections::HashSet::new();
+    values.retain(|value| seen.insert(value.clone()));
+}
+
+#[cfg(test)]
+#[path = "../tests/providers_google.rs"]
+mod tests;

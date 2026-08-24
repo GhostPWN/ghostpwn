@@ -1,3 +1,4 @@
+use std::collections::HashSet;
 use std::path::{Path, PathBuf};
 
 use anyhow::Result;
@@ -168,16 +169,31 @@ impl Agent {
             provider_keys,
             SecretStore::new(),
         );
-        let mut models = temp_provider
+        let mut seen = HashSet::new();
+        let models = temp_provider
             .list_models()
             .await?
             .into_iter()
             .map(|model| normalize_model_name(&model))
             .filter(|model| !model.is_empty())
+            .filter(|model| seen.insert(model.clone()))
             .collect::<Vec<String>>();
-        models.sort();
-        models.dedup();
         Ok(models)
+    }
+
+    pub fn reconcile_current_model(
+        &mut self,
+        provider: ProviderKind,
+        models: &[String],
+    ) -> Option<String> {
+        if provider != self.provider_kind
+            || models.is_empty()
+            || models.iter().any(|model| model == &self.model)
+        {
+            return None;
+        }
+
+        Some(self.switch_model(provider, models.first().cloned()))
     }
 
     pub fn switch_model(&mut self, provider: ProviderKind, model: Option<String>) -> String {

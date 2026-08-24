@@ -769,6 +769,16 @@ async fn handle_selector_key(
                 }
             }
         }
+        KeyCode::Char('r') => {
+            let provider = selector.providers[selector.provider_index];
+            if let Some(provider_state) = selector.provider_states.get_mut(&provider) {
+                provider_state.models.clear();
+                provider_state.model_index = 0;
+                provider_state.loading = false;
+                provider_state.error = None;
+            }
+            provider_to_fetch = Some(provider);
+        }
         KeyCode::Left | KeyCode::Char('h') => {
             selector.provider_index = selector.provider_index.saturating_sub(1);
             let provider = selector.providers[selector.provider_index];
@@ -1009,6 +1019,20 @@ fn fetch_selector_models(
         };
         match Agent::fetch_provider_models_with_keys(provider, &provider_keys).await {
             Ok(models) => {
+                let reconciliation = {
+                    let mut locked = handle.lock().await;
+                    locked
+                        .reconcile_current_model(provider, &models)
+                        .map(|message| (message, locked.provider_name()))
+                };
+                if let Some((message, provider_name)) = reconciliation {
+                    let _ = tx.send(AgentEvent::ProviderName(provider_name));
+                    let _ = tx.send(AgentEvent::ProviderStatus {
+                        provider,
+                        message,
+                        error: false,
+                    });
+                }
                 let _ = tx.send(AgentEvent::ModelList {
                     provider,
                     models,
@@ -1216,10 +1240,10 @@ fn render_selector(frame: &mut Frame, state: &UiState) {
         selected_state.and_then(|provider_state| provider_state.error.as_ref())
     {
         let hint = match selected_provider {
-            ProviderKind::Copilot => "press c to connect with GitHub device OAuth",
-            ProviderKind::Codex => "press c to connect with Codex OAuth",
-            ProviderKind::Ollama => "local provider; no API key required",
-            _ => "press c to paste an API key",
+            ProviderKind::Copilot => "press r to retry or c to connect with GitHub device OAuth",
+            ProviderKind::Codex => "press r to retry or c to connect with Codex OAuth",
+            ProviderKind::Ollama => "press r to retry the configured local Ollama host",
+            _ => "press r to retry or c to paste an API key",
         };
         vec![
             Line::from(vec![Span::styled(
@@ -1290,6 +1314,8 @@ fn render_selector(frame: &mut Frame, state: &UiState) {
         Span::styled(" connect  ", Style::default().fg(palette::ASH).dim()),
         Span::styled("d", Style::default().fg(palette::PHOSPHOR).bold()),
         Span::styled(" disconnect  ", Style::default().fg(palette::ASH).dim()),
+        Span::styled("r", Style::default().fg(palette::PHOSPHOR).bold()),
+        Span::styled(" refresh  ", Style::default().fg(palette::ASH).dim()),
         Span::styled("enter", Style::default().fg(palette::PHOSPHOR).bold()),
         Span::styled(" switch  ", Style::default().fg(palette::ASH).dim()),
         Span::styled("esc", Style::default().fg(palette::PHOSPHOR).bold()),
@@ -1889,7 +1915,7 @@ async fn copilot_device_flow(
 
         match copilot::poll_authorization(&auth.device_code).await? {
             copilot::PollResult::Success(refresh_token) => {
-                let (msg, provider_name, provider_keys) = {
+                let (msg, mut provider_name, provider_keys) = {
                     let mut locked = agent.lock().await;
                     let msg = locked.connect_key(ProviderKind::Copilot, refresh_token);
                     let provider_name = locked.provider_name();
@@ -1903,6 +1929,13 @@ async fn copilot_device_flow(
                 .await
                 {
                     Ok(models) if !models.is_empty() => {
+                        let reconciliation = {
+                            let mut locked = agent.lock().await;
+                            let message =
+                                locked.reconcile_current_model(ProviderKind::Copilot, &models);
+                            provider_name = locked.provider_name();
+                            message
+                        };
                         let _ = events.send(AgentEvent::ModelList {
                             provider: ProviderKind::Copilot,
                             models: models.clone(),
@@ -1914,11 +1947,16 @@ async fn copilot_device_flow(
                             .cloned()
                             .collect::<Vec<_>>()
                             .join(", ");
-                        format!(
+                        let mut message = format!(
                             "Fetched {} Copilot models. Use /model to select one.\n{}",
                             models.len(),
                             preview
-                        )
+                        );
+                        if let Some(reconciliation) = reconciliation {
+                            message.push('\n');
+                            message.push_str(&reconciliation);
+                        }
+                        message
                     }
                     Ok(_) => {
                         let _ = events.send(AgentEvent::ModelList {
@@ -2080,7 +2118,7 @@ async fn finish_codex_connection(
     credentials: codex::CodexCredentials,
 ) -> Result<()> {
     let serialized = codex::serialize_credentials(&credentials)?;
-    let (msg, provider_name, provider_keys) = {
+    let (msg, mut provider_name, provider_keys) = {
         let mut locked = agent.lock().await;
         let msg = locked.connect_key(ProviderKind::Codex, serialized);
         let provider_name = locked.provider_name();
@@ -2090,6 +2128,12 @@ async fn finish_codex_connection(
     let model_msg =
         match Agent::fetch_provider_models_with_keys(ProviderKind::Codex, &provider_keys).await {
             Ok(models) if !models.is_empty() => {
+                let reconciliation = {
+                    let mut locked = agent.lock().await;
+                    let message = locked.reconcile_current_model(ProviderKind::Codex, &models);
+                    provider_name = locked.provider_name();
+                    message
+                };
                 let _ = events.send(AgentEvent::ModelList {
                     provider: ProviderKind::Codex,
                     models: models.clone(),
@@ -2101,11 +2145,16 @@ async fn finish_codex_connection(
                     .cloned()
                     .collect::<Vec<_>>()
                     .join(", ");
-                format!(
+                let mut message = format!(
                     "Fetched {} Codex models. Use /model to select one.\n{}",
                     models.len(),
                     preview
-                )
+                );
+                if let Some(reconciliation) = reconciliation {
+                    message.push('\n');
+                    message.push_str(&reconciliation);
+                }
+                message
             }
             Ok(_) => {
                 let _ = events.send(AgentEvent::ModelList {

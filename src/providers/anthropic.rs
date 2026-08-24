@@ -31,22 +31,46 @@ impl Provider for AnthropicProvider {
     }
 
     async fn list_models(&self) -> Result<Vec<String>> {
-        let response = self
-            .client
-            .get("https://api.anthropic.com/v1/models")
-            .header("x-api-key", &self.api_key)
-            .header("anthropic-version", "2023-06-01")
-            .send()
-            .await?;
+        let mut models = Vec::new();
+        let mut after_id = None::<String>;
+        let mut seen_after_ids = std::collections::HashSet::new();
 
-        if !response.status().is_success() {
-            let status = response.status();
-            let body = response.text().await.unwrap_or_default();
-            return Err(anyhow!("Anthropic models API error {}: {}", status, body));
+        loop {
+            let mut request = self
+                .client
+                .get("https://api.anthropic.com/v1/models")
+                .header("x-api-key", &self.api_key)
+                .header("anthropic-version", "2023-06-01")
+                .query(&[("limit", "1000")]);
+            if let Some(cursor) = after_id.as_deref() {
+                request = request.query(&[("after_id", cursor)]);
+            }
+            let response = request.send().await?;
+
+            if !response.status().is_success() {
+                let status = response.status();
+                let body = response.text().await.unwrap_or_default();
+                return Err(anyhow!("Anthropic models API error {}: {}", status, body));
+            }
+
+            let body: Value = response.json().await?;
+            models.extend(parse_claude_models(&body));
+            if body.get("has_more").and_then(Value::as_bool) != Some(true) {
+                break;
+            }
+
+            let next = body
+                .get("last_id")
+                .and_then(Value::as_str)
+                .ok_or_else(|| anyhow!("Anthropic models API returned an invalid cursor"))?;
+            if !seen_after_ids.insert(next.to_string()) {
+                return Err(anyhow!("Anthropic models API returned a repeated cursor"));
+            }
+            after_id = Some(next.to_string());
         }
 
-        let body: Value = response.json().await?;
-        Ok(parse_claude_models(&body))
+        dedup_preserve_order(&mut models);
+        Ok(models)
     }
 
     async fn stream_complete(
@@ -160,8 +184,7 @@ fn map_messages(history: &[ConversationMessage]) -> Vec<Value> {
 }
 
 fn parse_claude_models(body: &Value) -> Vec<String> {
-    let mut out = body
-        .get("data")
+    body.get("data")
         .and_then(|v| v.as_array())
         .map(|arr| {
             arr.iter()
@@ -170,9 +193,14 @@ fn parse_claude_models(body: &Value) -> Vec<String> {
                 .map(ToString::to_string)
                 .collect::<Vec<String>>()
         })
-        .unwrap_or_default();
-
-    out.sort();
-    out.dedup();
-    out
+        .unwrap_or_default()
 }
+
+fn dedup_preserve_order(values: &mut Vec<String>) {
+    let mut seen = std::collections::HashSet::new();
+    values.retain(|value| seen.insert(value.clone()));
+}
+
+#[cfg(test)]
+#[path = "../tests/providers_anthropic.rs"]
+mod tests;

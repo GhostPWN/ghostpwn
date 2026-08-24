@@ -4,8 +4,8 @@ use serde_json::json;
 
 use super::{
     CodexCredentials, credentials_from_device_response, extract_account_id, extract_response_text,
-    extract_response_text_from_body, extract_stream_delta, parse_credentials, persist_credentials,
-    pkce_challenge, serialize_credentials,
+    extract_response_text_from_body, extract_stream_delta, parse_codex_models, parse_credentials,
+    persist_credentials, pkce_challenge, serialize_credentials,
 };
 use crate::secrets::SecretStore;
 
@@ -136,4 +136,23 @@ fn parses_buffered_sse_final_response_text() {
         extract_response_text_from_body(body).unwrap(),
         "done".to_string()
     );
+}
+
+#[test]
+fn catalog_keeps_only_picker_visible_models_in_provider_order() {
+    let body = json!({
+        "models": [
+            { "slug": "gpt-new", "visibility": "list", "priority": 1 },
+            { "slug": "internal-review", "visibility": "hide", "priority": 2 },
+            { "slug": "gpt-legacy", "visibility": "list", "priority": 3 },
+            { "slug": "gpt-new", "visibility": "list", "priority": 4 }
+        ]
+    });
+
+    assert_eq!(parse_codex_models(&body), vec!["gpt-new", "gpt-legacy"]);
+}
+
+#[test]
+fn empty_catalog_parses_without_inventing_selectable_models() {
+    assert!(parse_codex_models(&json!({ "models": [] })).is_empty());
 }

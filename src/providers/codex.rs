@@ -29,16 +29,13 @@ const DEVICE_CODE_URL: &str = "https://auth.openai.com/api/accounts/deviceauth/u
 const DEVICE_TOKEN_URL: &str = "https://auth.openai.com/api/accounts/deviceauth/token";
 const REDIRECT_PORTS: &[u16] = &[1455, 1457];
 const CODEX_RESPONSES_URL: &str = "https://chatgpt.com/backend-api/codex/responses";
-const USER_AGENT_VALUE: &str = "ghostpwn/0.1.5";
+const CODEX_MODELS_URL: &str = "https://chatgpt.com/backend-api/codex/models";
+// The catalog uses this as a feature gate. GhostPWN consumes only the stable Responses fields and
+// filters the returned picker visibility itself, so request the unpruned authenticated catalog.
+const CODEX_CATALOG_CLIENT_VERSION: &str = "999.999.999";
+const USER_AGENT_VALUE: &str = concat!("ghostpwn/", env!("CARGO_PKG_VERSION"));
 const ORIGINATOR: &str = "ghostpwn";
-const CODEX_MODELS: &[&str] = &[
-    "gpt-5.5",
-    "gpt-5.4",
-    "gpt-5.4-mini",
-    "gpt-5.3-codex",
-    "gpt-5.3-codex-spark",
-    "gpt-5.2",
-];
+const CODEX_FALLBACK_MODELS: &[&str] = &["gpt-5.4", "gpt-5.4-mini"];
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct CodexCredentials {
@@ -166,7 +163,39 @@ impl Provider for CodexProvider {
     }
 
     async fn list_models(&self) -> Result<Vec<String>> {
-        Ok(CODEX_MODELS.iter().map(|model| model.to_string()).collect())
+        let credentials = self.ensure_credentials().await?;
+        let response = self
+            .client
+            .get(CODEX_MODELS_URL)
+            .query(&[("client_version", CODEX_CATALOG_CLIENT_VERSION)])
+            .headers(codex_headers(&credentials, "application/json")?)
+            .send()
+            .await;
+
+        let response = match response {
+            Ok(response) => response,
+            Err(_) => return Ok(codex_fallback_models()),
+        };
+
+        if !response.status().is_success() {
+            let status = response.status();
+            let body = response.text().await.unwrap_or_default();
+            if matches!(
+                status,
+                reqwest::StatusCode::UNAUTHORIZED | reqwest::StatusCode::FORBIDDEN
+            ) {
+                return Err(anyhow!("Codex models API error {}: {}", status, body));
+            }
+            return Ok(codex_fallback_models());
+        }
+
+        let body: Value = response.json().await?;
+        let models = parse_codex_models(&body);
+        if models.is_empty() {
+            return Ok(codex_fallback_models());
+        }
+
+        Ok(models)
     }
 
     async fn stream_complete(
@@ -187,7 +216,7 @@ impl Provider for CodexProvider {
         let response = self
             .client
             .post(CODEX_RESPONSES_URL)
-            .headers(codex_headers(&credentials)?)
+            .headers(codex_headers(&credentials, "text/event-stream")?)
             .json(&payload)
             .send()
             .await?;
@@ -534,10 +563,10 @@ fn extract_account_id(id_token: &str) -> Option<String> {
     None
 }
 
-fn codex_headers(credentials: &CodexCredentials) -> Result<HeaderMap> {
+fn codex_headers(credentials: &CodexCredentials, accept: &'static str) -> Result<HeaderMap> {
     let mut headers = HeaderMap::new();
     headers.insert(USER_AGENT, HeaderValue::from_static(USER_AGENT_VALUE));
-    headers.insert(ACCEPT, HeaderValue::from_static("text/event-stream"));
+    headers.insert(ACCEPT, HeaderValue::from_static(accept));
     headers.insert("originator", HeaderValue::from_static(ORIGINATOR));
     headers.insert("session_id", HeaderValue::from_str(&random_urlsafe(18))?);
     headers.insert(
@@ -548,6 +577,37 @@ fn codex_headers(credentials: &CodexCredentials) -> Result<HeaderMap> {
         headers.insert("ChatGPT-Account-Id", HeaderValue::from_str(account_id)?);
     }
     Ok(headers)
+}
+
+fn parse_codex_models(body: &Value) -> Vec<String> {
+    let mut models = body
+        .get("models")
+        .and_then(Value::as_array)
+        .into_iter()
+        .flatten()
+        .filter(|model| {
+            model
+                .get("visibility")
+                .and_then(Value::as_str)
+                .is_none_or(|visibility| visibility == "list")
+        })
+        .filter_map(|model| model.get("slug").and_then(Value::as_str))
+        .map(ToString::to_string)
+        .collect::<Vec<_>>();
+    dedup_preserve_order(&mut models);
+    models
+}
+
+fn codex_fallback_models() -> Vec<String> {
+    CODEX_FALLBACK_MODELS
+        .iter()
+        .map(|model| model.to_string())
+        .collect()
+}
+
+fn dedup_preserve_order(values: &mut Vec<String>) {
+    let mut seen = std::collections::HashSet::new();
+    values.retain(|value| seen.insert(value.clone()));
 }
 
 fn map_messages(history: &[ConversationMessage]) -> Vec<Value> {

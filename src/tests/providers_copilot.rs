@@ -16,6 +16,37 @@ fn keeps_models_even_when_only_responses_endpoint_is_present() {
 }
 
 #[test]
+fn hides_models_disabled_by_picker_policy_or_endpoint_capability() {
+    let body = json!({
+        "data": [
+            {
+                "id": "available",
+                "model_picker_enabled": true,
+                "policy": { "state": "enabled" },
+                "supported_endpoints": ["/responses"]
+            },
+            {
+                "id": "hidden",
+                "model_picker_enabled": false,
+                "supported_endpoints": ["/chat/completions"]
+            },
+            {
+                "id": "blocked",
+                "policy": { "state": "disabled" },
+                "supported_endpoints": ["/chat/completions"]
+            },
+            {
+                "id": "embedding-only",
+                "type": "embedding",
+                "supported_endpoints": ["/embeddings"]
+            }
+        ]
+    });
+
+    assert_eq!(parse_models_for_chat_completions(&body), vec!["available"]);
+}
+
+#[test]
 fn falls_back_to_unfiltered_when_no_hints_exist() {
     let body = json!({
         "models": [

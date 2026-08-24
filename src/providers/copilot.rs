@@ -19,7 +19,7 @@ const ACCESS_TOKEN_URL: &str = "https://github.com/login/oauth/access_token";
 const COPILOT_TOKEN_URL: &str = "https://api.github.com/copilot_internal/v2/token";
 
 const USER_AGENT_VALUE: &str = "GitHubCopilotChat/0.26.7";
-const EDITOR_VERSION: &str = "vscode/1.99.3";
+const EDITOR_VERSION: &str = "vscode/1.128.0";
 const PLUGIN_VERSION: &str = "copilot-chat/0.26.7";
 const INTEGRATION_ID: &str = "vscode-chat";
 
@@ -298,6 +298,7 @@ impl Provider for CopilotProvider {
         let response = self
             .client
             .get(format!("{}/models", api_base))
+            .query(&[("intent", "chat")])
             .header("User-Agent", USER_AGENT_VALUE)
             .header("Editor-Version", EDITOR_VERSION)
             .header("Editor-Plugin-Version", PLUGIN_VERSION)
@@ -465,6 +466,9 @@ fn parse_models_for_chat_completions(body: &Value) -> Vec<String> {
     let mut out = Vec::<String>::new();
 
     for model in models {
+        if !model_is_selectable(model) {
+            continue;
+        }
         let Some(id) = model_id(model) else {
             continue;
         };
@@ -474,6 +478,42 @@ fn parse_models_for_chat_completions(body: &Value) -> Vec<String> {
 
     dedup_preserve_order(&mut out);
     out
+}
+
+fn model_is_selectable(model: &Value) -> bool {
+    if model.get("model_picker_enabled").and_then(Value::as_bool) == Some(false) {
+        return false;
+    }
+
+    let policy_state = model
+        .get("policy")
+        .and_then(|policy| policy.get("state"))
+        .and_then(Value::as_str)
+        .map(str::to_ascii_lowercase);
+    if policy_state
+        .as_deref()
+        .is_some_and(|state| matches!(state, "disabled" | "blocked" | "unavailable" | "denied"))
+    {
+        return false;
+    }
+
+    if model
+        .get("type")
+        .and_then(Value::as_str)
+        .is_some_and(|kind| matches!(kind, "embedding" | "embeddings" | "reranker"))
+    {
+        return false;
+    }
+
+    let Some(endpoints) = model.get("supported_endpoints").and_then(Value::as_array) else {
+        return true;
+    };
+    endpoints.iter().filter_map(Value::as_str).any(|endpoint| {
+        matches!(
+            endpoint.trim_end_matches('/'),
+            "/chat/completions" | "chat/completions" | "/responses" | "responses"
+        )
+    })
 }
 
 fn extract_model_entries(body: &Value) -> Option<&[Value]> {

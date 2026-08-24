@@ -56,14 +56,15 @@ impl Provider for OpenAiProvider {
     ) -> Result<String> {
         let payload = json!({
             "model": self.model,
-            "temperature": 0.2,
             "stream": true,
-            "messages": map_messages(system, messages),
+            "store": false,
+            "instructions": system,
+            "input": map_messages(messages),
         });
 
         let response = self
             .client
-            .post("https://api.openai.com/v1/chat/completions")
+            .post("https://api.openai.com/v1/responses")
             .bearer_auth(&self.api_key)
             .json(&payload)
             .send()
@@ -72,7 +73,7 @@ impl Provider for OpenAiProvider {
         if !response.status().is_success() {
             let status = response.status();
             let body = response.text().await.unwrap_or_default();
-            return Err(anyhow!("OpenAI API error {}: {}", status, body));
+            return Err(anyhow!("OpenAI Responses API error {}: {}", status, body));
         }
 
         let is_sse = response
@@ -84,14 +85,7 @@ impl Provider for OpenAiProvider {
 
         if !is_sse {
             let body: Value = response.json().await?;
-            let content = body
-                .get("choices")
-                .and_then(|v| v.as_array())
-                .and_then(|arr| arr.first())
-                .and_then(|v| v.get("message"))
-                .and_then(|v| v.get("content"));
-
-            let out = extract_content_text(content).unwrap_or_default();
+            let out = extract_response_text(&body).unwrap_or_default();
             if !out.is_empty() {
                 on_delta(out.clone());
             }
@@ -109,18 +103,16 @@ impl Provider for OpenAiProvider {
                 Err(_) => return Ok(true),
             };
 
-            let delta = chunk
-                .get("choices")
-                .and_then(|v| v.as_array())
-                .and_then(|arr| arr.first())
-                .and_then(|v| v.get("delta"))
-                .and_then(|v| v.get("content"));
+            if let Some(error) = extract_stream_error(&chunk) {
+                return Err(anyhow!("OpenAI stream error: {}", error));
+            }
 
-            if let Some(text) = extract_content_text(delta)
+            if chunk.get("type").and_then(Value::as_str) == Some("response.output_text.delta")
+                && let Some(text) = chunk.get("delta").and_then(Value::as_str)
                 && !text.is_empty()
             {
-                full.push_str(&text);
-                on_delta(text);
+                full.push_str(text);
+                on_delta(text.to_string());
             }
 
             Ok(true)
@@ -131,70 +123,96 @@ impl Provider for OpenAiProvider {
     }
 }
 
-fn map_messages(system: &str, history: &[ConversationMessage]) -> Vec<Value> {
-    let mut out = Vec::with_capacity(history.len() + 1);
-    out.push(json!({ "role": "system", "content": system }));
-
-    for m in history {
-        match m.role {
-            MessageRole::User => out.push(json!({ "role": "user", "content": m.content })),
-            MessageRole::Assistant => {
-                out.push(json!({ "role": "assistant", "content": m.content }))
-            }
-            MessageRole::Tool => out.push(json!({
-                "role": "user",
-                "content": format!("[tool] {}", m.content),
-            })),
-        }
+fn extract_stream_error(chunk: &Value) -> Option<String> {
+    let event_type = chunk.get("type").and_then(Value::as_str);
+    if !matches!(event_type, Some("error" | "response.failed")) {
+        return None;
     }
 
-    out
+    let error = chunk.get("error").or_else(|| {
+        chunk
+            .get("response")
+            .and_then(|response| response.get("error"))
+    })?;
+    error
+        .get("message")
+        .and_then(Value::as_str)
+        .or_else(|| error.as_str())
+        .map(ToString::to_string)
+        .or_else(|| Some(error.to_string()))
 }
 
-fn extract_content_text(content: Option<&Value>) -> Option<String> {
-    let value = content?;
-    if let Some(text) = value.as_str() {
+fn map_messages(history: &[ConversationMessage]) -> Vec<Value> {
+    history
+        .iter()
+        .map(|message| match message.role {
+            MessageRole::User => json!({ "role": "user", "content": message.content }),
+            MessageRole::Assistant => {
+                json!({ "role": "assistant", "content": message.content })
+            }
+            MessageRole::Tool => json!({
+                "role": "user",
+                "content": format!("[tool] {}", message.content),
+            }),
+        })
+        .collect()
+}
+
+fn extract_response_text(body: &Value) -> Option<String> {
+    if let Some(text) = body.get("output_text").and_then(Value::as_str) {
         return Some(text.to_string());
     }
 
-    if let Some(parts) = value.as_array() {
-        let mut buf = String::new();
-        for part in parts {
-            if let Some(text) = part.get("text").and_then(|v| v.as_str()) {
-                buf.push_str(text);
+    let mut out = String::new();
+    for item in body.get("output")?.as_array()? {
+        if let Some(content) = item.get("content").and_then(Value::as_array) {
+            for part in content {
+                if let Some(text) = part.get("text").and_then(Value::as_str) {
+                    out.push_str(text);
+                }
             }
-        }
-        if !buf.is_empty() {
-            return Some(buf);
         }
     }
 
-    None
+    (!out.is_empty()).then_some(out)
 }
 
 fn parse_chat_models(body: &Value) -> Vec<String> {
-    let mut out = body
-        .get("data")
+    let mut seen = std::collections::HashSet::new();
+    body.get("data")
         .and_then(|v| v.as_array())
-        .map(|arr| {
-            arr.iter()
-                .filter_map(|item| item.get("id").and_then(|v| v.as_str()))
-                .filter(|id| is_chat_model_id(id))
-                .map(ToString::to_string)
-                .collect::<Vec<String>>()
-        })
-        .unwrap_or_default();
-
-    out.sort();
-    out.dedup();
-    out
+        .into_iter()
+        .flatten()
+        .filter(|item| item.get("shutdown_date").is_none_or(Value::is_null))
+        .filter_map(|item| item.get("id").and_then(Value::as_str))
+        .filter(|id| is_chat_model_id(id))
+        .map(ToString::to_string)
+        .filter(|id| seen.insert(id.clone()))
+        .collect()
 }
 
 fn is_chat_model_id(id: &str) -> bool {
     let id = id.to_ascii_lowercase();
-    id.starts_with("gpt-")
-        || id.starts_with("chatgpt-")
+    let is_text_family = id.starts_with("gpt-")
         || id.starts_with("o1")
         || id.starts_with("o3")
-        || id.starts_with("o4")
+        || id.starts_with("o4");
+    let is_specialized = [
+        "gpt-image",
+        "gpt-realtime",
+        "gpt-audio",
+        "gpt-live",
+        "gpt-transcribe",
+        "gpt-4o-transcribe",
+        "gpt-4o-mini-transcribe",
+        "gpt-4o-mini-tts",
+    ]
+    .iter()
+    .any(|prefix| id.starts_with(prefix));
+
+    is_text_family && !is_specialized
 }
+
+#[cfg(test)]
+#[path = "../tests/providers_openai.rs"]
+mod tests;
