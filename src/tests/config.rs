@@ -1,4 +1,20 @@
-use super::{ProviderKind, resolve_config_provider_and_model, resolve_provider_and_model};
+use super::{
+    ProviderKeys, ProviderKind, resolve_config_provider_and_model, resolve_provider_and_model,
+};
+
+#[test]
+fn provider_keys_debug_redacts_credentials_and_reports_presence() {
+    let mut keys = ProviderKeys::default();
+    keys.set(ProviderKind::OpenAi, "openai-secret-value".to_string());
+    keys.set(ProviderKind::Codex, "codex-secret-value".to_string());
+
+    let output = format!("{keys:?}");
+
+    assert!(!output.contains("openai-secret-value"));
+    assert!(!output.contains("codex-secret-value"));
+    assert!(output.contains("openai: Some(\"[REDACTED]\")"));
+    assert!(output.contains("anthropic: None"));
+}
 
 #[test]
 fn saved_provider_and_model_are_used() {
