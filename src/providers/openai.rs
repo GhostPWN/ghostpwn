@@ -5,7 +5,7 @@ use reqwest::header::CONTENT_TYPE;
 use serde_json::{Value, json};
 
 use crate::models::{ConversationMessage, MessageRole};
-use crate::providers::sse::consume_sse;
+use crate::providers::sse::{consume_sse, extract_error_message};
 use crate::providers::{Provider, provider_http_client};
 
 pub struct OpenAiProvider {
@@ -103,7 +103,7 @@ impl Provider for OpenAiProvider {
                 Err(_) => return Ok(true),
             };
 
-            if let Some(error) = extract_stream_error(&chunk) {
+            if let Some(error) = extract_error_message(&chunk) {
                 return Err(anyhow!("OpenAI stream error: {}", error));
             }
 
@@ -121,25 +121,6 @@ impl Provider for OpenAiProvider {
 
         Ok(full)
     }
-}
-
-fn extract_stream_error(chunk: &Value) -> Option<String> {
-    let event_type = chunk.get("type").and_then(Value::as_str);
-    if !matches!(event_type, Some("error" | "response.failed")) {
-        return None;
-    }
-
-    let error = chunk.get("error").or_else(|| {
-        chunk
-            .get("response")
-            .and_then(|response| response.get("error"))
-    })?;
-    error
-        .get("message")
-        .and_then(Value::as_str)
-        .or_else(|| error.as_str())
-        .map(ToString::to_string)
-        .or_else(|| Some(error.to_string()))
 }
 
 fn map_messages(history: &[ConversationMessage]) -> Vec<Value> {

@@ -1,6 +1,30 @@
 use anyhow::{Result, anyhow};
 use futures_util::StreamExt;
 use reqwest::Response;
+use serde_json::Value;
+
+pub fn extract_error_message(event: &Value) -> Option<String> {
+    if event
+        .get("type")
+        .and_then(Value::as_str)
+        .is_some_and(|event_type| !matches!(event_type, "error" | "response.failed"))
+    {
+        return None;
+    }
+
+    let error = event.get("error").or_else(|| {
+        event
+            .get("response")
+            .and_then(|response| response.get("error"))
+    })?;
+
+    error
+        .get("message")
+        .and_then(Value::as_str)
+        .or_else(|| error.as_str())
+        .map(ToString::to_string)
+        .or_else(|| (!error.is_null()).then(|| error.to_string()))
+}
 
 pub async fn consume_sse(
     response: Response,

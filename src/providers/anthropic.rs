@@ -5,7 +5,7 @@ use reqwest::header::CONTENT_TYPE;
 use serde_json::{Value, json};
 
 use crate::models::{ConversationMessage, MessageRole};
-use crate::providers::sse::consume_sse;
+use crate::providers::sse::{consume_sse, extract_error_message};
 use crate::providers::{Provider, provider_http_client};
 
 pub struct AnthropicProvider {
@@ -137,6 +137,10 @@ impl Provider for AnthropicProvider {
                 Ok(v) => v,
                 Err(_) => return Ok(true),
             };
+
+            if let Some(error) = extract_error_message(&event) {
+                return Err(anyhow!("Anthropic stream error: {}", error));
+            }
 
             if let Some(event_type) = event.get("type").and_then(|v| v.as_str()) {
                 if event_type == "message_stop" {

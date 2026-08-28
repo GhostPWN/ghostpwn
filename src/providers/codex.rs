@@ -18,7 +18,7 @@ use url::Url;
 
 use crate::config::ProviderKind;
 use crate::models::{ConversationMessage, MessageRole};
-use crate::providers::sse::consume_sse;
+use crate::providers::sse::{consume_sse, extract_error_message};
 use crate::providers::{Provider, provider_http_client};
 use crate::secrets::SecretStore;
 
@@ -253,6 +253,10 @@ impl Provider for CodexProvider {
                 Ok(v) => v,
                 Err(_) => return Ok(true),
             };
+
+            if let Some(error) = extract_error_message(&chunk) {
+                return Err(anyhow!("Codex stream error: {}", error));
+            }
 
             if let Some(delta) = extract_stream_delta(&chunk)
                 && !delta.is_empty()
