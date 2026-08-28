@@ -7,7 +7,7 @@
 - `src/tools/mod.rs`: built-in local tool implementations with workspace safety checks
 - `src/ui/mod.rs`: `ratatui` terminal app and command handling
 - `src/config.rs`: environment-based configuration and provider defaults
-- `src/secrets.rs`: `.env` and keychain persistence helpers
+- `src/secrets.rs`: OS keychain and local JSON state-file persistence
 - `src/models.rs`: shared data models and events
 
 ## Notes
