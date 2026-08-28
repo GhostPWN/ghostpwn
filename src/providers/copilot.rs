@@ -25,7 +25,7 @@ const INTEGRATION_ID: &str = "vscode-chat";
 
 // ── Device-code OAuth flow ──────────────────────────────────────────
 
-#[derive(Debug, Deserialize)]
+#[derive(Deserialize)]
 struct DeviceCodeResponse {
     device_code: String,
     user_code: String,
@@ -34,20 +34,20 @@ struct DeviceCodeResponse {
     interval: Option<u64>,
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Deserialize)]
 struct OAuthTokenResponse {
     access_token: Option<String>,
     error: Option<String>,
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Deserialize)]
 struct CopilotTokenResponse {
     token: String,
     expires_at: u64,
     endpoints: CopilotEndpoints,
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Deserialize)]
 struct CopilotEndpoints {
     api: String,
 }
