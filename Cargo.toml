@@ -4,7 +4,7 @@ version = "0.2.10"
 edition = "2024"
 description = "Autonomous pentest agent TUI with multi-provider LLM support"
 license = "MIT"
-homepage = "https://ghostpwn.vercel.app/"
+homepage = "https://ghostpwn.github.io/ghostpwn/"
 repository = "https://github.com/GhostPWN/ghostpwn"
 
 [dependencies]
