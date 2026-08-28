@@ -68,6 +68,150 @@ fn mutations_and_commands_require_approval() {
 }
 
 #[test]
+fn sensitive_file_reads_require_approval_without_blocking_source_files() {
+    let root = tempdir().expect("tempdir");
+    let tools = ToolRuntime::new(root.path().to_path_buf()).expect("runtime");
+
+    for path in [
+        ".env",
+        ".envrc",
+        ".env.production",
+        "config/production.env",
+        "deploy/private.pem",
+        "deploy/private.PEM",
+        ".ssh/config",
+        "secrets/database.json",
+        ".ghostpwn/state.json",
+        "config/token.json",
+        "config/credentials.json",
+    ] {
+        let call = ToolCall {
+            name: "readFile".to_string(),
+            arguments: json!({"path": path}),
+        };
+        assert!(tools.call_requires_approval(&call), "{path}");
+        assert!(
+            tools
+                .arg_summary(&call.name, &call.arguments)
+                .starts_with("SENSITIVE file read:")
+        );
+    }
+
+    for path in [
+        "src/credentials.rs",
+        "docs/token-format.md",
+        "config/environment.toml",
+    ] {
+        let call = ToolCall {
+            name: "readFile".to_string(),
+            arguments: json!({"path": path}),
+        };
+        assert!(!tools.call_requires_approval(&call), "{path}");
+    }
+}
+
+#[cfg(unix)]
+#[test]
+fn sensitive_file_read_approval_follows_symlinks() {
+    use std::os::unix::fs::symlink;
+
+    let root = tempdir().expect("tempdir");
+    fs::write(root.path().join(".env"), "SECRET=value\n").expect("environment");
+    symlink(".env", root.path().join("config.txt")).expect("symlink");
+    let tools = ToolRuntime::new(root.path().to_path_buf()).expect("runtime");
+    let call = ToolCall {
+        name: "readFile".to_string(),
+        arguments: json!({"path": "config.txt"}),
+    };
+
+    assert!(tools.call_requires_approval(&call));
+    assert!(
+        tools
+            .arg_summary(&call.name, &call.arguments)
+            .starts_with("SENSITIVE file read:")
+    );
+}
+
+#[test]
+fn sensitive_parent_of_workspace_does_not_block_source_reads() {
+    let root = tempdir().expect("tempdir");
+    let workspace = root.path().join("secrets/project");
+    fs::create_dir_all(&workspace).expect("workspace");
+    fs::write(workspace.join("main.rs"), "fn main() {}\n").expect("source");
+    let tools = ToolRuntime::new(workspace).expect("runtime");
+    let call = ToolCall {
+        name: "readFile".to_string(),
+        arguments: json!({"path": "main.rs"}),
+    };
+
+    assert!(!tools.call_requires_approval(&call));
+}
+
+#[tokio::test]
+async fn discovery_tools_exclude_sensitive_paths() {
+    let root = tempdir().expect("tempdir");
+    let workspace = root.path().join("workspace");
+    fs::create_dir_all(workspace.join("src")).expect("source directory");
+    fs::create_dir_all(workspace.join(".ghostpwn")).expect("state directory");
+    fs::write(workspace.join("src/main.rs"), "let visible = true;\n").expect("source");
+    fs::write(workspace.join(".env"), "SECRET=match\n").expect("environment");
+    fs::write(workspace.join(".ghostpwn/state.json"), "match\n").expect("state");
+    let tools = ToolRuntime::new(workspace).expect("runtime");
+
+    let list = tools
+        .execute(&ToolCall {
+            name: "listDirectory".to_string(),
+            arguments: json!({"path": "."}),
+        })
+        .await
+        .expect("list");
+    let names = list["entries"]
+        .as_array()
+        .expect("entries")
+        .iter()
+        .filter_map(|entry| entry["name"].as_str())
+        .collect::<Vec<_>>();
+    assert_eq!(names, ["src"]);
+
+    let search = tools
+        .execute(&ToolCall {
+            name: "searchFiles".to_string(),
+            arguments: json!({"pattern": "**/*"}),
+        })
+        .await
+        .expect("search");
+    assert_eq!(search["matches"], json!(["src/main.rs"]));
+
+    let grep = tools
+        .execute(&ToolCall {
+            name: "grep".to_string(),
+            arguments: json!({"pattern": "match"}),
+        })
+        .await
+        .expect("grep");
+    assert!(grep["matches"].as_array().expect("matches").is_empty());
+    assert_eq!(grep["skippedFiles"], 2);
+
+    let direct_grep = tools
+        .execute(&ToolCall {
+            name: "grep".to_string(),
+            arguments: json!({"path": ".env", "pattern": "SECRET"}),
+        })
+        .await
+        .expect_err("sensitive grep must fail");
+    assert!(direct_grep.to_string().contains("Sensitive paths"));
+
+    let direct_list = tools
+        .execute(&ToolCall {
+            name: "listDirectory".to_string(),
+            arguments: json!({"path": ".ghostpwn"}),
+        })
+        .await
+        .expect_err("sensitive directory listing must fail");
+    assert!(direct_list.to_string().contains("Sensitive paths"));
+}
+
+#[test]
 fn approval_summaries_expose_command_risk_and_mutation_size() {
     let root = tempdir().expect("tempdir");
     let tools = ToolRuntime::new(root.path().to_path_buf()).expect("runtime");
