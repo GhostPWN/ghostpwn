@@ -65,6 +65,56 @@ fn stream_extractor_emits_only_new_suffix() {
 }
 
 #[test]
+fn partial_assistant_decodes_unicode_surrogate_pair() {
+    let partial = extract_partial_assistant_value(r#"{"assistant":"status: \uD83D\uDE00"#);
+
+    assert_eq!(partial.as_deref(), Some("status: 😀"));
+}
+
+#[test]
+fn partial_assistant_replaces_unpaired_unicode_surrogates() {
+    let high = extract_partial_assistant_value(r#"{"assistant":"\uD83D after"#);
+    let low = extract_partial_assistant_value(r#"{"assistant":"\uDE00 after"#);
+
+    assert_eq!(high.as_deref(), Some("� after"));
+    assert_eq!(low.as_deref(), Some("� after"));
+}
+
+#[test]
+fn partial_assistant_replaces_invalid_unicode_escape_and_continues() {
+    let mut extractor = AssistantStreamExtractor::default();
+
+    assert_eq!(
+        extractor
+            .ingest_chunk(r#"{"assistant":"before \u"#)
+            .as_deref(),
+        Some("before ")
+    );
+    assert_eq!(
+        extractor.ingest_chunk("ZZZZafter").as_deref(),
+        Some("�after")
+    );
+}
+
+#[test]
+fn stream_extractor_waits_for_chunked_unicode_surrogate_pair() {
+    let mut extractor = AssistantStreamExtractor::default();
+
+    assert_eq!(
+        extractor
+            .ingest_chunk(r#"{"assistant":"status: \uD83D"#)
+            .as_deref(),
+        Some("status: ")
+    );
+    assert_eq!(extractor.ingest_chunk(r#"\uDE"#), None);
+    assert_eq!(
+        extractor.ingest_chunk(r#"00","tool_calls":[]}"#).as_deref(),
+        Some("😀")
+    );
+    assert_eq!(extractor.finish_with("status: 😀"), None);
+}
+
+#[test]
 fn normalize_model_name_strips_common_prefix_and_whitespace() {
     assert_eq!(
         normalize_model_name(" models/gemini-2.5-pro  "),
