@@ -6,6 +6,7 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use anyhow::{Result, anyhow};
+use command_group::AsyncCommandGroup;
 use futures_util::{StreamExt, stream};
 use globset::Glob;
 use regex::Regex;
@@ -778,12 +779,14 @@ impl ToolRuntime {
             .stderr(Stdio::piped())
             .kill_on_drop(true);
 
-        let mut child = command_builder.spawn()?;
+        let mut child = command_builder.group().kill_on_drop(true).spawn()?;
         let stdout = child
+            .inner()
             .stdout
             .take()
             .ok_or_else(|| anyhow!("Failed to capture command stdout"))?;
         let stderr = child
+            .inner()
             .stderr
             .take()
             .ok_or_else(|| anyhow!("Failed to capture command stderr"))?;
@@ -807,6 +810,10 @@ impl ToolRuntime {
                 )
             }
             Err(_) => {
+                child
+                    .kill()
+                    .await
+                    .map_err(|err| anyhow!("Failed to terminate timed out command: {err}"))?;
                 return Ok(json!({
                     "stdout": "",
                     "stderr": "Command timed out",
