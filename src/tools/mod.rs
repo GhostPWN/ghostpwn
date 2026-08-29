@@ -12,6 +12,7 @@ use cap_std::ambient_authority;
 use cap_std::fs::{Dir, OpenOptions};
 use futures_util::{StreamExt, stream};
 use globset::Glob;
+use rand::RngCore;
 use regex::Regex;
 use reqwest::Client;
 use reqwest::dns::{Addrs, Name, Resolve, Resolving};
@@ -953,6 +954,15 @@ impl ToolRuntime {
     }
 
     async fn apply_patch(&self, args: &Value) -> Result<Value> {
+        self.apply_patch_with_failure(args, None, None).await
+    }
+
+    async fn apply_patch_with_failure(
+        &self,
+        args: &Value,
+        stage_failure: Option<usize>,
+        commit_failure: Option<usize>,
+    ) -> Result<Value> {
         let patch_text = required_any_str(args, &["patchText", "patch_text", "patch"])?;
         let ops = parse_apply_patch(patch_text)?;
         let mut actions = Vec::<PatchAction>::new();
@@ -1016,26 +1026,21 @@ impl ToolRuntime {
         }
 
         validate_patch_actions(&actions)?;
-
-        let mut changed = Vec::<String>::new();
-        for action in actions {
-            match action {
-                PatchAction::Write {
-                    path,
-                    content,
-                    create_new,
-                } => {
-                    self.write_workspace_file(&path, content.as_bytes(), create_new)
-                        .await
-                        .map_err(|err| anyhow!("Cannot write '{}': {}", path.display(), err))?;
-                    changed.push(self.workspace_root.join(path).display().to_string());
-                }
-                PatchAction::Delete { path } => {
-                    self.remove_workspace_file(&path).await?;
-                    changed.push(self.workspace_root.join(path).display().to_string());
-                }
-            }
-        }
+        let changed = actions
+            .iter()
+            .map(|action| {
+                self.workspace_root
+                    .join(action.path())
+                    .display()
+                    .to_string()
+            })
+            .collect::<Vec<_>>();
+        let workspace_dir = Arc::clone(&self.workspace_dir);
+        tokio::task::spawn_blocking(move || {
+            apply_patch_transaction(&workspace_dir, actions, stage_failure, commit_failure)
+        })
+        .await
+        .map_err(|err| anyhow!("Workspace patch task failed: {err}"))??;
 
         Ok(json!({
             "changed": changed,
@@ -1316,26 +1321,6 @@ impl ToolRuntime {
         })
         .await
         .map_err(|err| anyhow!("Workspace file write task failed: {err}"))?
-    }
-
-    fn remove_workspace_file_blocking(workspace_dir: &Dir, path: &Path) -> Result<()> {
-        let (parent, file_name) = Self::open_workspace_parent(workspace_dir, path, false)?;
-        let metadata = parent.symlink_metadata(&file_name)?;
-        if !metadata.is_file() || metadata.file_type().is_symlink() {
-            return Err(anyhow!("Path '{}' is not a regular file", path.display()));
-        }
-        parent.remove_file(file_name)?;
-        Ok(())
-    }
-
-    async fn remove_workspace_file(&self, path: &Path) -> Result<()> {
-        let workspace_dir = Arc::clone(&self.workspace_dir);
-        let path = path.to_path_buf();
-        tokio::task::spawn_blocking(move || {
-            Self::remove_workspace_file_blocking(&workspace_dir, &path)
-        })
-        .await
-        .map_err(|err| anyhow!("Workspace file removal task failed: {err}"))?
     }
 
     fn resolve_in_workspace(&self, input: &str) -> Result<PathBuf> {
@@ -1827,7 +1812,7 @@ fn validate_patch_actions(actions: &[PatchAction]) -> Result<()> {
         let path = action.path();
         for other in &actions[..index] {
             let other_path = other.path();
-            if path == other_path || path.starts_with(other_path) || other_path.starts_with(path) {
+            if patch_paths_conflict(path, other_path) {
                 return Err(anyhow!(
                     "Patch contains conflicting actions for '{}' and '{}'",
                     other_path.display(),
@@ -1839,11 +1824,327 @@ fn validate_patch_actions(actions: &[PatchAction]) -> Result<()> {
     Ok(())
 }
 
+#[cfg(not(windows))]
+fn patch_paths_conflict(path: &Path, other: &Path) -> bool {
+    path == other || path.starts_with(other) || other.starts_with(path)
+}
+
+#[cfg(windows)]
+fn patch_paths_conflict(path: &Path, other: &Path) -> bool {
+    fn normalized_components(path: &Path) -> Vec<String> {
+        path.components()
+            .filter_map(|component| match component {
+                Component::Normal(value) => Some(
+                    value
+                        .to_string_lossy()
+                        .trim_end_matches([' ', '.'])
+                        .to_lowercase(),
+                ),
+                _ => None,
+            })
+            .collect()
+    }
+
+    let path = normalized_components(path);
+    let other = normalized_components(other);
+    path == other || path.starts_with(&other) || other.starts_with(&path)
+}
+
 impl PatchAction {
     fn path(&self) -> &Path {
         match self {
             Self::Write { path, .. } | Self::Delete { path } => path,
         }
+    }
+}
+
+struct AppliedPatchAction {
+    path: PathBuf,
+    backup_name: Option<PathBuf>,
+    installed: bool,
+}
+
+fn apply_patch_transaction(
+    workspace_dir: &Dir,
+    actions: Vec<PatchAction>,
+    stage_failure: Option<usize>,
+    commit_failure: Option<usize>,
+) -> Result<()> {
+    validate_patch_action_state(workspace_dir, &actions)?;
+    let (transaction_name, transaction_dir) = create_patch_transaction_dir(workspace_dir)?;
+
+    apply_patch_transaction_inner(
+        workspace_dir,
+        &transaction_dir,
+        &transaction_name,
+        &actions,
+        stage_failure,
+        commit_failure,
+    )
+}
+
+fn validate_patch_action_state(workspace_dir: &Dir, actions: &[PatchAction]) -> Result<()> {
+    for action in actions {
+        match action {
+            PatchAction::Write {
+                path,
+                create_new: true,
+                ..
+            } => {
+                if ToolRuntime::workspace_path_exists_blocking(workspace_dir, path)? {
+                    return Err(anyhow!(
+                        "Cannot add '{}': file already exists",
+                        path.display()
+                    ));
+                }
+            }
+            PatchAction::Write { path, .. } | PatchAction::Delete { path } => {
+                ToolRuntime::ensure_workspace_regular_file_blocking(workspace_dir, path)?;
+            }
+        }
+    }
+    Ok(())
+}
+
+fn create_patch_transaction_dir(workspace_dir: &Dir) -> Result<(PathBuf, Dir)> {
+    for _ in 0..32 {
+        let name = PathBuf::from(format!(".ghostpwn-patch-{:016x}", rand::rng().next_u64()));
+        match workspace_dir.create_dir(&name) {
+            Ok(()) => return Ok((name.clone(), workspace_dir.open_dir_nofollow(name)?)),
+            Err(err) if err.kind() == ErrorKind::AlreadyExists => continue,
+            Err(err) => return Err(err.into()),
+        }
+    }
+    Err(anyhow!("Cannot allocate patch transaction directory"))
+}
+
+fn apply_patch_transaction_inner(
+    workspace_dir: &Dir,
+    transaction_dir: &Dir,
+    transaction_name: &Path,
+    actions: &[PatchAction],
+    stage_failure: Option<usize>,
+    commit_failure: Option<usize>,
+) -> Result<()> {
+    for (index, action) in actions.iter().enumerate() {
+        if let PatchAction::Write {
+            path,
+            content,
+            create_new,
+        } = action
+        {
+            let stage_result = (|| -> Result<()> {
+                if stage_failure == Some(index) {
+                    return Err(anyhow!(
+                        "Injected patch staging failure before action {index}"
+                    ));
+                }
+                let stage_name = patch_stage_name(index);
+                let mut options = OpenOptions::new();
+                options
+                    .write(true)
+                    .create_new(true)
+                    .follow(FollowSymlinks::No);
+                let mut file = transaction_dir.open_with(&stage_name, &options)?;
+                std::io::Write::write_all(&mut file, content.as_bytes())?;
+                if !create_new {
+                    let (source_parent, source_name) =
+                        ToolRuntime::open_workspace_parent(workspace_dir, path, false)?;
+                    let metadata = source_parent.symlink_metadata(source_name)?;
+                    file.set_permissions(metadata.permissions())?;
+                }
+                std::io::Write::flush(&mut file)?;
+                Ok(())
+            })();
+            if let Err(error) = stage_result {
+                cleanup_patch_transaction(
+                    workspace_dir,
+                    transaction_dir,
+                    transaction_name,
+                    actions,
+                )?;
+                return Err(error);
+            }
+        }
+    }
+
+    let mut applied = Vec::<AppliedPatchAction>::new();
+    let mut created_dirs = Vec::<PathBuf>::new();
+    for (index, action) in actions.iter().enumerate() {
+        let commit_result = (|| -> Result<()> {
+            if commit_failure == Some(index) {
+                return Err(anyhow!(
+                    "Injected patch commit failure before action {index}"
+                ));
+            }
+
+            let path = action.path();
+            let (parent, file_name) =
+                open_workspace_parent_tracking(workspace_dir, path, &mut created_dirs)?;
+            let backup_name = if action.create_new() {
+                match parent.symlink_metadata(&file_name) {
+                    Err(err) if err.kind() == ErrorKind::NotFound => None,
+                    Ok(_) => {
+                        return Err(anyhow!(
+                            "Cannot add '{}': file already exists",
+                            path.display()
+                        ));
+                    }
+                    Err(err) => return Err(err.into()),
+                }
+            } else {
+                let metadata = parent.symlink_metadata(&file_name)?;
+                if !metadata.is_file() || metadata.file_type().is_symlink() {
+                    return Err(anyhow!("Path '{}' is not a regular file", path.display()));
+                }
+                let backup_name = patch_backup_name(index);
+                parent.rename(&file_name, transaction_dir, &backup_name)?;
+                Some(backup_name)
+            };
+
+            applied.push(AppliedPatchAction {
+                path: path.to_path_buf(),
+                backup_name,
+                installed: false,
+            });
+            if matches!(action, PatchAction::Write { .. }) {
+                transaction_dir.rename(patch_stage_name(index), &parent, &file_name)?;
+                applied.last_mut().expect("applied action exists").installed = true;
+            }
+            Ok(())
+        })();
+
+        if let Err(error) = commit_result {
+            let rollback = rollback_patch_transaction(
+                workspace_dir,
+                transaction_dir,
+                &mut applied,
+                &created_dirs,
+            );
+            return match rollback {
+                Ok(()) => {
+                    cleanup_patch_transaction(
+                        workspace_dir,
+                        transaction_dir,
+                        transaction_name,
+                        actions,
+                    )?;
+                    Err(error)
+                }
+                Err(rollback_error) => Err(anyhow!(
+                    "{error}; patch rollback also failed: {rollback_error}"
+                )),
+            };
+        }
+    }
+    cleanup_patch_transaction(workspace_dir, transaction_dir, transaction_name, actions)
+}
+
+fn open_workspace_parent_tracking(
+    workspace_dir: &Dir,
+    path: &Path,
+    created_dirs: &mut Vec<PathBuf>,
+) -> Result<(Dir, PathBuf)> {
+    let file_name = path
+        .file_name()
+        .ok_or_else(|| anyhow!("Path '{}' does not name a file", path.display()))?;
+    let mut dir = workspace_dir.try_clone()?;
+    let mut relative = PathBuf::new();
+    if let Some(parent) = path.parent() {
+        for component in parent.components() {
+            let Component::Normal(part) = component else {
+                return Err(anyhow!("Invalid workspace path '{}'", path.display()));
+            };
+            relative.push(part);
+            match dir.open_dir_nofollow(part) {
+                Ok(next) => dir = next,
+                Err(err) if err.kind() == ErrorKind::NotFound => {
+                    dir.create_dir(part)?;
+                    created_dirs.push(relative.clone());
+                    dir = dir.open_dir_nofollow(part)?;
+                }
+                Err(err) => return Err(err.into()),
+            }
+        }
+    }
+    Ok((dir, PathBuf::from(file_name)))
+}
+
+fn rollback_patch_transaction(
+    workspace_dir: &Dir,
+    transaction_dir: &Dir,
+    applied: &mut [AppliedPatchAction],
+    created_dirs: &[PathBuf],
+) -> Result<()> {
+    let mut errors = Vec::<String>::new();
+    for action in applied.iter().rev() {
+        match ToolRuntime::open_workspace_parent(workspace_dir, &action.path, false) {
+            Ok((parent, file_name)) => {
+                if action.installed
+                    && let Err(error) = parent.remove_file(&file_name)
+                {
+                    errors.push(format!("remove '{}': {error}", action.path.display()));
+                    continue;
+                }
+                if let Some(backup_name) = &action.backup_name
+                    && let Err(error) = transaction_dir.rename(backup_name, &parent, &file_name)
+                {
+                    errors.push(format!("restore '{}': {error}", action.path.display()));
+                }
+            }
+            Err(error) => errors.push(format!("open '{}': {error}", action.path.display())),
+        }
+    }
+    for path in created_dirs.iter().rev() {
+        if let Err(error) = workspace_dir.remove_dir(path)
+            && error.kind() != ErrorKind::NotFound
+        {
+            errors.push(format!("remove directory '{}': {error}", path.display()));
+        }
+    }
+    if errors.is_empty() {
+        Ok(())
+    } else {
+        Err(anyhow!(errors.join("; ")))
+    }
+}
+
+fn cleanup_patch_transaction(
+    workspace_dir: &Dir,
+    transaction_dir: &Dir,
+    transaction_name: &Path,
+    actions: &[PatchAction],
+) -> Result<()> {
+    for index in 0..actions.len() {
+        for name in [patch_stage_name(index), patch_backup_name(index)] {
+            if let Err(error) = transaction_dir.remove_file(name)
+                && error.kind() != ErrorKind::NotFound
+            {
+                return Err(error.into());
+            }
+        }
+    }
+    workspace_dir.remove_dir(transaction_name)?;
+    Ok(())
+}
+
+fn patch_stage_name(index: usize) -> PathBuf {
+    PathBuf::from(format!("stage-{index}"))
+}
+
+fn patch_backup_name(index: usize) -> PathBuf {
+    PathBuf::from(format!("backup-{index}"))
+}
+
+impl PatchAction {
+    fn create_new(&self) -> bool {
+        matches!(
+            self,
+            Self::Write {
+                create_new: true,
+                ..
+            }
+        )
     }
 }
 
