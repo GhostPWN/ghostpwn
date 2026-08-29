@@ -18,8 +18,6 @@ from urllib.parse import urljoin
 
 try:
     import requests
-    from requests.packages.urllib3.exceptions import InsecureRequestWarning
-    requests.packages.urllib3.disable_warnings(InsecureRequestWarning)
 except ImportError:
     print("[-] Missing dependency: pip install requests")
     sys.exit(1)
@@ -37,10 +35,12 @@ class APISecurityTester:
     """Test REST APIs for common OWASP API Security Top 10 vulnerabilities."""
 
     def __init__(self, base_url: str, spec_path: Optional[str] = None,
-                 token: Optional[str] = None, timeout: int = 10):
+                 token: Optional[str] = None, timeout: int = 10,
+                 verify_tls: bool = True):
         self.base_url = base_url.rstrip("/")
         self.spec_path = spec_path
         self.timeout = timeout
+        self.verify_tls = verify_tls
         self.headers = {"Accept": "application/json", "Content-Type": "application/json"}
         if token:
             self.headers["Authorization"] = f"Bearer {token}"
@@ -93,7 +93,7 @@ class APISecurityTester:
             resp = requests.request(
                 method, url, headers=req_headers,
                 json=data, params=params,
-                timeout=self.timeout, verify=False, allow_redirects=False
+                timeout=self.timeout, verify=self.verify_tls, allow_redirects=False
             )
             return resp
         except requests.exceptions.ConnectionError:
@@ -340,9 +340,25 @@ def main():
     parser.add_argument("--token", help="Bearer token for authentication")
     parser.add_argument("--output", "-o", help="Output file (JSON)")
     parser.add_argument("--timeout", type=int, default=10, help="Request timeout in seconds")
+    parser.add_argument(
+        "--insecure",
+        action="store_true",
+        help="Disable TLS certificate verification (unsafe; authorized testing only)",
+    )
     args = parser.parse_args()
 
-    tester = APISecurityTester(args.base_url, args.spec, args.token, args.timeout)
+    if args.insecure:
+        logger.warning(
+            "TLS certificate verification is disabled; HTTPS connections are vulnerable to interception"
+        )
+
+    tester = APISecurityTester(
+        args.base_url,
+        args.spec,
+        args.token,
+        args.timeout,
+        verify_tls=not args.insecure,
+    )
     results = tester.run()
     print_summary(results)
 

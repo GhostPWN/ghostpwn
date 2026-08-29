@@ -417,6 +417,8 @@ python scripts/owasp_scanner.py --url https://target.com --tests a01,a03,a07
 ### `api_security_tester.py`
 ```bash
 python scripts/api_security_tester.py --spec openapi.yaml --base-url https://api.target.com --output results.json
+# Only for authorized targets with invalid/self-signed certificates:
+python scripts/api_security_tester.py --base-url https://api.target.com --insecure
 ```
 
 ---
