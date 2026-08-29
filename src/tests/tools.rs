@@ -970,6 +970,110 @@ async fn apply_patch_rejects_duplicate_targets_before_writing() {
     );
 }
 
+#[tokio::test]
+async fn apply_patch_staging_failure_leaves_workspace_unchanged() {
+    let root = tempdir().expect("tempdir");
+    let workspace = root.path().join("workspace");
+    fs::create_dir_all(&workspace).expect("workspace");
+    fs::write(workspace.join("app.txt"), "one\n").expect("source");
+    let tools = ToolRuntime::new(workspace.clone()).expect("runtime");
+    let call = json!({
+        "patchText": "*** Begin Patch\n*** Update File: app.txt\n@@\n-one\n+two\n*** Add File: nested/new.txt\n+new\n*** End Patch"
+    });
+
+    let error = tools
+        .apply_patch_with_failure(&call, Some(1), None)
+        .await
+        .expect_err("staging failure");
+
+    assert!(error.to_string().contains("staging failure"));
+    assert_eq!(
+        fs::read_to_string(workspace.join("app.txt")).expect("source unchanged"),
+        "one\n"
+    );
+    assert!(!workspace.join("nested").exists());
+    assert_no_patch_artifacts(&workspace);
+}
+
+#[tokio::test]
+async fn apply_patch_commit_failure_rolls_back_every_action() {
+    let root = tempdir().expect("tempdir");
+    let workspace = root.path().join("workspace");
+    fs::create_dir_all(&workspace).expect("workspace");
+    fs::write(workspace.join("app.txt"), "one\n").expect("app");
+    fs::write(workspace.join("old.txt"), "move me\n").expect("move source");
+    fs::write(workspace.join("gone.txt"), "keep me\n").expect("delete source");
+    let tools = ToolRuntime::new(workspace.clone()).expect("runtime");
+    let call = json!({
+        "patchText": "*** Begin Patch\n*** Add File: nested/new.txt\n+new\n*** Update File: app.txt\n@@\n-one\n+two\n*** Update File: old.txt\n*** Move to: moved.txt\n@@\n move me\n*** Delete File: gone.txt\n*** End Patch"
+    });
+
+    let error = tools
+        .apply_patch_with_failure(&call, None, Some(4))
+        .await
+        .expect_err("late commit failure");
+
+    assert!(error.to_string().contains("commit failure"));
+    assert_eq!(
+        fs::read_to_string(workspace.join("app.txt")).expect("app restored"),
+        "one\n"
+    );
+    assert_eq!(
+        fs::read_to_string(workspace.join("old.txt")).expect("move source restored"),
+        "move me\n"
+    );
+    assert_eq!(
+        fs::read_to_string(workspace.join("gone.txt")).expect("delete source retained"),
+        "keep me\n"
+    );
+    assert!(!workspace.join("moved.txt").exists());
+    assert!(!workspace.join("nested").exists());
+    assert_no_patch_artifacts(&workspace);
+}
+
+fn assert_no_patch_artifacts(workspace: &std::path::Path) {
+    let artifacts = fs::read_dir(workspace)
+        .expect("workspace entries")
+        .filter_map(Result::ok)
+        .filter(|entry| {
+            entry
+                .file_name()
+                .to_string_lossy()
+                .starts_with(".ghostpwn-patch-")
+        })
+        .collect::<Vec<_>>();
+    assert!(artifacts.is_empty(), "patch artifacts remain");
+}
+
+#[cfg(unix)]
+#[tokio::test]
+async fn apply_patch_preserves_updated_file_permissions() {
+    use std::os::unix::fs::PermissionsExt;
+
+    let root = tempdir().expect("tempdir");
+    let workspace = root.path().join("workspace");
+    fs::create_dir_all(&workspace).expect("workspace");
+    let script = workspace.join("script.sh");
+    fs::write(&script, "old\n").expect("script");
+    fs::set_permissions(&script, fs::Permissions::from_mode(0o751)).expect("permissions");
+    let tools = ToolRuntime::new(workspace).expect("runtime");
+
+    tools
+        .execute(&ToolCall {
+            name: "applyPatch".to_string(),
+            arguments: json!({
+                "patchText": "*** Begin Patch\n*** Update File: script.sh\n@@\n-old\n+new\n*** End Patch"
+            }),
+        })
+        .await
+        .expect("patch");
+
+    assert_eq!(
+        fs::metadata(script).expect("metadata").permissions().mode() & 0o777,
+        0o751
+    );
+}
+
 #[cfg(unix)]
 #[tokio::test]
 async fn mutation_tools_reject_direct_symlink_targets() {
