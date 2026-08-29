@@ -9,6 +9,9 @@ on:
       - "v*"
   workflow_dispatch:
 
+permissions:
+  contents: read
+
 jobs:
   dependencies:
     name: Audit dependencies
