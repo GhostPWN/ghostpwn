@@ -54,6 +54,10 @@ pub struct ModelEnvelope {
 
 #[derive(Debug)]
 pub enum AgentEvent {
+    Selector {
+        id: u64,
+        event: Box<AgentEvent>,
+    },
     AssistantDelta(String),
     ApprovalRequired {
         name: String,
