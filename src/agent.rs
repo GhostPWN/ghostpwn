@@ -8,7 +8,7 @@ use crate::config::{ProviderKeys, ProviderKind};
 use crate::models::{AgentEvent, ConversationMessage, ModelEnvelope, ToolCall};
 use crate::providers::{Provider, build_provider_with_secret_store};
 use crate::secrets::{SETTING_MODEL, SETTING_PROVIDER, SecretMutationReport, SecretStore};
-use crate::tools::{ToolRuntime, audit_tool_allowed, tool_requires_approval};
+use crate::tools::{ToolRuntime, audit_tool_allowed};
 
 const MAX_STEPS: usize = 15;
 const AUDIT_MAX_STEPS: usize = 30;
@@ -427,7 +427,7 @@ impl Agent {
                 }
 
                 let summary = self.tools.arg_summary(&call.name, &call.arguments);
-                if tool_requires_approval(&call.name) {
+                if self.tools.call_requires_approval(&call) {
                     let (response, approval) = tokio::sync::oneshot::channel();
                     let _ = events.send(AgentEvent::ApprovalRequired {
                         name: call.name.clone(),
