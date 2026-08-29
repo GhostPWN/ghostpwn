@@ -2,8 +2,8 @@ class Ghostpwn < Formula
   desc "Autonomous pentest agent TUI with multi-provider LLM support"
   REPO = "https://github.com/GhostPWN/ghostpwn.git"
   homepage "https://github.com/GhostPWN/ghostpwn"
-  version "0.2.10"
-  url REPO, tag: "v#{version}", revision: "ef30edef04a0d095eb33c42662685671a3c01f5f"
+  version "0.2.11"
+  url REPO, tag: "v#{version}"
   license "MIT"
   head REPO, branch: "main"
 
