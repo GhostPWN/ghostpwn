@@ -1873,14 +1873,25 @@ fn apply_patch_transaction(
     validate_patch_action_state(workspace_dir, &actions)?;
     let (transaction_name, transaction_dir) = create_patch_transaction_dir(workspace_dir)?;
 
-    apply_patch_transaction_inner(
+    let result = apply_patch_transaction_inner(
         workspace_dir,
         &transaction_dir,
-        &transaction_name,
         &actions,
         stage_failure,
         commit_failure,
-    )
+    );
+    drop(transaction_dir);
+    let remove_result = workspace_dir.remove_dir(&transaction_name);
+    match (result, remove_result) {
+        (Ok(()), Ok(())) => Ok(()),
+        (Err(error), Ok(())) => Err(error),
+        (Ok(()), Err(cleanup_error)) => Err(anyhow!(
+            "Patch committed but transaction cleanup failed: {cleanup_error}"
+        )),
+        (Err(error), Err(cleanup_error)) => Err(anyhow!(
+            "{error}; transaction cleanup also failed: {cleanup_error}"
+        )),
+    }
 }
 
 fn validate_patch_action_state(workspace_dir: &Dir, actions: &[PatchAction]) -> Result<()> {
@@ -1921,7 +1932,6 @@ fn create_patch_transaction_dir(workspace_dir: &Dir) -> Result<(PathBuf, Dir)> {
 fn apply_patch_transaction_inner(
     workspace_dir: &Dir,
     transaction_dir: &Dir,
-    transaction_name: &Path,
     actions: &[PatchAction],
     stage_failure: Option<usize>,
     commit_failure: Option<usize>,
@@ -1957,12 +1967,7 @@ fn apply_patch_transaction_inner(
                 Ok(())
             })();
             if let Err(error) = stage_result {
-                cleanup_patch_transaction(
-                    workspace_dir,
-                    transaction_dir,
-                    transaction_name,
-                    actions,
-                )?;
+                cleanup_patch_transaction(transaction_dir, actions)?;
                 return Err(error);
             }
         }
@@ -2023,12 +2028,7 @@ fn apply_patch_transaction_inner(
             );
             return match rollback {
                 Ok(()) => {
-                    cleanup_patch_transaction(
-                        workspace_dir,
-                        transaction_dir,
-                        transaction_name,
-                        actions,
-                    )?;
+                    cleanup_patch_transaction(transaction_dir, actions)?;
                     Err(error)
                 }
                 Err(rollback_error) => Err(anyhow!(
@@ -2037,7 +2037,7 @@ fn apply_patch_transaction_inner(
             };
         }
     }
-    cleanup_patch_transaction(workspace_dir, transaction_dir, transaction_name, actions)
+    cleanup_patch_transaction(transaction_dir, actions)
 }
 
 fn open_workspace_parent_tracking(
@@ -2109,12 +2109,7 @@ fn rollback_patch_transaction(
     }
 }
 
-fn cleanup_patch_transaction(
-    workspace_dir: &Dir,
-    transaction_dir: &Dir,
-    transaction_name: &Path,
-    actions: &[PatchAction],
-) -> Result<()> {
+fn cleanup_patch_transaction(transaction_dir: &Dir, actions: &[PatchAction]) -> Result<()> {
     for index in 0..actions.len() {
         for name in [patch_stage_name(index), patch_backup_name(index)] {
             if let Err(error) = transaction_dir.remove_file(name)
@@ -2124,7 +2119,6 @@ fn cleanup_patch_transaction(
             }
         }
     }
-    workspace_dir.remove_dir(transaction_name)?;
     Ok(())
 }
 
