@@ -111,6 +111,7 @@ fn sensitive_file_reads_require_approval_without_blocking_source_files() {
 }
 
 #[cfg(unix)]
+#[cfg(unix)]
 #[test]
 fn sensitive_file_read_approval_follows_symlinks() {
     use std::os::unix::fs::symlink;
