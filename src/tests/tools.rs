@@ -3,6 +3,9 @@ use std::fs;
 use serde_json::json;
 use tempfile::tempdir;
 
+#[cfg(unix)]
+use std::os::unix::fs::symlink;
+
 use super::ToolRuntime;
 use super::audit_tool_allowed;
 use super::command_shell;
@@ -965,6 +968,155 @@ async fn apply_patch_rejects_duplicate_targets_before_writing() {
         fs::read_to_string(workspace.join("app.txt")).expect("unchanged"),
         "one\n"
     );
+}
+
+#[cfg(unix)]
+#[tokio::test]
+async fn mutation_tools_reject_direct_symlink_targets() {
+    let root = tempdir().expect("tempdir");
+    let workspace = root.path().join("workspace");
+    let outside = root.path().join("outside.txt");
+    fs::create_dir_all(&workspace).expect("workspace");
+    fs::write(&outside, "protected\n").expect("outside file");
+    fs::write(workspace.join("source.txt"), "source\n").expect("source file");
+    symlink(&outside, workspace.join("escape.txt")).expect("symlink");
+    let tools = ToolRuntime::new(workspace).expect("runtime");
+
+    let calls = [
+        ToolCall {
+            name: "writeFile".to_string(),
+            arguments: json!({"path": "escape.txt", "content": "changed\n"}),
+        },
+        ToolCall {
+            name: "editFile".to_string(),
+            arguments: json!({
+                "path": "escape.txt",
+                "oldString": "protected",
+                "newString": "changed"
+            }),
+        },
+        ToolCall {
+            name: "multiEdit".to_string(),
+            arguments: json!({
+                "path": "escape.txt",
+                "edits": [{"oldString": "protected", "newString": "changed"}]
+            }),
+        },
+        ToolCall {
+            name: "applyPatch".to_string(),
+            arguments: json!({
+                "patchText": "*** Begin Patch\n*** Update File: escape.txt\n@@\n-protected\n+changed\n*** End Patch"
+            }),
+        },
+        ToolCall {
+            name: "applyPatch".to_string(),
+            arguments: json!({
+                "patchText": "*** Begin Patch\n*** Delete File: escape.txt\n*** End Patch"
+            }),
+        },
+        ToolCall {
+            name: "applyPatch".to_string(),
+            arguments: json!({
+                "patchText": "*** Begin Patch\n*** Add File: escape.txt\n+created\n*** End Patch"
+            }),
+        },
+        ToolCall {
+            name: "applyPatch".to_string(),
+            arguments: json!({
+                "patchText": "*** Begin Patch\n*** Update File: source.txt\n*** Move to: escape.txt\n@@\n source\n*** End Patch"
+            }),
+        },
+    ];
+
+    for call in calls {
+        tools.execute(&call).await.expect_err("must reject symlink");
+        assert_eq!(
+            fs::read_to_string(&outside).expect("outside file"),
+            "protected\n"
+        );
+    }
+    assert!(root.path().join("workspace/escape.txt").is_symlink());
+    assert_eq!(
+        fs::read_to_string(root.path().join("workspace/source.txt")).expect("source file"),
+        "source\n"
+    );
+}
+
+#[cfg(unix)]
+#[tokio::test]
+async fn mutation_tools_reject_ancestor_symlink_targets() {
+    let root = tempdir().expect("tempdir");
+    let workspace = root.path().join("workspace");
+    let outside = root.path().join("outside");
+    fs::create_dir_all(&workspace).expect("workspace");
+    fs::create_dir_all(&outside).expect("outside directory");
+    fs::write(outside.join("escape.txt"), "protected\n").expect("outside file");
+    fs::write(workspace.join("source.txt"), "source\n").expect("source file");
+    symlink(&outside, workspace.join("linked")).expect("symlink");
+    let tools = ToolRuntime::new(workspace).expect("runtime");
+
+    let calls = [
+        ToolCall {
+            name: "writeFile".to_string(),
+            arguments: json!({"path": "linked/escape.txt", "content": "changed\n"}),
+        },
+        ToolCall {
+            name: "editFile".to_string(),
+            arguments: json!({
+                "path": "linked/escape.txt",
+                "oldString": "protected",
+                "newString": "changed"
+            }),
+        },
+        ToolCall {
+            name: "multiEdit".to_string(),
+            arguments: json!({
+                "path": "linked/escape.txt",
+                "edits": [{"oldString": "protected", "newString": "changed"}]
+            }),
+        },
+        ToolCall {
+            name: "applyPatch".to_string(),
+            arguments: json!({
+                "patchText": "*** Begin Patch\n*** Update File: linked/escape.txt\n@@\n-protected\n+changed\n*** End Patch"
+            }),
+        },
+        ToolCall {
+            name: "applyPatch".to_string(),
+            arguments: json!({
+                "patchText": "*** Begin Patch\n*** Delete File: linked/escape.txt\n*** End Patch"
+            }),
+        },
+        ToolCall {
+            name: "applyPatch".to_string(),
+            arguments: json!({
+                "patchText": "*** Begin Patch\n*** Add File: linked/new.txt\n+created\n*** End Patch"
+            }),
+        },
+        ToolCall {
+            name: "applyPatch".to_string(),
+            arguments: json!({
+                "patchText": "*** Begin Patch\n*** Update File: source.txt\n*** Move to: linked/moved.txt\n@@\n source\n*** End Patch"
+            }),
+        },
+    ];
+
+    for call in calls {
+        tools
+            .execute(&call)
+            .await
+            .expect_err("must reject ancestor symlink");
+        assert_eq!(
+            fs::read_to_string(outside.join("escape.txt")).expect("outside file"),
+            "protected\n"
+        );
+        assert!(!outside.join("new.txt").exists());
+        assert!(!outside.join("moved.txt").exists());
+        assert_eq!(
+            fs::read_to_string(root.path().join("workspace/source.txt")).expect("source file"),
+            "source\n"
+        );
+    }
 }
 
 #[tokio::test]

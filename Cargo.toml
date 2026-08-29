@@ -11,6 +11,8 @@ repository = "https://github.com/GhostPWN/ghostpwn"
 anyhow = "1.0.104"
 async-trait = "0.1.91"
 base64 = "0.22.1"
+cap-fs-ext = "4.0.3"
+cap-std = "4.0.3"
 crossterm = "0.29.0"
 command-group = { version = "5.0.1", default-features = false, features = ["with-tokio"] }
 futures-util = "0.3.33"
