@@ -1,3 +1,4 @@
+use std::io::Read as _;
 use std::io::{Error as IoError, ErrorKind};
 use std::net::{IpAddr, SocketAddr, ToSocketAddrs};
 use std::path::{Component, Path, PathBuf};
@@ -6,6 +7,9 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use anyhow::{Result, anyhow};
+use cap_fs_ext::{DirExt, FollowSymlinks, OpenOptionsFollowExt};
+use cap_std::ambient_authority;
+use cap_std::fs::{Dir, OpenOptions};
 use futures_util::{StreamExt, stream};
 use globset::Glob;
 use regex::Regex;
@@ -14,8 +18,7 @@ use reqwest::dns::{Addrs, Name, Resolve, Resolving};
 use serde::Serialize;
 use serde_json::{Value, json};
 use tokio::fs;
-use tokio::fs::OpenOptions;
-use tokio::io::{AsyncRead, AsyncReadExt, AsyncWriteExt};
+use tokio::io::{AsyncRead, AsyncReadExt};
 use tokio::process::Command;
 use tokio::time::timeout;
 use walkdir::WalkDir;
@@ -69,6 +72,7 @@ pub fn audit_tool_allowed(name: &str, allow_mutations: bool) -> bool {
 
 pub struct ToolRuntime {
     workspace_root: PathBuf,
+    workspace_dir: Arc<Dir>,
     http_client: Client,
     skills: SkillRuntime,
 }
@@ -106,10 +110,19 @@ impl ToolRuntime {
                 }
             }))
             .build()?;
+        let workspace_dir =
+            Dir::open_ambient_dir(&canonical, ambient_authority()).map_err(|err| {
+                anyhow!(
+                    "Failed to open workspace root '{}': {}",
+                    canonical.display(),
+                    err
+                )
+            })?;
 
         Ok(Self {
             skills,
             workspace_root: canonical,
+            workspace_dir: Arc::new(workspace_dir),
             http_client,
         })
     }
@@ -880,18 +893,12 @@ impl ToolRuntime {
     async fn write_file(&self, args: &Value) -> Result<Value> {
         let path = required_path(args)?;
         let content = required_any_string(args, &["content"])?;
-        let resolved = self.resolve_existing_or_missing_in_workspace(path)?;
-
-        if let Some(parent) = resolved.parent() {
-            let parent =
-                self.resolve_existing_or_missing_in_workspace(&parent.display().to_string())?;
-            fs::create_dir_all(parent).await?;
-        }
-
-        fs::write(&resolved, content).await?;
+        let relative = self.workspace_relative_path(path)?;
+        self.write_workspace_file(&relative, content.as_bytes(), false)
+            .await?;
 
         Ok(json!({
-            "path": resolved.display().to_string(),
+            "path": self.workspace_root.join(relative).display().to_string(),
             "bytes": content.len(),
             "written": true,
         }))
@@ -903,13 +910,14 @@ impl ToolRuntime {
         let new = required_any_string(args, &["newString", "new_string"])?;
         let replace_all = bool_arg(args, &["replaceAll", "replace_all"]).unwrap_or(false);
 
-        let resolved = self.resolve_in_workspace(path)?;
-        let content = read_text_file(&resolved).await?;
+        let relative = self.workspace_relative_path(path)?;
+        let content = self.read_workspace_text(&relative).await?;
         let (updated, replacements) = apply_string_edit(&content, old, new, replace_all)?;
-        fs::write(&resolved, updated).await?;
+        self.write_workspace_file(&relative, updated.as_bytes(), false)
+            .await?;
 
         Ok(json!({
-            "path": resolved.display().to_string(),
+            "path": self.workspace_root.join(relative).display().to_string(),
             "replacements": replacements,
         }))
     }
@@ -921,8 +929,8 @@ impl ToolRuntime {
             .and_then(Value::as_array)
             .ok_or_else(|| anyhow!("Missing required array argument 'edits'"))?;
 
-        let resolved = self.resolve_in_workspace(path)?;
-        let mut content = read_text_file(&resolved).await?;
+        let relative = self.workspace_relative_path(path)?;
+        let mut content = self.read_workspace_text(&relative).await?;
         let mut total = 0usize;
 
         for edit in edits {
@@ -934,10 +942,11 @@ impl ToolRuntime {
             total += replacements;
         }
 
-        fs::write(&resolved, content).await?;
+        self.write_workspace_file(&relative, content.as_bytes(), false)
+            .await?;
 
         Ok(json!({
-            "path": resolved.display().to_string(),
+            "path": self.workspace_root.join(relative).display().to_string(),
             "edits": edits.len(),
             "replacements": total,
         }))
@@ -951,31 +960,32 @@ impl ToolRuntime {
         for op in ops {
             match op {
                 PatchOp::Add { path, content } => {
-                    let resolved = self.resolve_existing_or_missing_in_workspace(&path)?;
-                    if resolved.exists() {
+                    let relative = self.workspace_relative_path(&path)?;
+                    if self.workspace_path_exists(&relative).await? {
                         return Err(anyhow!("Cannot add '{}': file already exists", path));
                     }
                     actions.push(PatchAction::Write {
-                        path: resolved,
+                        path: relative,
                         content,
                         create_new: true,
                     });
                 }
                 PatchOp::Delete { path } => {
-                    let resolved = self.resolve_in_workspace(&path)?;
-                    actions.push(PatchAction::Delete { path: resolved });
+                    let relative = self.workspace_relative_path(&path)?;
+                    self.ensure_workspace_regular_file(&relative).await?;
+                    actions.push(PatchAction::Delete { path: relative });
                 }
                 PatchOp::Update {
                     path,
                     move_to,
                     changes,
                 } => {
-                    let source = self.resolve_in_workspace(&path)?;
-                    let original = read_text_file(&source).await?;
+                    let source = self.workspace_relative_path(&path)?;
+                    let original = self.read_workspace_text(&source).await?;
                     let updated = apply_patch_lines(&original, &changes)?;
                     let target = if let Some(move_to) = move_to {
-                        let target = self.resolve_existing_or_missing_in_workspace(&move_to)?;
-                        if target.exists() && target != source {
+                        let target = self.workspace_relative_path(&move_to)?;
+                        if self.workspace_path_exists(&target).await? && target != source {
                             return Err(anyhow!(
                                 "Cannot move to '{}': file already exists",
                                 move_to
@@ -1015,26 +1025,14 @@ impl ToolRuntime {
                     content,
                     create_new,
                 } => {
-                    if let Some(parent) = path.parent() {
-                        fs::create_dir_all(parent).await?;
-                    }
-                    if create_new {
-                        let mut file = OpenOptions::new()
-                            .write(true)
-                            .create_new(true)
-                            .open(&path)
-                            .await
-                            .map_err(|err| anyhow!("Cannot add '{}': {}", path.display(), err))?;
-                        file.write_all(content.as_bytes()).await?;
-                        file.flush().await?;
-                    } else {
-                        fs::write(&path, content).await?;
-                    }
-                    changed.push(path.display().to_string());
+                    self.write_workspace_file(&path, content.as_bytes(), create_new)
+                        .await
+                        .map_err(|err| anyhow!("Cannot write '{}': {}", path.display(), err))?;
+                    changed.push(self.workspace_root.join(path).display().to_string());
                 }
                 PatchAction::Delete { path } => {
-                    fs::remove_file(&path).await?;
-                    changed.push(path.display().to_string());
+                    self.remove_workspace_file(&path).await?;
+                    changed.push(self.workspace_root.join(path).display().to_string());
                 }
             }
         }
@@ -1137,6 +1135,207 @@ impl ToolRuntime {
             content,
             truncated,
         })
+    }
+
+    fn workspace_relative_path(&self, input: &str) -> Result<PathBuf> {
+        let input_path = Path::new(input);
+        let relative = if input_path.is_absolute() {
+            input_path.strip_prefix(&self.workspace_root).map_err(|_| {
+                anyhow!(
+                    "Path '{}' is outside workspace root '{}'",
+                    input_path.display(),
+                    self.workspace_root.display()
+                )
+            })?
+        } else {
+            input_path
+        };
+
+        let mut normalized = PathBuf::new();
+        for component in relative.components() {
+            match component {
+                Component::Normal(part) => normalized.push(part),
+                Component::CurDir => {}
+                Component::ParentDir | Component::RootDir | Component::Prefix(_) => {
+                    return Err(anyhow!(
+                        "Path '{}' is outside workspace root '{}'",
+                        input_path.display(),
+                        self.workspace_root.display()
+                    ));
+                }
+            }
+        }
+        if normalized.as_os_str().is_empty() {
+            return Err(anyhow!("Path '{}' does not name a file", input));
+        }
+        Ok(normalized)
+    }
+
+    fn open_workspace_parent(
+        workspace_dir: &Dir,
+        path: &Path,
+        create: bool,
+    ) -> Result<(Dir, PathBuf)> {
+        let file_name = path
+            .file_name()
+            .ok_or_else(|| anyhow!("Path '{}' does not name a file", path.display()))?;
+        let mut dir = workspace_dir.try_clone()?;
+
+        if let Some(parent) = path.parent() {
+            for component in parent.components() {
+                let Component::Normal(part) = component else {
+                    return Err(anyhow!("Invalid workspace path '{}'", path.display()));
+                };
+                match dir.open_dir_nofollow(part) {
+                    Ok(next) => dir = next,
+                    Err(err) if create && err.kind() == ErrorKind::NotFound => {
+                        match dir.create_dir(part) {
+                            Ok(()) => {}
+                            Err(create_err) if create_err.kind() == ErrorKind::AlreadyExists => {}
+                            Err(create_err) => return Err(create_err.into()),
+                        }
+                        dir = dir.open_dir_nofollow(part)?;
+                    }
+                    Err(err) => return Err(err.into()),
+                }
+            }
+        }
+
+        Ok((dir, PathBuf::from(file_name)))
+    }
+
+    fn workspace_path_exists_blocking(workspace_dir: &Dir, path: &Path) -> Result<bool> {
+        let (parent, file_name) = match Self::open_workspace_parent(workspace_dir, path, false) {
+            Ok(parts) => parts,
+            Err(err)
+                if err
+                    .downcast_ref::<IoError>()
+                    .is_some_and(|io| io.kind() == ErrorKind::NotFound) =>
+            {
+                return Ok(false);
+            }
+            Err(err) => return Err(err),
+        };
+        match parent.symlink_metadata(file_name) {
+            Ok(_) => Ok(true),
+            Err(err) if err.kind() == ErrorKind::NotFound => Ok(false),
+            Err(err) => Err(err.into()),
+        }
+    }
+
+    async fn workspace_path_exists(&self, path: &Path) -> Result<bool> {
+        let workspace_dir = Arc::clone(&self.workspace_dir);
+        let path = path.to_path_buf();
+        tokio::task::spawn_blocking(move || {
+            Self::workspace_path_exists_blocking(&workspace_dir, &path)
+        })
+        .await
+        .map_err(|err| anyhow!("Workspace path check task failed: {err}"))?
+    }
+
+    fn ensure_workspace_regular_file_blocking(workspace_dir: &Dir, path: &Path) -> Result<()> {
+        let (parent, file_name) = Self::open_workspace_parent(workspace_dir, path, false)?;
+        let metadata = parent.symlink_metadata(&file_name)?;
+        if !metadata.is_file() || metadata.file_type().is_symlink() {
+            return Err(anyhow!("Path '{}' is not a regular file", path.display()));
+        }
+        Ok(())
+    }
+
+    async fn ensure_workspace_regular_file(&self, path: &Path) -> Result<()> {
+        let workspace_dir = Arc::clone(&self.workspace_dir);
+        let path = path.to_path_buf();
+        tokio::task::spawn_blocking(move || {
+            Self::ensure_workspace_regular_file_blocking(&workspace_dir, &path)
+        })
+        .await
+        .map_err(|err| anyhow!("Workspace file check task failed: {err}"))?
+    }
+
+    fn read_workspace_text_blocking(workspace_dir: &Dir, path: &Path) -> Result<String> {
+        let (parent, file_name) = Self::open_workspace_parent(workspace_dir, path, false)?;
+        let mut options = OpenOptions::new();
+        options.read(true).follow(FollowSymlinks::No);
+        let mut file = parent.open_with(file_name, &options)?;
+        let mut bytes = Vec::new();
+        std::io::Read::by_ref(&mut file)
+            .take(MAX_TEXT_FILE_BYTES as u64 + 1)
+            .read_to_end(&mut bytes)?;
+        if bytes.len() > MAX_TEXT_FILE_BYTES {
+            return Err(anyhow!(
+                "Text file '{}' exceeds the {}-byte safety limit",
+                path.display(),
+                MAX_TEXT_FILE_BYTES
+            ));
+        }
+        String::from_utf8(bytes)
+            .map_err(|err| anyhow!("Text file '{}' is not valid UTF-8: {}", path.display(), err))
+    }
+
+    async fn read_workspace_text(&self, path: &Path) -> Result<String> {
+        let workspace_dir = Arc::clone(&self.workspace_dir);
+        let path = path.to_path_buf();
+        tokio::task::spawn_blocking(move || {
+            Self::read_workspace_text_blocking(&workspace_dir, &path)
+        })
+        .await
+        .map_err(|err| anyhow!("Workspace file read task failed: {err}"))?
+    }
+
+    fn write_workspace_file_blocking(
+        workspace_dir: &Dir,
+        path: &Path,
+        content: &[u8],
+        create_new: bool,
+    ) -> Result<()> {
+        let (parent, file_name) = Self::open_workspace_parent(workspace_dir, path, true)?;
+        let mut options = OpenOptions::new();
+        options
+            .write(true)
+            .create(true)
+            .create_new(create_new)
+            .truncate(true)
+            .follow(FollowSymlinks::No);
+        let mut file = parent.open_with(file_name, &options)?;
+        std::io::Write::write_all(&mut file, content)?;
+        std::io::Write::flush(&mut file)?;
+        Ok(())
+    }
+
+    async fn write_workspace_file(
+        &self,
+        path: &Path,
+        content: &[u8],
+        create_new: bool,
+    ) -> Result<()> {
+        let workspace_dir = Arc::clone(&self.workspace_dir);
+        let path = path.to_path_buf();
+        let content = content.to_vec();
+        tokio::task::spawn_blocking(move || {
+            Self::write_workspace_file_blocking(&workspace_dir, &path, &content, create_new)
+        })
+        .await
+        .map_err(|err| anyhow!("Workspace file write task failed: {err}"))?
+    }
+
+    fn remove_workspace_file_blocking(workspace_dir: &Dir, path: &Path) -> Result<()> {
+        let (parent, file_name) = Self::open_workspace_parent(workspace_dir, path, false)?;
+        let metadata = parent.symlink_metadata(&file_name)?;
+        if !metadata.is_file() || metadata.file_type().is_symlink() {
+            return Err(anyhow!("Path '{}' is not a regular file", path.display()));
+        }
+        parent.remove_file(file_name)?;
+        Ok(())
+    }
+
+    async fn remove_workspace_file(&self, path: &Path) -> Result<()> {
+        let workspace_dir = Arc::clone(&self.workspace_dir);
+        let path = path.to_path_buf();
+        tokio::task::spawn_blocking(move || {
+            Self::remove_workspace_file_blocking(&workspace_dir, &path)
+        })
+        .await
+        .map_err(|err| anyhow!("Workspace file removal task failed: {err}"))?
     }
 
     fn resolve_in_workspace(&self, input: &str) -> Result<PathBuf> {
