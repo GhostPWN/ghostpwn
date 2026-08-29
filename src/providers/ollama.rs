@@ -1,12 +1,14 @@
 use anyhow::{Result, anyhow};
 use async_trait::async_trait;
-use futures_util::future::join_all;
+use futures_util::{StreamExt, stream};
 use reqwest::Client;
 use serde_json::Value;
 
 use crate::models::{ConversationMessage, MessageRole};
 use crate::providers::sse::consume_sse;
 use crate::providers::{Provider, provider_http_client};
+
+const MODEL_PROBE_CONCURRENCY: usize = 8;
 
 pub struct OllamaProvider {
     model: String,
@@ -54,24 +56,31 @@ impl Provider for OllamaProvider {
             })
             .unwrap_or_default();
 
-        let checks = discovered.into_iter().map(|model| async move {
-            let response = self
-                .client
-                .post(format!("{}/api/show", self.base_url))
-                .json(&serde_json::json!({ "model": &model }))
-                .send()
-                .await;
+        let mut checks = stream::iter(discovered.into_iter().enumerate().map(
+            |(index, model)| async move {
+                let response = self
+                    .client
+                    .post(format!("{}/api/show", self.base_url))
+                    .json(&serde_json::json!({ "model": &model }))
+                    .send()
+                    .await;
 
-            match response {
-                Ok(response) if response.status().is_success() => match response.json().await {
-                    Ok(details) if !supports_completion(&details) => None,
+                let model = match response {
+                    Ok(response) if response.status().is_success() => match response.json().await {
+                        Ok(details) if !supports_completion(&details) => None,
+                        Ok(_) | Err(_) => Some(model),
+                    },
                     Ok(_) | Err(_) => Some(model),
-                },
-                Ok(_) | Err(_) => Some(model),
-            }
-        });
+                };
+                (index, model)
+            },
+        ))
+        .buffer_unordered(MODEL_PROBE_CONCURRENCY)
+        .collect::<Vec<_>>()
+        .await;
+        checks.sort_unstable_by_key(|(index, _)| *index);
 
-        Ok(join_all(checks).await.into_iter().flatten().collect())
+        Ok(checks.into_iter().filter_map(|(_, model)| model).collect())
     }
 
     async fn stream_complete(
