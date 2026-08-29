@@ -10,6 +10,23 @@ on:
   workflow_dispatch:
 
 jobs:
+  dependencies:
+    name: Audit dependencies
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - name: Install Rust audit tool
+        run: cargo install cargo-audit --version 0.22.2 --locked
+      - name: Audit Rust dependencies
+        run: cargo audit
+      - uses: oven-sh/setup-bun@v2
+      - name: Audit website dependencies
+        working-directory: web
+        run: |
+          bun install --frozen-lockfile
+          bun audit
+
   version:
     name: Check versions
     runs-on: ubuntu-latest
