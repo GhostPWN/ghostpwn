@@ -180,7 +180,11 @@ async fn discovery_tools_exclude_sensitive_paths() {
         })
         .await
         .expect("search");
-    assert_eq!(search["matches"], json!(["src/main.rs"]));
+    let expected_match = std::path::Path::new("src")
+        .join("main.rs")
+        .to_string_lossy()
+        .into_owned();
+    assert_eq!(search["matches"], json!([expected_match]));
 
     let grep = tools
         .execute(&ToolCall {
