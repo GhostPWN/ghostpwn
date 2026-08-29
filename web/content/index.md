@@ -18,7 +18,7 @@ The current code base focuses on:
 - provider support for OpenAI, Anthropic, Google, GitHub Copilot, Codex, and local Ollama
 - in-session provider/model switching
 - local tools for reading files, listing directories, searching, and running commands
-- persistent API key storage via OS keychain fallback
+- persistent API key storage via the OS keychain, with a local state-file fallback
 - streaming assistant output with auto-scroll and transcript controls
 
 ## Project

@@ -91,11 +91,29 @@ struct UiMessage {
 }
 
 struct ModelSelector {
+    id: u64,
     providers: Vec<ProviderKind>,
     provider_index: usize,
     provider_states: HashMap<ProviderKind, ModelSelectorProviderState>,
     mode: ModelSelectorMode,
     status: Option<ModelSelectorStatus>,
+    oauth_task: Option<tokio::task::JoinHandle<()>>,
+}
+
+impl ModelSelector {
+    fn replace_oauth_task(&mut self, task: tokio::task::JoinHandle<()>) {
+        if let Some(previous) = self.oauth_task.replace(task) {
+            previous.abort();
+        }
+    }
+}
+
+impl Drop for ModelSelector {
+    fn drop(&mut self) {
+        if let Some(task) = self.oauth_task.take() {
+            task.abort();
+        }
+    }
 }
 
 struct ModelSelectorProviderState {
@@ -136,6 +154,7 @@ struct UiState {
     completion_matches: Vec<&'static CommandSpec>,
     completion_index: usize,
     selector: Option<ModelSelector>,
+    next_selector_id: u64,
     pending_approval: Option<PendingApproval>,
     tick: u64,
 }
@@ -155,6 +174,7 @@ impl UiState {
             completion_matches: Vec::new(),
             completion_index: 0,
             selector: None,
+            next_selector_id: 0,
             pending_approval: None,
             tick: 0,
         }
@@ -660,6 +680,8 @@ async fn open_model_selector(
     agent: &Arc<Mutex<Agent>>,
     event_tx: &UnboundedSender<AgentEvent>,
 ) {
+    state.next_selector_id = state.next_selector_id.wrapping_add(1);
+    let selector_id = state.next_selector_id;
     let current_provider = {
         let locked = agent.lock().await;
         locked.current_provider()
@@ -686,11 +708,13 @@ async fn open_model_selector(
         .collect();
 
     state.selector = Some(ModelSelector {
+        id: selector_id,
         providers,
         provider_index,
         provider_states,
         mode: ModelSelectorMode::Browse,
         status: None,
+        oauth_task: None,
     });
     fetch_selector_models_if_needed(state, agent, event_tx, current_provider);
 }
@@ -919,6 +943,9 @@ fn start_selector_copilot_auth(
     agent: &Arc<Mutex<Agent>>,
     event_tx: &UnboundedSender<AgentEvent>,
 ) {
+    let Some(selector_id) = state.selector.as_ref().map(|selector| selector.id) else {
+        return;
+    };
     if let Some(selector) = state.selector.as_mut() {
         selector.status = Some(ModelSelectorStatus {
             provider: ProviderKind::Copilot,
@@ -931,9 +958,9 @@ fn start_selector_copilot_auth(
         }
     }
 
-    let tx = event_tx.clone();
+    let tx = SelectorEventSender::new(event_tx.clone(), selector_id);
     let handle = Arc::clone(agent);
-    tokio::spawn(async move {
+    let task = tokio::spawn(async move {
         if let Err(err) = copilot_device_flow(tx.clone(), handle).await {
             let _ = tx.send(AgentEvent::ProviderStatus {
                 provider: ProviderKind::Copilot,
@@ -947,6 +974,11 @@ fn start_selector_copilot_auth(
             });
         }
     });
+    if let Some(selector) = state.selector.as_mut() {
+        selector.replace_oauth_task(task);
+    } else {
+        task.abort();
+    }
 }
 
 fn start_selector_codex_auth(
@@ -954,6 +986,9 @@ fn start_selector_codex_auth(
     agent: &Arc<Mutex<Agent>>,
     event_tx: &UnboundedSender<AgentEvent>,
 ) {
+    let Some(selector_id) = state.selector.as_ref().map(|selector| selector.id) else {
+        return;
+    };
     if let Some(selector) = state.selector.as_mut() {
         selector.status = Some(ModelSelectorStatus {
             provider: ProviderKind::Codex,
@@ -966,9 +1001,9 @@ fn start_selector_codex_auth(
         }
     }
 
-    let tx = event_tx.clone();
+    let tx = SelectorEventSender::new(event_tx.clone(), selector_id);
     let handle = Arc::clone(agent);
-    tokio::spawn(async move {
+    let task = tokio::spawn(async move {
         if let Err(err) = codex_oauth_flow(tx.clone(), handle).await {
             let _ = tx.send(AgentEvent::ProviderStatus {
                 provider: ProviderKind::Codex,
@@ -982,6 +1017,11 @@ fn start_selector_codex_auth(
             });
         }
     });
+    if let Some(selector) = state.selector.as_mut() {
+        selector.replace_oauth_task(task);
+    } else {
+        task.abort();
+    }
 }
 
 fn fetch_selector_models_if_needed(
@@ -1002,15 +1042,16 @@ fn fetch_selector_models_if_needed(
     }
 
     provider_state.loading = true;
-    fetch_selector_models(agent, event_tx, provider);
+    fetch_selector_models(agent, event_tx, selector.id, provider);
 }
 
 fn fetch_selector_models(
     agent: &Arc<Mutex<Agent>>,
     event_tx: &UnboundedSender<AgentEvent>,
+    selector_id: u64,
     provider: ProviderKind,
 ) {
-    let tx = event_tx.clone();
+    let tx = SelectorEventSender::new(event_tx.clone(), selector_id);
     let handle = Arc::clone(agent);
     tokio::spawn(async move {
         let provider_keys = {
@@ -1052,6 +1093,15 @@ fn fetch_selector_models(
 
 fn apply_agent_event(state: &mut UiState, event: AgentEvent) {
     match event {
+        AgentEvent::Selector { id, event } => {
+            if state
+                .selector
+                .as_ref()
+                .is_some_and(|selector| selector.id == id)
+            {
+                apply_agent_event(state, *event);
+            }
+        }
         AgentEvent::AssistantDelta(delta) => {
             state.streaming_content.push_str(&delta);
             state.tool_status.clear();
@@ -1878,10 +1928,32 @@ fn completion_hint(state: &UiState) -> Option<(&'static str, &'static str)> {
     Some((suffix, active.description))
 }
 
-async fn copilot_device_flow(
+#[derive(Clone)]
+struct SelectorEventSender {
     events: UnboundedSender<AgentEvent>,
-    agent: Arc<Mutex<Agent>>,
-) -> Result<()> {
+    selector_id: u64,
+}
+
+impl SelectorEventSender {
+    fn new(events: UnboundedSender<AgentEvent>, selector_id: u64) -> Self {
+        Self {
+            events,
+            selector_id,
+        }
+    }
+
+    fn send(
+        &self,
+        event: AgentEvent,
+    ) -> Result<(), tokio::sync::mpsc::error::SendError<AgentEvent>> {
+        self.events.send(AgentEvent::Selector {
+            id: self.selector_id,
+            event: Box::new(event),
+        })
+    }
+}
+
+async fn copilot_device_flow(events: SelectorEventSender, agent: Arc<Mutex<Agent>>) -> Result<()> {
     let auth = copilot::authorize().await?;
 
     let _ = events.send(AgentEvent::ProviderStatus {
@@ -2003,10 +2075,7 @@ async fn copilot_device_flow(
     }
 }
 
-async fn codex_oauth_flow(
-    events: UnboundedSender<AgentEvent>,
-    agent: Arc<Mutex<Agent>>,
-) -> Result<()> {
+async fn codex_oauth_flow(events: SelectorEventSender, agent: Arc<Mutex<Agent>>) -> Result<()> {
     match codex_browser_flow(events.clone(), Arc::clone(&agent)).await {
         Ok(()) => Ok(()),
         Err(browser_err) => {
@@ -2023,10 +2092,7 @@ async fn codex_oauth_flow(
     }
 }
 
-async fn codex_browser_flow(
-    events: UnboundedSender<AgentEvent>,
-    agent: Arc<Mutex<Agent>>,
-) -> Result<()> {
+async fn codex_browser_flow(events: SelectorEventSender, agent: Arc<Mutex<Agent>>) -> Result<()> {
     let auth = codex::start_browser_auth()?;
     let state = auth.state.clone();
     let verifier = auth.verifier.clone();
@@ -2049,10 +2115,7 @@ async fn codex_browser_flow(
     finish_codex_connection(events, agent, credentials).await
 }
 
-async fn codex_device_flow(
-    events: UnboundedSender<AgentEvent>,
-    agent: Arc<Mutex<Agent>>,
-) -> Result<()> {
+async fn codex_device_flow(events: SelectorEventSender, agent: Arc<Mutex<Agent>>) -> Result<()> {
     let auth = codex::authorize_device().await?;
     let device_url = auth
         .verification_uri_complete
@@ -2113,7 +2176,7 @@ async fn codex_device_flow(
 }
 
 async fn finish_codex_connection(
-    events: UnboundedSender<AgentEvent>,
+    events: SelectorEventSender,
     agent: Arc<Mutex<Agent>>,
     credentials: codex::CodexCredentials,
 ) -> Result<()> {

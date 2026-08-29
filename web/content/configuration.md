@@ -6,7 +6,9 @@
 - `GHOSTPWN_MODEL`: optional startup model override for the selected provider
 - `GHOSTPWN_WORKSPACE`: optional root path used as the filesystem-tool boundary and command working directory
 - `GHOSTPWN_SKILLS_DIR`: optional directory for local skills; defaults to `skills`
+- `GHOSTPWN_SKILLS_CACHE_DIR`: optional parent directory for extracted bundled skills
 - `GHOSTPWN_STATE_FILE`: optional local state-file override
+- `OLLAMA_HOST`: optional Ollama server URL or host; defaults to `http://localhost:11434`
 
 ## Provider keys
 
@@ -22,4 +24,4 @@ API keys are loaded from environment first, then OS keychain entries under servi
 
 - Local state fallback defaults to `%APPDATA%\ghostpwn\state.json` on Windows, `$XDG_CONFIG_HOME/ghostpwn/state.json` on Unix/macOS, then the user's home config path
 - The latest provider/model selection is stored as `latest_provider` and `latest_model` in the OS keychain and local state file
-- Ollama uses `http://localhost:11434` and does not require an API key
+- Ollama does not require an API key

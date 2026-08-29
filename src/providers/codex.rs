@@ -1,3 +1,4 @@
+use std::fmt;
 use std::io::Write;
 use std::net::TcpListener;
 use std::time::Duration;
@@ -18,7 +19,7 @@ use url::Url;
 
 use crate::config::ProviderKind;
 use crate::models::{ConversationMessage, MessageRole};
-use crate::providers::sse::consume_sse;
+use crate::providers::sse::{consume_sse, extract_error_message};
 use crate::providers::{Provider, provider_http_client};
 use crate::secrets::SecretStore;
 
@@ -37,7 +38,7 @@ const USER_AGENT_VALUE: &str = concat!("ghostpwn/", env!("CARGO_PKG_VERSION"));
 const ORIGINATOR: &str = "ghostpwn";
 const CODEX_FALLBACK_MODELS: &[&str] = &["gpt-5.4", "gpt-5.4-mini"];
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Clone, Serialize, Deserialize)]
 pub struct CodexCredentials {
     pub refresh_token: String,
     pub access_token: String,
@@ -46,13 +47,24 @@ pub struct CodexCredentials {
     pub account_id: Option<String>,
 }
 
+impl fmt::Debug for CodexCredentials {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter
+            .debug_struct("CodexCredentials")
+            .field("refresh_token", &"[REDACTED]")
+            .field("access_token", &"[REDACTED]")
+            .field("expires_at", &self.expires_at)
+            .field("account_id", &self.account_id)
+            .finish()
+    }
+}
+
 impl CodexCredentials {
     fn is_fresh(&self, now: u64) -> bool {
         now < self.expires_at.saturating_sub(60)
     }
 }
 
-#[derive(Debug)]
 pub struct BrowserAuth {
     pub authorization_url: String,
     pub state: String,
@@ -61,13 +73,35 @@ pub struct BrowserAuth {
     listener: TcpListener,
 }
 
-#[derive(Debug)]
+impl fmt::Debug for BrowserAuth {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter
+            .debug_struct("BrowserAuth")
+            .field("authorization_url", &"[REDACTED]")
+            .field("state", &"[REDACTED]")
+            .field("verifier", &"[REDACTED]")
+            .field("redirect_uri", &self.redirect_uri)
+            .field("listener", &self.listener)
+            .finish()
+    }
+}
+
 pub struct BrowserCode {
     pub code: String,
     pub state: String,
 }
 
-#[derive(Debug, Deserialize)]
+impl fmt::Debug for BrowserCode {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter
+            .debug_struct("BrowserCode")
+            .field("code", &"[REDACTED]")
+            .field("state", &"[REDACTED]")
+            .finish()
+    }
+}
+
+#[derive(Deserialize)]
 struct TokenResponse {
     access_token: String,
     refresh_token: Option<String>,
@@ -75,7 +109,7 @@ struct TokenResponse {
     id_token: Option<String>,
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Deserialize)]
 struct DeviceCodeResponse {
     device_code: String,
     user_code: String,
@@ -85,7 +119,7 @@ struct DeviceCodeResponse {
     interval: Option<u64>,
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Deserialize)]
 struct DeviceTokenResponse {
     access_token: Option<String>,
     refresh_token: Option<String>,
@@ -253,6 +287,10 @@ impl Provider for CodexProvider {
                 Ok(v) => v,
                 Err(_) => return Ok(true),
             };
+
+            if let Some(error) = extract_error_message(&chunk) {
+                return Err(anyhow!("Codex stream error: {}", error));
+            }
 
             if let Some(delta) = extract_stream_delta(&chunk)
                 && !delta.is_empty()

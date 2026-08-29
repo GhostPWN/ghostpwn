@@ -10,7 +10,7 @@ use serde_json::{Value, json};
 use tokio::sync::Mutex;
 
 use crate::models::{ConversationMessage, MessageRole};
-use crate::providers::sse::consume_sse;
+use crate::providers::sse::{consume_sse, extract_error_message};
 use crate::providers::{Provider, provider_http_client};
 
 const CLIENT_ID: &str = "Iv1.b507a08c87ecfe98";
@@ -25,7 +25,7 @@ const INTEGRATION_ID: &str = "vscode-chat";
 
 // ── Device-code OAuth flow ──────────────────────────────────────────
 
-#[derive(Debug, Deserialize)]
+#[derive(Deserialize)]
 struct DeviceCodeResponse {
     device_code: String,
     user_code: String,
@@ -34,20 +34,20 @@ struct DeviceCodeResponse {
     interval: Option<u64>,
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Deserialize)]
 struct OAuthTokenResponse {
     access_token: Option<String>,
     error: Option<String>,
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Deserialize)]
 struct CopilotTokenResponse {
     token: String,
     expires_at: u64,
     endpoints: CopilotEndpoints,
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Deserialize)]
 struct CopilotEndpoints {
     api: String,
 }
@@ -267,6 +267,10 @@ impl CopilotProvider {
                 Err(_) => return Ok(true),
             };
 
+            if let Some(error) = extract_error_message(&chunk) {
+                return Err(anyhow!("Copilot stream error: {}", error));
+            }
+
             if chunk
                 .get("type")
                 .and_then(|v| v.as_str())
@@ -383,6 +387,10 @@ impl Provider for CopilotProvider {
                 Ok(v) => v,
                 Err(_) => return Ok(true),
             };
+
+            if let Some(error) = extract_error_message(&chunk) {
+                return Err(anyhow!("Copilot stream error: {}", error));
+            }
 
             if let Some(text) = chunk
                 .get("choices")

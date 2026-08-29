@@ -282,7 +282,7 @@ impl Default for SecretStore {
     }
 }
 
-#[derive(Debug, Clone, Default, Deserialize, Serialize)]
+#[derive(Clone, Default, Deserialize, Serialize)]
 struct FileState {
     #[serde(default)]
     keys: HashMap<String, String>,

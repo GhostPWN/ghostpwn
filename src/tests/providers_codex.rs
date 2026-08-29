@@ -3,11 +3,59 @@ use base64::engine::general_purpose::URL_SAFE_NO_PAD;
 use serde_json::json;
 
 use super::{
-    CodexCredentials, credentials_from_device_response, extract_account_id, extract_response_text,
-    extract_response_text_from_body, extract_stream_delta, parse_codex_models, parse_credentials,
-    persist_credentials, pkce_challenge, serialize_credentials,
+    BrowserAuth, BrowserCode, CodexCredentials, credentials_from_device_response,
+    extract_account_id, extract_response_text, extract_response_text_from_body,
+    extract_stream_delta, parse_codex_models, parse_credentials, persist_credentials,
+    pkce_challenge, serialize_credentials,
 };
 use crate::secrets::SecretStore;
+
+#[test]
+fn codex_credentials_debug_redacts_tokens() {
+    let credentials = CodexCredentials {
+        refresh_token: "refresh-secret-value".to_string(),
+        access_token: "access-secret-value".to_string(),
+        expires_at: 42,
+        account_id: Some("account-id".to_string()),
+    };
+
+    let output = format!("{credentials:?}");
+
+    assert!(!output.contains("refresh-secret-value"));
+    assert!(!output.contains("access-secret-value"));
+    assert!(output.contains("expires_at: 42"));
+    assert!(output.contains("account-id"));
+}
+
+#[test]
+fn browser_oauth_debug_redacts_transient_secrets() {
+    let listener = std::net::TcpListener::bind("127.0.0.1:0").expect("listener");
+    let auth = BrowserAuth {
+        authorization_url: "https://example.test/auth?state=state-secret-value".to_string(),
+        state: "state-secret-value".to_string(),
+        verifier: "verifier-secret-value".to_string(),
+        redirect_uri: "http://localhost/callback".to_string(),
+        listener,
+    };
+    let code = BrowserCode {
+        code: "authorization-code-secret-value".to_string(),
+        state: "callback-state-secret-value".to_string(),
+    };
+
+    let auth_output = format!("{auth:?}");
+    let code_output = format!("{code:?}");
+
+    for secret in [
+        "state-secret-value",
+        "verifier-secret-value",
+        "authorization-code-secret-value",
+        "callback-state-secret-value",
+    ] {
+        assert!(!auth_output.contains(secret));
+        assert!(!code_output.contains(secret));
+    }
+    assert!(auth_output.contains("http://localhost/callback"));
+}
 
 #[test]
 fn pkce_challenge_is_s256_base64url() {

@@ -8,7 +8,7 @@ use crate::config::{ProviderKeys, ProviderKind};
 use crate::models::{AgentEvent, ConversationMessage, ModelEnvelope, ToolCall};
 use crate::providers::{Provider, build_provider_with_secret_store};
 use crate::secrets::{SETTING_MODEL, SETTING_PROVIDER, SecretMutationReport, SecretStore};
-use crate::tools::{ToolRuntime, audit_tool_allowed, tool_requires_approval};
+use crate::tools::{ToolRuntime, audit_tool_allowed};
 
 const MAX_STEPS: usize = 15;
 const AUDIT_MAX_STEPS: usize = 30;
@@ -427,7 +427,7 @@ impl Agent {
                 }
 
                 let summary = self.tools.arg_summary(&call.name, &call.arguments);
-                if tool_requires_approval(&call.name) {
+                if self.tools.call_requires_approval(&call) {
                     let (response, approval) = tokio::sync::oneshot::channel();
                     let _ = events.send(AgentEvent::ApprovalRequired {
                         name: call.name.clone(),
@@ -642,18 +642,48 @@ fn extract_partial_assistant_value(raw: &str) -> Option<String> {
                     'r' => out.push('\r'),
                     't' => out.push('\t'),
                     'u' => {
-                        let mut hex = String::new();
-                        for _ in 0..4 {
-                            match chars.next() {
-                                Some(v) => hex.push(v),
-                                None => return Some(out),
+                        let code = match read_json_unicode_escape(&mut chars) {
+                            UnicodeEscape::Complete(code) => code,
+                            UnicodeEscape::Incomplete => return Some(out),
+                            UnicodeEscape::Invalid => {
+                                out.push(char::REPLACEMENT_CHARACTER);
+                                continue;
                             }
-                        }
+                        };
 
-                        if let Ok(code) = u32::from_str_radix(&hex, 16)
-                            && let Some(decoded) = char::from_u32(code)
+                        if (0xD800..=0xDBFF).contains(&code) {
+                            let mut lookahead = chars.clone();
+                            match (lookahead.next(), lookahead.next()) {
+                                (None, _) | (Some('\\'), None) => return Some(out),
+                                (Some('\\'), Some('u')) => {
+                                    let low = match read_json_unicode_escape(&mut lookahead) {
+                                        UnicodeEscape::Complete(low) => low,
+                                        UnicodeEscape::Incomplete => return Some(out),
+                                        UnicodeEscape::Invalid => {
+                                            out.push(char::REPLACEMENT_CHARACTER);
+                                            continue;
+                                        }
+                                    };
+                                    if (0xDC00..=0xDFFF).contains(&low) {
+                                        chars = lookahead;
+                                        let scalar = 0x10000
+                                            + ((u32::from(code) - 0xD800) << 10)
+                                            + (u32::from(low) - 0xDC00);
+                                        if let Some(decoded) = char::from_u32(scalar) {
+                                            out.push(decoded);
+                                        }
+                                    } else {
+                                        out.push(char::REPLACEMENT_CHARACTER);
+                                    }
+                                }
+                                _ => out.push(char::REPLACEMENT_CHARACTER),
+                            }
+                        } else if !(0xDC00..=0xDFFF).contains(&code)
+                            && let Some(decoded) = char::from_u32(u32::from(code))
                         {
                             out.push(decoded);
+                        } else {
+                            out.push(char::REPLACEMENT_CHARACTER);
                         }
                     }
                     other => out.push(other),
@@ -664,6 +694,27 @@ fn extract_partial_assistant_value(raw: &str) -> Option<String> {
     }
 
     Some(out)
+}
+
+enum UnicodeEscape {
+    Complete(u16),
+    Incomplete,
+    Invalid,
+}
+
+fn read_json_unicode_escape(chars: &mut impl Iterator<Item = char>) -> UnicodeEscape {
+    let mut hex = String::with_capacity(4);
+    for _ in 0..4 {
+        let Some(ch) = chars.next() else {
+            return UnicodeEscape::Incomplete;
+        };
+        hex.push(ch);
+    }
+
+    match u16::from_str_radix(&hex, 16) {
+        Ok(code) => UnicodeEscape::Complete(code),
+        Err(_) => UnicodeEscape::Invalid,
+    }
 }
 
 #[cfg(test)]
