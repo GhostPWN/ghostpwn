@@ -320,6 +320,32 @@ async fn run_command_reports_timeout() {
     );
 }
 
+#[cfg(unix)]
+#[tokio::test]
+async fn run_command_timeout_terminates_descendants() {
+    let root = tempdir().expect("tempdir");
+    let workspace = root.path().join("workspace");
+    fs::create_dir_all(&workspace).expect("workspace");
+    let started = workspace.join("descendant-started");
+    let marker = workspace.join("descendant-finished");
+
+    let tools = ToolRuntime::new(workspace).expect("runtime");
+    let call = ToolCall {
+        name: "runCommand".to_string(),
+        arguments: json!({
+            "command": "(touch descendant-started; sleep 1; touch descendant-finished) & wait",
+            "timeout": 500,
+        }),
+    };
+
+    let result = tools.execute(&call).await.expect("tool result");
+    assert_eq!(result.get("exitCode").and_then(|v| v.as_i64()), Some(-1));
+    assert!(started.exists(), "descendant did not start before timeout");
+
+    tokio::time::sleep(std::time::Duration::from_millis(1_200)).await;
+    assert!(!marker.exists(), "timed out descendant was left running");
+}
+
 #[tokio::test]
 async fn run_command_caps_output_without_deadlocking() {
     if cfg!(windows) {
