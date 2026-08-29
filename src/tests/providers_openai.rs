@@ -1,6 +1,7 @@
 use serde_json::json;
 
-use super::{extract_response_text, extract_stream_error, parse_chat_models};
+use super::{extract_response_text, parse_chat_models};
+use crate::providers::sse::extract_error_message;
 
 #[test]
 fn model_catalog_keeps_active_text_models_only() {
@@ -36,7 +37,7 @@ fn extracts_buffered_responses_text() {
 #[test]
 fn extracts_stream_error_events() {
     assert_eq!(
-        extract_stream_error(&json!({
+        extract_error_message(&json!({
             "type": "error",
             "error": { "message": "rate limited" }
         }))
@@ -44,7 +45,7 @@ fn extracts_stream_error_events() {
         Some("rate limited")
     );
     assert_eq!(
-        extract_stream_error(&json!({
+        extract_error_message(&json!({
             "type": "response.failed",
             "response": { "error": { "message": "model unavailable" } }
         }))
@@ -52,7 +53,7 @@ fn extracts_stream_error_events() {
         Some("model unavailable")
     );
     assert!(
-        extract_stream_error(&json!({
+        extract_error_message(&json!({
             "type": "response.output_text.delta",
             "delta": "ok"
         }))

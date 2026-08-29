@@ -1,4 +1,5 @@
 use std::env;
+use std::fmt;
 use std::path::PathBuf;
 
 use anyhow::Result;
@@ -73,13 +74,26 @@ impl ProviderKind {
     }
 }
 
-#[derive(Debug, Clone, Default)]
+#[derive(Clone, Default)]
 pub struct ProviderKeys {
     anthropic: Option<String>,
     openai: Option<String>,
     google: Option<String>,
     copilot: Option<String>,
     codex: Option<String>,
+}
+
+impl fmt::Debug for ProviderKeys {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter
+            .debug_struct("ProviderKeys")
+            .field("anthropic", &self.anthropic.as_ref().map(|_| "[REDACTED]"))
+            .field("openai", &self.openai.as_ref().map(|_| "[REDACTED]"))
+            .field("google", &self.google.as_ref().map(|_| "[REDACTED]"))
+            .field("copilot", &self.copilot.as_ref().map(|_| "[REDACTED]"))
+            .field("codex", &self.codex.as_ref().map(|_| "[REDACTED]"))
+            .finish()
+    }
 }
 
 impl ProviderKeys {

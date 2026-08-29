@@ -41,9 +41,82 @@ apk = load(
     "apk_analyzer",
     "skills/17-mobile-security/scripts/apk_analyzer.py",
 )
+api_security = load(
+    "api_security_tester",
+    "skills/09-web-security/scripts/api_security_tester.py",
+)
 
 
 class SecurityScriptChecks(unittest.TestCase):
+    def test_api_security_tester_verifies_tls_and_sends_bearer_token(self):
+        tester = api_security.APISecurityTester(
+            "https://api.example.com", token="secret-token"
+        )
+
+        with mock.patch.object(api_security.requests, "request") as request:
+            tester._request("GET", "/users")
+
+        request.assert_called_once_with(
+            "GET",
+            "https://api.example.com/users",
+            headers={
+                "Accept": "application/json",
+                "Content-Type": "application/json",
+                "Authorization": "Bearer secret-token",
+            },
+            json=None,
+            params=None,
+            timeout=10,
+            verify=True,
+            allow_redirects=False,
+        )
+
+    def test_api_security_tester_allows_explicit_insecure_requests(self):
+        tester = api_security.APISecurityTester(
+            "https://api.example.com", verify_tls=False
+        )
+
+        with mock.patch.object(api_security.requests, "request") as request:
+            tester._request("GET", "/health")
+
+        self.assertFalse(request.call_args.kwargs["verify"])
+
+    def test_api_security_tester_cli_warns_for_insecure_mode(self):
+        results = {
+            "target": "https://api.example.com",
+            "total_findings": 0,
+            "by_severity": {},
+            "findings": [],
+        }
+        with (
+            mock.patch.object(
+                sys,
+                "argv",
+                [
+                    "api_security_tester.py",
+                    "--base-url",
+                    "https://api.example.com",
+                    "--token",
+                    "secret-token",
+                    "--insecure",
+                ],
+            ),
+            mock.patch.object(api_security, "APISecurityTester") as tester_class,
+            mock.patch.object(api_security, "print_summary"),
+            self.assertLogs(api_security.logger, level="WARNING") as logs,
+        ):
+            tester_class.return_value.run.return_value = results
+            api_security.main()
+
+        tester_class.assert_called_once_with(
+            "https://api.example.com",
+            None,
+            "secret-token",
+            10,
+            verify_tls=False,
+        )
+        self.assertIn("TLS certificate verification is disabled", logs.output[0])
+
     def test_cvss_rounds_up(self):
         self.assertEqual(cvss.round_up(4.01), 4.1)
         self.assertEqual(cvss.round_up(4.0), 4.0)

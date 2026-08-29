@@ -10,6 +10,7 @@ use anyhow::{Result, anyhow};
 use cap_fs_ext::{DirExt, FollowSymlinks, OpenOptionsFollowExt};
 use cap_std::ambient_authority;
 use cap_std::fs::{Dir, OpenOptions};
+use command_group::AsyncCommandGroup;
 use futures_util::{StreamExt, stream};
 use globset::Glob;
 use regex::Regex;
@@ -49,6 +50,79 @@ pub fn tool_requires_approval(name: &str) -> bool {
         canonical_tool_name(name),
         "runCommand" | "auditDependencies" | "writeFile" | "editFile" | "multiEdit" | "applyPatch"
     )
+}
+
+fn is_sensitive_path(path: &Path) -> bool {
+    let components = path
+        .components()
+        .filter_map(|component| component.as_os_str().to_str())
+        .map(str::to_ascii_lowercase)
+        .collect::<Vec<_>>();
+
+    if components.iter().any(|component| {
+        matches!(
+            component.as_str(),
+            ".aws"
+                | ".docker"
+                | ".ghostpwn"
+                | ".gnupg"
+                | ".kube"
+                | ".ssh"
+                | "credentials"
+                | "secrets"
+        )
+    }) {
+        return true;
+    }
+
+    let Some(name) = components.last().map(String::as_str) else {
+        return false;
+    };
+
+    name == ".envrc"
+        || name == ".env"
+        || name.starts_with(".env.")
+        || name.starts_with(".env-")
+        || name.ends_with(".env")
+        || matches!(
+            name,
+            ".netrc"
+                | ".npmrc"
+                | ".pypirc"
+                | ".git-credentials"
+                | "id_rsa"
+                | "id_dsa"
+                | "id_ecdsa"
+                | "id_ed25519"
+        )
+        || ["id_rsa", "id_dsa", "id_ecdsa", "id_ed25519"]
+            .iter()
+            .any(|prefix| {
+                name.starts_with(&format!("{prefix}.")) || name.starts_with(&format!("{prefix}_"))
+            })
+        || name.ends_with(".pem")
+        || name.ends_with(".key")
+        || sensitive_data_filename(name)
+        || components.ends_with(&["ghostpwn".to_string(), "state.json".to_string()])
+        || components.ends_with(&[".docker".to_string(), "config.json".to_string()])
+}
+
+fn sensitive_data_filename(name: &str) -> bool {
+    const STEMS: [&str; 6] = [
+        "credential",
+        "credentials",
+        "secret",
+        "secrets",
+        "token",
+        "tokens",
+    ];
+    const SUFFIXES: [&str; 7] = ["", ".conf", ".config", ".ini", ".json", ".toml", ".yaml"];
+
+    STEMS.iter().any(|stem| {
+        SUFFIXES
+            .iter()
+            .any(|suffix| name == format!("{stem}{suffix}"))
+    }) || STEMS.iter().any(|stem| name == format!("{stem}.yml"))
 }
 
 pub fn audit_tool_allowed(name: &str, allow_mutations: bool) -> bool {
@@ -131,6 +205,27 @@ impl ToolRuntime {
         self.skills.prompt_section().await
     }
 
+    pub fn call_requires_approval(&self, call: &ToolCall) -> bool {
+        if tool_requires_approval(&call.name) {
+            return true;
+        }
+
+        canonical_tool_name(&call.name) == "readFile"
+            && path_arg(&call.arguments).is_some_and(|path| self.read_path_is_sensitive(path))
+    }
+
+    fn read_path_is_sensitive(&self, path: &str) -> bool {
+        is_sensitive_path(Path::new(path))
+            || self
+                .resolve_in_workspace(path)
+                .is_ok_and(|resolved| self.is_sensitive_workspace_path(&resolved))
+    }
+
+    fn is_sensitive_workspace_path(&self, path: &Path) -> bool {
+        path.strip_prefix(&self.workspace_root)
+            .map_or_else(|_| is_sensitive_path(path), is_sensitive_path)
+    }
+
     pub fn arg_summary(&self, name: &str, args: &Value) -> String {
         let canonical = canonical_tool_name(name);
         let detailed = match canonical {
@@ -181,6 +276,12 @@ impl ToolRuntime {
                     .and_then(Value::as_str)
                     .unwrap_or_default()
             )),
+            "readFile" if path_arg(args).is_some_and(|path| self.read_path_is_sensitive(path)) => {
+                Some(format!(
+                    "SENSITIVE file read: {}",
+                    path_arg(args).unwrap_or_default()
+                ))
+            }
             _ => None,
         };
         if let Some(summary) = detailed {
@@ -437,10 +538,16 @@ impl ToolRuntime {
         let path = path_arg(args).unwrap_or(".");
 
         let resolved = self.resolve_in_workspace(path)?;
+        if self.is_sensitive_workspace_path(&resolved) {
+            return Err(anyhow!("Sensitive paths cannot be listed"));
+        }
         let mut entries = fs::read_dir(&resolved).await?;
         let mut out = Vec::<Value>::new();
 
         while let Some(entry) = entries.next_entry().await? {
+            if self.is_sensitive_workspace_path(&entry.path()) {
+                continue;
+            }
             let file_type = entry.file_type().await?;
             out.push(json!({
                 "name": entry.file_name().to_string_lossy().to_string(),
@@ -465,6 +572,9 @@ impl ToolRuntime {
             .unwrap_or(".");
 
         let base = self.resolve_in_workspace(cwd)?;
+        if self.is_sensitive_workspace_path(&base) {
+            return Err(anyhow!("Sensitive paths cannot be searched"));
+        }
         let matcher = Glob::new(pattern)
             .map_err(|err| anyhow!("Invalid glob pattern '{}': {}", pattern, err))?
             .compile_matcher();
@@ -486,6 +596,10 @@ impl ToolRuntime {
             };
 
             if !entry.file_type().is_file() {
+                continue;
+            }
+
+            if self.is_sensitive_workspace_path(entry.path()) {
                 continue;
             }
 
@@ -518,6 +632,9 @@ impl ToolRuntime {
         let glob = args.get("glob").and_then(Value::as_str);
 
         let resolved = self.resolve_in_workspace(path)?;
+        if self.is_sensitive_workspace_path(&resolved) {
+            return Err(anyhow!("Sensitive paths cannot be searched"));
+        }
         let regex = Regex::new(pattern)
             .map_err(|err| anyhow!("Invalid regex pattern '{}': {}", pattern, err))?;
         let glob_matcher = match glob {
@@ -554,6 +671,11 @@ impl ToolRuntime {
 
             let path = entry.path();
             if !entry.file_type().is_file() {
+                continue;
+            }
+
+            if self.is_sensitive_workspace_path(path) {
+                skipped_files += 1;
                 continue;
             }
 
@@ -791,12 +913,14 @@ impl ToolRuntime {
             .stderr(Stdio::piped())
             .kill_on_drop(true);
 
-        let mut child = command_builder.spawn()?;
+        let mut child = command_builder.group().kill_on_drop(true).spawn()?;
         let stdout = child
+            .inner()
             .stdout
             .take()
             .ok_or_else(|| anyhow!("Failed to capture command stdout"))?;
         let stderr = child
+            .inner()
             .stderr
             .take()
             .ok_or_else(|| anyhow!("Failed to capture command stderr"))?;
@@ -820,6 +944,10 @@ impl ToolRuntime {
                 )
             }
             Err(_) => {
+                child
+                    .kill()
+                    .await
+                    .map_err(|err| anyhow!("Failed to terminate timed out command: {err}"))?;
                 return Ok(json!({
                     "stdout": "",
                     "stderr": "Command timed out",

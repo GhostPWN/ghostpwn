@@ -10,7 +10,7 @@ mod ui;
 use std::env;
 use std::sync::Arc;
 
-use anyhow::Result;
+use anyhow::{Result, anyhow};
 use tokio::sync::Mutex;
 
 use crate::agent::Agent;
@@ -33,7 +33,7 @@ Running without options launches the TUI.
 
 #[tokio::main]
 async fn main() -> Result<()> {
-    if handle_cli_args() {
+    if handle_cli_args()? {
         return Ok(());
     }
 
@@ -51,21 +51,68 @@ async fn main() -> Result<()> {
     ui::run_ui(agent).await
 }
 
-fn handle_cli_args() -> bool {
-    let mut args = env::args().skip(1);
-    let Some(arg) = args.next() else {
-        return false;
-    };
-
-    match arg.as_str() {
-        "-h" | "--help" => {
+fn handle_cli_args() -> Result<bool> {
+    match parse_cli_args(env::args().skip(1))? {
+        CliAction::Launch => Ok(false),
+        CliAction::Help => {
             print!("{HELP}");
-            true
+            Ok(true)
         }
-        "-V" | "--version" => {
+        CliAction::Version => {
             println!("ghostpwn {}", env!("CARGO_PKG_VERSION"));
-            true
+            Ok(true)
         }
-        _ => false,
+    }
+}
+
+#[derive(Debug, PartialEq, Eq)]
+enum CliAction {
+    Launch,
+    Help,
+    Version,
+}
+
+fn parse_cli_args(args: impl IntoIterator<Item = String>) -> Result<CliAction> {
+    let args = args.into_iter().collect::<Vec<_>>();
+    match args.as_slice() {
+        [] => Ok(CliAction::Launch),
+        [arg] if matches!(arg.as_str(), "-h" | "--help") => Ok(CliAction::Help),
+        [arg] if matches!(arg.as_str(), "-V" | "--version") => Ok(CliAction::Version),
+        [arg] => Err(anyhow!("unknown argument '{arg}'\n\n{HELP}")),
+        [arg, trailing @ ..] => Err(anyhow!(
+            "unexpected arguments after '{arg}': {}\n\n{HELP}",
+            trailing.join(" ")
+        )),
+    }
+}
+
+#[cfg(test)]
+mod cli_tests {
+    use super::{CliAction, parse_cli_args};
+
+    #[test]
+    fn parses_supported_cli_actions() {
+        assert_eq!(parse_cli_args([]).unwrap(), CliAction::Launch);
+        assert_eq!(
+            parse_cli_args(["--help".to_string()]).unwrap(),
+            CliAction::Help
+        );
+        assert_eq!(
+            parse_cli_args(["-V".to_string()]).unwrap(),
+            CliAction::Version
+        );
+    }
+
+    #[test]
+    fn rejects_unknown_and_trailing_arguments() {
+        let unknown = parse_cli_args(["--verison".to_string()]).unwrap_err();
+        assert!(unknown.to_string().contains("unknown argument '--verison'"));
+
+        let trailing = parse_cli_args(["--help".to_string(), "extra".to_string()]).unwrap_err();
+        assert!(
+            trailing
+                .to_string()
+                .contains("unexpected arguments after '--help': extra")
+        );
     }
 }
