@@ -75,11 +75,12 @@ contains text, GhostPWN pastes it into the input instead. `/paste-image` provide
 a fallback for terminals that intercept `Ctrl+V`, and `/clear-images` removes
 queued clipboard images.
 
-Each message accepts up to 10 images and 15 MiB of image data. Attachments stay
-in conversation history for follow-up questions and are resent to the active
-provider. `/clear` removes them with the rest of the chat. Image data is sent to
-the selected provider, so only attach files you intend to share. Provider and
-model limits still apply, and non-vision models return an error.
+Each message accepts up to 10 images and 15 MiB of image data, with a 60 MiB
+retained-image limit per conversation. Attachments stay in conversation history
+for follow-up questions and are resent to the active provider. `/clear` removes
+them with the rest of the chat. Image data is sent to the selected provider, so
+only attach files you intend to share. Provider and model limits still apply,
+and non-vision models return an error.
 
 ## Contributing
 

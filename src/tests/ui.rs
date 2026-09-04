@@ -4,8 +4,8 @@ use std::sync::Arc;
 
 use super::{
     ModelSelector, ModelSelectorMode, UiRole, UiState, apply_agent_event, build_audit_prompt,
-    display_user_message, handle_submit, oauth_deadline, parse_audit_command, queue_image,
-    resolve_approval, transcript_line_count,
+    display_user_message, handle_submit, oauth_deadline, parse_audit_command, paste_terminal_text,
+    queue_image, resolve_approval, transcript_line_count,
 };
 use crate::agent::Agent;
 use crate::config::{ProviderKeys, ProviderKind};
@@ -50,6 +50,30 @@ fn tab_completes_audit_command() {
     state.apply_completion();
 
     assert_eq!(state.input, "/audit ");
+}
+
+#[test]
+fn terminal_paste_reaches_api_key_input() {
+    let mut state = UiState::new("test".to_string());
+    state.selector = Some(ModelSelector {
+        id: 1,
+        providers: vec![ProviderKind::OpenAi],
+        provider_index: 0,
+        provider_states: HashMap::new(),
+        mode: ModelSelectorMode::ApiKeyInput {
+            provider: ProviderKind::OpenAi,
+            input: String::new(),
+        },
+        status: None,
+        oauth_task: None,
+    });
+
+    paste_terminal_text(&mut state, "secret\r\nkey");
+
+    let ModelSelectorMode::ApiKeyInput { input, .. } = &state.selector.unwrap().mode else {
+        panic!("expected API key input");
+    };
+    assert_eq!(input, "secret key");
 }
 
 #[test]
@@ -142,6 +166,27 @@ async fn clear_images_command_removes_only_pending_images() {
 
     assert!(state.pending_images.is_empty());
     assert_eq!(state.messages.len(), 1);
+}
+
+#[tokio::test]
+async fn audit_command_clears_pending_images() {
+    let workspace = tempfile::tempdir().unwrap();
+    let tools = ToolRuntime::new(workspace.path().to_path_buf()).unwrap();
+    let agent = Arc::new(tokio::sync::Mutex::new(Agent::new(
+        ProviderKind::Ollama,
+        "test".to_string(),
+        ProviderKeys::default(),
+        SecretStore::file_only(workspace.path().join("state.json")),
+        tools,
+    )));
+    let (events, _received) = tokio::sync::mpsc::unbounded_channel();
+    let mut state = UiState::new("test".to_string());
+    state.pending_images.push(test_image("clipboard.png", 4));
+
+    handle_submit("/audit".to_string(), &mut state, &agent, &events).await;
+
+    assert!(state.pending_images.is_empty());
+    assert!(state.is_streaming);
 }
 
 #[test]

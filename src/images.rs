@@ -9,6 +9,7 @@ use crate::tools::ToolRuntime;
 
 pub const MAX_IMAGES_PER_MESSAGE: usize = 10;
 pub const MAX_IMAGE_BYTES_PER_MESSAGE: usize = 15 * 1024 * 1024;
+pub const MAX_RETAINED_IMAGE_BYTES: usize = 60 * 1024 * 1024;
 
 pub enum ClipboardContent {
     Image(ImageAttachment),
@@ -74,6 +75,15 @@ pub async fn prepare_parts(
         return Err(anyhow!("Message is empty"));
     }
     Ok(parts)
+}
+
+pub fn image_bytes(parts: &[ConversationPart]) -> Result<usize> {
+    parts.iter().try_fold(0_usize, |total, part| match part {
+        ConversationPart::Text(_) => Ok(total),
+        ConversationPart::Image(image) => total
+            .checked_add(image.data.len())
+            .ok_or_else(|| anyhow!("Image attachment size overflow")),
+    })
 }
 
 pub async fn read_clipboard() -> Result<ClipboardContent> {
@@ -172,7 +182,7 @@ fn parse_image_references(input: &str) -> Result<Vec<PromptPart>> {
             || input[..index]
                 .chars()
                 .next_back()
-                .is_some_and(char::is_whitespace);
+                .is_some_and(|previous| previous.is_whitespace() || matches!(previous, ',' | ';'));
         if ch != '@' || !at_boundary {
             text.push(ch);
             index += ch.len_utf8();
@@ -189,7 +199,7 @@ fn parse_image_references(input: &str) -> Result<Vec<PromptPart>> {
             (&input[path_start..close], close + 1, true)
         } else {
             let end_offset = input[after_at..]
-                .find(char::is_whitespace)
+                .find(|ch: char| ch.is_whitespace() || matches!(ch, ',' | ';'))
                 .unwrap_or(input.len() - after_at);
             let end = after_at + end_offset;
             (&input[after_at..end], end, false)
@@ -298,6 +308,19 @@ mod tests {
                 PromptPart::ImagePath("one.png".to_string()),
                 PromptPart::Text(" with ".to_string()),
                 PromptPart::ImagePath("screens/two shot.jpg".to_string()),
+            ]
+        );
+    }
+
+    #[test]
+    fn parses_punctuation_separated_image_references() {
+        assert_eq!(
+            parse_image_references("@one.png,@two.jpg;done").unwrap(),
+            vec![
+                PromptPart::ImagePath("one.png".to_string()),
+                PromptPart::Text(",".to_string()),
+                PromptPart::ImagePath("two.jpg".to_string()),
+                PromptPart::Text(";done".to_string()),
             ]
         );
     }

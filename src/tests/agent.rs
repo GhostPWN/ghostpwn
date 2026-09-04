@@ -234,6 +234,40 @@ fn recent_image_parts_survive_history_trimming() {
     assert!(agent.history.last().unwrap().has_images());
 }
 
+#[tokio::test]
+async fn rejects_images_above_conversation_retention_limit() {
+    use std::sync::Arc;
+
+    use crate::images::{MAX_IMAGE_BYTES_PER_MESSAGE, MAX_RETAINED_IMAGE_BYTES};
+    use crate::models::{ImageAttachment, ImageMediaType};
+
+    let mut agent = test_agent(ProviderKind::Google);
+    let data: Arc<[u8]> = Arc::from(vec![0; MAX_IMAGE_BYTES_PER_MESSAGE]);
+    for index in 0..(MAX_RETAINED_IMAGE_BYTES / MAX_IMAGE_BYTES_PER_MESSAGE) {
+        agent
+            .history
+            .push(ConversationMessage::user_with_parts(vec![
+                ConversationPart::Image(ImageAttachment {
+                    media_type: ImageMediaType::Png,
+                    data: Arc::clone(&data),
+                    name: format!("shot-{index}.png"),
+                }),
+            ]));
+    }
+    let next = ImageAttachment {
+        media_type: ImageMediaType::Png,
+        data: Arc::from(*b"x"),
+        name: "next.png".to_string(),
+    };
+
+    let error = agent
+        .prepare_user_input(String::new(), vec![next])
+        .await
+        .unwrap_err();
+
+    assert!(error.to_string().contains("60 MiB retention limit"));
+}
+
 #[test]
 fn connected_copilot_becomes_active_with_default_model() {
     let mut agent = test_agent(ProviderKind::Google);

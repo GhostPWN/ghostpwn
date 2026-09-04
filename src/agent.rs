@@ -6,7 +6,7 @@ use anyhow::Result;
 use tokio::sync::mpsc::UnboundedSender;
 
 use crate::config::{ProviderKeys, ProviderKind};
-use crate::images::prepare_parts;
+use crate::images::{MAX_RETAINED_IMAGE_BYTES, image_bytes, prepare_parts};
 use crate::models::{AgentEvent, ConversationMessage, ImageAttachment, ModelEnvelope, ToolCall};
 use crate::providers::{Provider, build_provider_with_secret_store};
 use crate::secrets::{SETTING_MODEL, SETTING_PROVIDER, SecretMutationReport, SecretStore};
@@ -351,8 +351,24 @@ impl Agent {
         clipboard_images: Vec<ImageAttachment>,
     ) -> impl Future<Output = Result<ConversationMessage>> + use<> {
         let tools = self.tools.clone();
+        let retained_image_bytes = self.history.iter().try_fold(0_usize, |total, message| {
+            image_bytes(&message.content).and_then(|bytes| {
+                total
+                    .checked_add(bytes)
+                    .ok_or_else(|| anyhow::anyhow!("Image attachment size overflow"))
+            })
+        });
         async move {
             let parts = prepare_parts(&tools, &user_text, clipboard_images).await?;
+            let total_image_bytes = retained_image_bytes?
+                .checked_add(image_bytes(&parts)?)
+                .ok_or_else(|| anyhow::anyhow!("Image attachment size overflow"))?;
+            if total_image_bytes > MAX_RETAINED_IMAGE_BYTES {
+                return Err(anyhow::anyhow!(
+                    "Conversation images exceed the {} MiB retention limit; use /clear before attaching more images",
+                    MAX_RETAINED_IMAGE_BYTES / (1024 * 1024)
+                ));
+            }
             Ok(ConversationMessage::user_with_parts(parts))
         }
     }

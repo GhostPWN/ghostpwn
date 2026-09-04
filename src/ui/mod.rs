@@ -532,11 +532,8 @@ where
                         _ => {}
                     }
                 }
-                Event::Paste(text)
-                    if state.selector.is_none() && state.pending_approval.is_none() =>
-                {
-                    state.input.push_str(&normalize_pasted_text(&text));
-                    state.refresh_completions();
+                Event::Paste(text) if state.pending_approval.is_none() => {
+                    paste_terminal_text(state, &text);
                 }
                 _ => {}
             }
@@ -544,6 +541,19 @@ where
     }
 
     Ok(())
+}
+
+fn paste_terminal_text(state: &mut UiState, text: &str) {
+    let text = normalize_pasted_text(text);
+    if let Some(selector) = state.selector.as_mut() {
+        if let ModelSelectorMode::ApiKeyInput { input, .. } = &mut selector.mode {
+            input.push_str(&text);
+        }
+        return;
+    }
+
+    state.input.push_str(&text);
+    state.refresh_completions();
 }
 
 async fn handle_submit(
@@ -631,6 +641,7 @@ async fn handle_submit(
         let label = format!("/audit{flag} {target}");
         state.push_message(UiRole::User, label.trim().to_string());
         state.input.clear();
+        state.pending_images.clear();
         state.is_streaming = true;
         state.streaming_content.clear();
         state.tool_status.clear();
