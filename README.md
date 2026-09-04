@@ -57,6 +57,30 @@ ghostpwn
 See the [documentation](https://ghostpwn.github.io/ghostpwn/docs/) for detailed
 requirements, configuration, commands, and architecture.
 
+## Image input
+
+Vision-capable models can analyze PNG, JPEG, and WebP files from the current
+workspace. Reference paths directly in a prompt:
+
+```text
+Review @screenshots/login.png for security issues
+Compare @before.png with @"screenshots/after login.webp"
+```
+
+Use `\@` when an image-like reference should remain literal. Paths outside the
+workspace, symlinks, remote URLs, and other image formats are rejected.
+
+Press `Ctrl+V` to attach an image from the system clipboard. If the clipboard
+contains text, GhostPWN pastes it into the input instead. `/paste-image` provides
+a fallback for terminals that intercept `Ctrl+V`, and `/clear-images` removes
+queued clipboard images.
+
+Each message accepts up to 10 images and 15 MiB of image data. Attachments stay
+in conversation history for follow-up questions and are resent to the active
+provider. `/clear` removes them with the rest of the chat. Image data is sent to
+the selected provider, so only attach files you intend to share. Provider and
+model limits still apply, and non-vision models return an error.
+
 ## Contributing
 
 Contributions are welcome. Open an issue before submitting a pull request.

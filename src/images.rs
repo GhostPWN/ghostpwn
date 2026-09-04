@@ -375,6 +375,64 @@ mod tests {
         assert!(error.to_string().contains("outside workspace"));
     }
 
+    #[tokio::test]
+    async fn rejects_parent_traversal_missing_files_and_directories() {
+        let workspace = tempdir().unwrap();
+        fs::create_dir(workspace.path().join("folder.png")).unwrap();
+        let tools = ToolRuntime::new(workspace.path().to_path_buf()).unwrap();
+
+        assert!(
+            prepare_parts(&tools, "@../outside.png", Vec::new())
+                .await
+                .is_err()
+        );
+        assert!(
+            prepare_parts(&tools, "@missing.png", Vec::new())
+                .await
+                .is_err()
+        );
+        assert!(
+            prepare_parts(&tools, "@folder.png", Vec::new())
+                .await
+                .is_err()
+        );
+    }
+
+    #[tokio::test]
+    async fn rejects_oversized_image_data() {
+        let workspace = tempdir().unwrap();
+        let image_path = workspace.path().join("large.png");
+        let file = fs::File::create(&image_path).unwrap();
+        file.set_len((MAX_IMAGE_BYTES_PER_MESSAGE + 1) as u64)
+            .unwrap();
+        let tools = ToolRuntime::new(workspace.path().to_path_buf()).unwrap();
+
+        let error = prepare_parts(&tools, "@large.png", Vec::new())
+            .await
+            .unwrap_err();
+
+        assert!(error.to_string().contains("attachment limit"));
+    }
+
+    #[tokio::test]
+    async fn loads_unicode_image_paths() {
+        let workspace = tempdir().unwrap();
+        fs::write(
+            workspace.path().join("écran test.webp"),
+            b"RIFFxxxxWEBPrest",
+        )
+        .unwrap();
+        let tools = ToolRuntime::new(workspace.path().to_path_buf()).unwrap();
+
+        let parts = prepare_parts(&tools, "inspect @\"écran test.webp\"", Vec::new())
+            .await
+            .unwrap();
+
+        assert!(
+            matches!(&parts[1], ConversationPart::Image(image) if image.name == "écran test.webp")
+        );
+    }
+
     #[cfg(unix)]
     #[tokio::test]
     async fn rejects_symlinked_images() {

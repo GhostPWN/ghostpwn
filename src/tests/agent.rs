@@ -206,6 +206,35 @@ fn history_is_bounded_to_recent_messages() {
 }
 
 #[test]
+fn recent_image_parts_survive_history_trimming() {
+    use std::sync::Arc;
+
+    use crate::models::{ImageAttachment, ImageMediaType};
+
+    let mut agent = test_agent(ProviderKind::Google);
+    for index in 0..100 {
+        agent
+            .history
+            .push(ConversationMessage::user(index.to_string()));
+    }
+    agent
+        .history
+        .push(ConversationMessage::user_with_parts(vec![
+            ConversationPart::Text("inspect".to_string()),
+            ConversationPart::Image(ImageAttachment {
+                media_type: ImageMediaType::Png,
+                data: Arc::from(*b"png"),
+                name: "shot.png".to_string(),
+            }),
+        ]));
+
+    agent.trim_history();
+
+    assert_eq!(agent.history.len(), 100);
+    assert!(agent.history.last().unwrap().has_images());
+}
+
+#[test]
 fn connected_copilot_becomes_active_with_default_model() {
     let mut agent = test_agent(ProviderKind::Google);
 
