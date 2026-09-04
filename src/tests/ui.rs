@@ -1,12 +1,27 @@
 use std::collections::HashMap;
 use std::path::Path;
+use std::sync::Arc;
 
 use super::{
     ModelSelector, ModelSelectorMode, UiRole, UiState, apply_agent_event, build_audit_prompt,
-    oauth_deadline, parse_audit_command, resolve_approval, transcript_line_count,
+    display_user_message, handle_submit, oauth_deadline, parse_audit_command, queue_image,
+    resolve_approval, transcript_line_count,
 };
-use crate::config::ProviderKind;
-use crate::models::AgentEvent;
+use crate::agent::Agent;
+use crate::config::{ProviderKeys, ProviderKind};
+use crate::models::{
+    AgentEvent, ConversationMessage, ConversationPart, ImageAttachment, ImageMediaType,
+};
+use crate::secrets::SecretStore;
+use crate::tools::ToolRuntime;
+
+fn test_image(name: &str, bytes: usize) -> ImageAttachment {
+    ImageAttachment {
+        media_type: ImageMediaType::Png,
+        data: Arc::from(vec![0; bytes]),
+        name: name.to_string(),
+    }
+}
 
 #[test]
 fn approval_event_waits_for_user_response() {
@@ -67,6 +82,66 @@ fn transcript_count_includes_wrapped_display_lines() {
     state.push_message(UiRole::User, "one two three four five six".to_string());
 
     assert!(transcript_line_count(&state, 8) > transcript_line_count(&state, 80));
+}
+
+#[test]
+fn queued_images_are_counted_and_rendered_without_data() {
+    let mut state = UiState::new("test".to_string());
+    queue_image(&mut state, test_image("clipboard.png", 4)).unwrap();
+    assert_eq!(state.pending_images.len(), 1);
+
+    let message = ConversationMessage::user_with_parts(vec![
+        ConversationPart::Text("inspect ".to_string()),
+        ConversationPart::Image(test_image("shot.png", 4)),
+    ]);
+    let display = display_user_message(&message);
+    assert_eq!(display, "inspect [image: shot.png]");
+    assert!(!display.contains("AAAA"));
+}
+
+#[tokio::test]
+async fn invalid_image_submission_preserves_input_and_queued_images() {
+    let workspace = tempfile::tempdir().unwrap();
+    let tools = ToolRuntime::new(workspace.path().to_path_buf()).unwrap();
+    let agent = Arc::new(tokio::sync::Mutex::new(Agent::new(
+        ProviderKind::Ollama,
+        "test".to_string(),
+        ProviderKeys::default(),
+        SecretStore::file_only(workspace.path().join("state.json")),
+        tools,
+    )));
+    let (events, _) = tokio::sync::mpsc::unbounded_channel();
+    let mut state = UiState::new("test".to_string());
+    state.input = "inspect @missing.png".to_string();
+    state.pending_images.push(test_image("clipboard.png", 4));
+
+    handle_submit(state.input.clone(), &mut state, &agent, &events).await;
+
+    assert_eq!(state.input, "inspect @missing.png");
+    assert_eq!(state.pending_images.len(), 1);
+    assert_eq!(state.messages.last().unwrap().role, UiRole::Error);
+}
+
+#[tokio::test]
+async fn clear_images_command_removes_only_pending_images() {
+    let workspace = tempfile::tempdir().unwrap();
+    let tools = ToolRuntime::new(workspace.path().to_path_buf()).unwrap();
+    let agent = Arc::new(tokio::sync::Mutex::new(Agent::new(
+        ProviderKind::Ollama,
+        "test".to_string(),
+        ProviderKeys::default(),
+        SecretStore::file_only(workspace.path().join("state.json")),
+        tools,
+    )));
+    let (events, _) = tokio::sync::mpsc::unbounded_channel();
+    let mut state = UiState::new("test".to_string());
+    state.pending_images.push(test_image("clipboard.png", 4));
+    state.push_message(UiRole::User, "keep".to_string());
+
+    handle_submit("/clear-images".to_string(), &mut state, &agent, &events).await;
+
+    assert!(state.pending_images.is_empty());
+    assert_eq!(state.messages.len(), 1);
 }
 
 #[test]

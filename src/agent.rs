@@ -1,4 +1,5 @@
 use std::collections::HashSet;
+use std::future::Future;
 use std::path::{Path, PathBuf};
 
 use anyhow::Result;
@@ -343,23 +344,25 @@ impl Agent {
         }
     }
 
-    pub async fn handle_user_input(
-        &mut self,
+    pub fn prepare_user_input(
+        &self,
         user_text: String,
-        events: UnboundedSender<AgentEvent>,
-    ) -> Result<()> {
-        let message = self.prepare_user_input(&user_text, Vec::new()).await?;
-        self.handle_input(message, events, None, false, MAX_STEPS)
-            .await
+        clipboard_images: Vec<ImageAttachment>,
+    ) -> impl Future<Output = Result<ConversationMessage>> + use<> {
+        let tools = self.tools.clone();
+        async move {
+            let parts = prepare_parts(&tools, &user_text, clipboard_images).await?;
+            Ok(ConversationMessage::user_with_parts(parts))
+        }
     }
 
-    pub async fn prepare_user_input(
-        &self,
-        user_text: &str,
-        clipboard_images: Vec<ImageAttachment>,
-    ) -> Result<ConversationMessage> {
-        let parts = prepare_parts(&self.tools, user_text, clipboard_images).await?;
-        Ok(ConversationMessage::user_with_parts(parts))
+    pub async fn handle_user_message(
+        &mut self,
+        message: ConversationMessage,
+        events: UnboundedSender<AgentEvent>,
+    ) -> Result<()> {
+        self.handle_input(message, events, None, false, MAX_STEPS)
+            .await
     }
 
     pub fn resolve_audit_scope(&self, target: &str) -> Result<(PathBuf, String)> {

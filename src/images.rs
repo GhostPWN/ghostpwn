@@ -2,12 +2,18 @@ use std::path::Path;
 use std::sync::Arc;
 
 use anyhow::{Result, anyhow};
+use arboard::Clipboard;
 
 use crate::models::{ConversationPart, ImageAttachment, ImageMediaType};
 use crate::tools::ToolRuntime;
 
 pub const MAX_IMAGES_PER_MESSAGE: usize = 10;
 pub const MAX_IMAGE_BYTES_PER_MESSAGE: usize = 15 * 1024 * 1024;
+
+pub enum ClipboardContent {
+    Image(ImageAttachment),
+    Text(String),
+}
 
 #[derive(Debug, PartialEq, Eq)]
 enum PromptPart {
@@ -68,6 +74,75 @@ pub async fn prepare_parts(
         return Err(anyhow!("Message is empty"));
     }
     Ok(parts)
+}
+
+pub async fn read_clipboard() -> Result<ClipboardContent> {
+    tokio::task::spawn_blocking(|| {
+        let mut clipboard =
+            Clipboard::new().map_err(|err| anyhow!("Clipboard unavailable: {err}"))?;
+        if let Ok(image) = clipboard.get_image() {
+            return clipboard_image_from_rgba(image.width, image.height, image.bytes.as_ref())
+                .map(ClipboardContent::Image);
+        }
+        let text = clipboard
+            .get_text()
+            .map_err(|_| anyhow!("Clipboard contains neither an image nor text"))?;
+        Ok(ClipboardContent::Text(normalize_pasted_text(&text)))
+    })
+    .await
+    .map_err(|err| anyhow!("Clipboard read task failed: {err}"))?
+}
+
+pub async fn read_clipboard_image() -> Result<ImageAttachment> {
+    tokio::task::spawn_blocking(|| {
+        let mut clipboard =
+            Clipboard::new().map_err(|err| anyhow!("Clipboard unavailable: {err}"))?;
+        let image = clipboard
+            .get_image()
+            .map_err(|_| anyhow!("Clipboard does not contain an image"))?;
+        clipboard_image_from_rgba(image.width, image.height, image.bytes.as_ref())
+    })
+    .await
+    .map_err(|err| anyhow!("Clipboard read task failed: {err}"))?
+}
+
+fn clipboard_image_from_rgba(width: usize, height: usize, rgba: &[u8]) -> Result<ImageAttachment> {
+    let expected = width
+        .checked_mul(height)
+        .and_then(|pixels| pixels.checked_mul(4))
+        .ok_or_else(|| anyhow!("Clipboard image dimensions overflow"))?;
+    if width == 0 || height == 0 || rgba.len() != expected {
+        return Err(anyhow!("Clipboard image has invalid RGBA dimensions"));
+    }
+    let width = u32::try_from(width).map_err(|_| anyhow!("Clipboard image width is too large"))?;
+    let height =
+        u32::try_from(height).map_err(|_| anyhow!("Clipboard image height is too large"))?;
+
+    let mut encoded = Vec::new();
+    {
+        let mut encoder = png::Encoder::new(&mut encoded, width, height);
+        encoder.set_color(png::ColorType::Rgba);
+        encoder.set_depth(png::BitDepth::Eight);
+        let mut writer = encoder
+            .write_header()
+            .map_err(|err| anyhow!("Failed to encode clipboard PNG: {err}"))?;
+        writer
+            .write_image_data(rgba)
+            .map_err(|err| anyhow!("Failed to encode clipboard PNG: {err}"))?;
+    }
+    if encoded.len() > MAX_IMAGE_BYTES_PER_MESSAGE {
+        return Err(image_size_error());
+    }
+
+    Ok(ImageAttachment {
+        media_type: ImageMediaType::Png,
+        data: Arc::from(encoded),
+        name: "clipboard.png".to_string(),
+    })
+}
+
+pub fn normalize_pasted_text(text: &str) -> String {
+    text.replace("\r\n", " ").replace(['\r', '\n'], " ")
 }
 
 fn image_size_error() -> anyhow::Error {
@@ -250,6 +325,24 @@ mod tests {
             ImageMediaType::Png
         );
         assert!(detect_image_type(Path::new("shot.jpg"), b"\x89PNG\r\n\x1a\nrest").is_err());
+    }
+
+    #[test]
+    fn encodes_valid_clipboard_rgba_as_png() {
+        let image = clipboard_image_from_rgba(1, 1, &[255, 0, 0, 255]).unwrap();
+        assert_eq!(image.media_type, ImageMediaType::Png);
+        assert!(image.data.starts_with(b"\x89PNG\r\n\x1a\n"));
+    }
+
+    #[test]
+    fn rejects_invalid_clipboard_dimensions() {
+        assert!(clipboard_image_from_rgba(2, 2, &[0; 4]).is_err());
+        assert!(clipboard_image_from_rgba(usize::MAX, 2, &[]).is_err());
+    }
+
+    #[test]
+    fn normalizes_multiline_clipboard_text() {
+        assert_eq!(normalize_pasted_text("one\r\ntwo\nthree"), "one two three");
     }
 
     #[tokio::test]

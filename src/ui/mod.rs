@@ -9,8 +9,8 @@ use std::time::Duration;
 use anyhow::Result;
 use crossterm::cursor::Show;
 use crossterm::event::{
-    self, DisableMouseCapture, EnableMouseCapture, Event, KeyCode, KeyEventKind, KeyModifiers,
-    MouseEventKind,
+    self, DisableBracketedPaste, DisableMouseCapture, EnableBracketedPaste, EnableMouseCapture,
+    Event, KeyCode, KeyEventKind, KeyModifiers, MouseEventKind,
 };
 use crossterm::execute;
 use crossterm::terminal::{
@@ -25,7 +25,11 @@ use tokio::sync::oneshot;
 
 use crate::agent::Agent;
 use crate::config::ProviderKind;
-use crate::models::AgentEvent;
+use crate::images::{
+    ClipboardContent, MAX_IMAGE_BYTES_PER_MESSAGE, MAX_IMAGES_PER_MESSAGE, normalize_pasted_text,
+    read_clipboard, read_clipboard_image,
+};
+use crate::models::{AgentEvent, ConversationMessage, ConversationPart, ImageAttachment};
 use crate::providers::{codex, copilot};
 
 pub(super) mod palette {
@@ -73,6 +77,14 @@ const COMMANDS: &[CommandSpec] = &[
     CommandSpec {
         name: "/clear",
         description: "Clear current chat",
+    },
+    CommandSpec {
+        name: "/paste-image",
+        description: "Attach image from clipboard",
+    },
+    CommandSpec {
+        name: "/clear-images",
+        description: "Remove queued clipboard images",
     },
     CommandSpec {
         name: "/exit",
@@ -144,6 +156,7 @@ struct PendingApproval {
 struct UiState {
     provider_name: String,
     input: String,
+    pending_images: Vec<ImageAttachment>,
     messages: Vec<UiMessage>,
     streaming_content: String,
     tool_status: String,
@@ -164,6 +177,7 @@ impl UiState {
         Self {
             provider_name,
             input: String::new(),
+            pending_images: Vec::new(),
             messages: Vec::new(),
             streaming_content: String::new(),
             tool_status: String::new(),
@@ -338,7 +352,12 @@ impl TerminalSession {
     fn enter() -> Result<Self> {
         enable_raw_mode()?;
         let mut stdout = io::stdout();
-        if let Err(error) = execute!(stdout, EnterAlternateScreen, EnableMouseCapture) {
+        if let Err(error) = execute!(
+            stdout,
+            EnterAlternateScreen,
+            EnableMouseCapture,
+            EnableBracketedPaste
+        ) {
             let _ = disable_raw_mode();
             return Err(error.into());
         }
@@ -348,7 +367,13 @@ impl TerminalSession {
     fn restore(&mut self) -> Result<()> {
         let raw_result = disable_raw_mode();
         let mut stdout = io::stdout();
-        let screen_result = execute!(stdout, DisableMouseCapture, LeaveAlternateScreen, Show);
+        let screen_result = execute!(
+            stdout,
+            DisableBracketedPaste,
+            DisableMouseCapture,
+            LeaveAlternateScreen,
+            Show
+        );
         if raw_result.is_ok() && screen_result.is_ok() {
             self.active = false;
         }
@@ -366,6 +391,7 @@ impl Drop for TerminalSession {
         let _ = disable_raw_mode();
         let _ = execute!(
             io::stdout(),
+            DisableBracketedPaste,
             DisableMouseCapture,
             LeaveAlternateScreen,
             Show
@@ -444,8 +470,6 @@ where
                     match key.code {
                         KeyCode::Enter => {
                             let text = state.input.trim().to_string();
-                            state.input.clear();
-                            state.refresh_completions();
                             handle_submit(text, state, agent, event_tx).await;
                         }
                         KeyCode::Backspace => {
@@ -479,6 +503,9 @@ where
                                 state.refresh_completions();
                             }
                         }
+                        KeyCode::Char('v') if key.modifiers.contains(KeyModifiers::CONTROL) => {
+                            paste_clipboard_content(state).await;
+                        }
                         KeyCode::Char(ch)
                             if !key.modifiers.contains(KeyModifiers::CONTROL)
                                 && !key.modifiers.contains(KeyModifiers::ALT) =>
@@ -505,6 +532,12 @@ where
                         _ => {}
                     }
                 }
+                Event::Paste(text)
+                    if state.selector.is_none() && state.pending_approval.is_none() =>
+                {
+                    state.input.push_str(&normalize_pasted_text(&text));
+                    state.refresh_completions();
+                }
                 _ => {}
             }
         }
@@ -519,7 +552,7 @@ async fn handle_submit(
     agent: &Arc<Mutex<Agent>>,
     event_tx: &UnboundedSender<AgentEvent>,
 ) {
-    if text.is_empty() || state.is_streaming {
+    if (text.is_empty() && state.pending_images.is_empty()) || state.is_streaming {
         return;
     }
 
@@ -534,6 +567,8 @@ async fn handle_submit(
         state.tool_status.clear();
         state.scroll_offset = 0;
         state.auto_scroll = true;
+        state.input.clear();
+        state.pending_images.clear();
 
         let mut locked = agent.lock().await;
         locked.clear_history();
@@ -541,6 +576,7 @@ async fn handle_submit(
     }
 
     if text == "/model" {
+        state.input.clear();
         open_model_selector(state, agent, event_tx).await;
         return;
     }
@@ -552,6 +588,29 @@ async fn handle_submit(
             .collect::<Vec<String>>()
             .join("\n");
         state.push_message(UiRole::Assistant, format!("Commands:\n{}", help));
+        state.input.clear();
+        state.refresh_completions();
+        return;
+    }
+
+    if text == "/paste-image" {
+        match read_clipboard_image().await {
+            Ok(image) => match queue_image(state, image) {
+                Ok(()) => {
+                    state.input.clear();
+                    state.refresh_completions();
+                }
+                Err(error) => state.push_message(UiRole::Error, error.to_string()),
+            },
+            Err(error) => state.push_message(UiRole::Error, error.to_string()),
+        }
+        return;
+    }
+
+    if text == "/clear-images" {
+        state.pending_images.clear();
+        state.input.clear();
+        state.refresh_completions();
         return;
     }
 
@@ -571,6 +630,7 @@ async fn handle_submit(
         let flag = if apply_fixes { " --fix" } else { "" };
         let label = format!("/audit{flag} {target}");
         state.push_message(UiRole::User, label.trim().to_string());
+        state.input.clear();
         state.is_streaming = true;
         state.streaming_content.clear();
         state.tool_status.clear();
@@ -598,7 +658,22 @@ async fn handle_submit(
         return;
     }
 
-    state.push_message(UiRole::User, text.clone());
+    let prepare = {
+        let locked = agent.lock().await;
+        locked.prepare_user_input(text, state.pending_images.clone())
+    };
+    let message = match prepare.await {
+        Ok(message) => message,
+        Err(error) => {
+            state.push_message(UiRole::Error, error.to_string());
+            return;
+        }
+    };
+
+    state.push_message(UiRole::User, display_user_message(&message));
+    state.input.clear();
+    state.pending_images.clear();
+    state.refresh_completions();
     state.is_streaming = true;
     state.streaming_content.clear();
     state.tool_status.clear();
@@ -608,11 +683,62 @@ async fn handle_submit(
 
     tokio::spawn(async move {
         let mut locked = handle.lock().await;
-        if let Err(err) = locked.handle_user_input(text, tx.clone()).await {
+        if let Err(err) = locked.handle_user_message(message, tx.clone()).await {
             let _ = tx.send(AgentEvent::Error(err.to_string()));
             let _ = tx.send(AgentEvent::Done);
         }
     });
+}
+
+async fn paste_clipboard_content(state: &mut UiState) {
+    match read_clipboard().await {
+        Ok(ClipboardContent::Image(image)) => {
+            if let Err(error) = queue_image(state, image) {
+                state.push_message(UiRole::Error, error.to_string());
+            }
+        }
+        Ok(ClipboardContent::Text(text)) => {
+            state.input.push_str(&text);
+            state.refresh_completions();
+        }
+        Err(error) => state.push_message(UiRole::Error, error.to_string()),
+    }
+}
+
+fn queue_image(state: &mut UiState, image: ImageAttachment) -> Result<()> {
+    if state.pending_images.len() >= MAX_IMAGES_PER_MESSAGE {
+        return Err(anyhow::anyhow!(
+            "A message can contain at most {MAX_IMAGES_PER_MESSAGE} images"
+        ));
+    }
+    let total = state
+        .pending_images
+        .iter()
+        .try_fold(image.data.len(), |total, pending| {
+            total.checked_add(pending.data.len())
+        })
+        .ok_or_else(|| anyhow::anyhow!("Image attachment size overflow"))?;
+    if total > MAX_IMAGE_BYTES_PER_MESSAGE {
+        return Err(anyhow::anyhow!(
+            "Image attachments exceed the {} MiB per-message limit",
+            MAX_IMAGE_BYTES_PER_MESSAGE / (1024 * 1024)
+        ));
+    }
+    state.pending_images.push(image);
+    Ok(())
+}
+
+fn display_user_message(message: &ConversationMessage) -> String {
+    let mut display = String::new();
+    for part in &message.content {
+        match part {
+            ConversationPart::Text(text) => display.push_str(text),
+            ConversationPart::Image(image) => {
+                display.push_str(&format!("[image: {}]", image.name));
+            }
+        }
+    }
+    display.trim().to_string()
 }
 
 fn parse_audit_command(text: &str) -> Option<(bool, &str)> {
@@ -1510,6 +1636,26 @@ fn render_status(frame: &mut Frame, area: Rect, state: &UiState) {
         state.provider_name.clone(),
         Style::default().fg(palette::ION).bold(),
     ));
+    if !state.pending_images.is_empty() {
+        let bytes = state
+            .pending_images
+            .iter()
+            .map(|image| image.data.len())
+            .sum::<usize>();
+        left_spans.push(Span::styled(
+            format!(
+                " · {} image{} · {:.1} MiB",
+                state.pending_images.len(),
+                if state.pending_images.len() == 1 {
+                    ""
+                } else {
+                    "s"
+                },
+                bytes as f64 / (1024.0 * 1024.0)
+            ),
+            Style::default().fg(palette::ASH).dim(),
+        ));
+    }
 
     let left = Line::from(left_spans);
 

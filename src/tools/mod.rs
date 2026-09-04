@@ -145,6 +145,7 @@ pub fn audit_tool_allowed(name: &str, allow_mutations: bool) -> bool {
         )
 }
 
+#[derive(Clone)]
 pub struct ToolRuntime {
     workspace_root: PathBuf,
     workspace_dir: Arc<Dir>,
