@@ -4,9 +4,9 @@ use reqwest::Client;
 use reqwest::header::CONTENT_TYPE;
 use serde_json::{Value, json};
 
-use crate::models::{ConversationMessage, MessageRole};
+use crate::models::{ConversationMessage, ConversationPart, MessageRole};
 use crate::providers::sse::{consume_sse, extract_error_message};
-use crate::providers::{Provider, provider_http_client};
+use crate::providers::{Provider, image_base64, message_text, provider_http_client, request_error};
 
 pub struct AnthropicProvider {
     api_key: String,
@@ -100,7 +100,7 @@ impl Provider for AnthropicProvider {
         if !response.status().is_success() {
             let status = response.status();
             let body = response.text().await.unwrap_or_default();
-            return Err(anyhow!("Anthropic API error {}: {}", status, body));
+            return Err(request_error("Anthropic API", status, &body, messages));
         }
 
         let is_sse = response
@@ -171,17 +171,28 @@ fn map_messages(history: &[ConversationMessage]) -> Vec<Value> {
     history
         .iter()
         .map(|m| match m.role {
-            MessageRole::User => json!({
+            MessageRole::User if m.has_images() => json!({
                 "role": "user",
-                "content": m.content,
+                "content": m.content.iter().map(|part| match part {
+                    ConversationPart::Text(text) => json!({ "type": "text", "text": text }),
+                    ConversationPart::Image(image) => json!({
+                        "type": "image",
+                        "source": {
+                            "type": "base64",
+                            "media_type": image.media_type.as_str(),
+                            "data": image_base64(image),
+                        }
+                    }),
+                }).collect::<Vec<_>>(),
             }),
+            MessageRole::User => json!({ "role": "user", "content": message_text(m) }),
             MessageRole::Assistant => json!({
                 "role": "assistant",
-                "content": m.content,
+                "content": message_text(m),
             }),
             MessageRole::Tool => json!({
                 "role": "user",
-                "content": format!("[tool] {}", m.content),
+                "content": format!("[tool] {}", message_text(m)),
             }),
         })
         .collect()

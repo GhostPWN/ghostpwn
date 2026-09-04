@@ -1415,6 +1415,48 @@ impl ToolRuntime {
         .map_err(|err| anyhow!("Workspace file read task failed: {err}"))?
     }
 
+    pub async fn read_workspace_binary(
+        &self,
+        input: &str,
+        max_bytes: usize,
+    ) -> Result<(PathBuf, Vec<u8>)> {
+        let path = self.workspace_relative_path(input)?;
+        let workspace_dir = Arc::clone(&self.workspace_dir);
+        let read_path = path.clone();
+        let bytes = tokio::task::spawn_blocking(move || {
+            let (parent, file_name) =
+                Self::open_workspace_parent(&workspace_dir, &read_path, false)?;
+            let metadata = parent.symlink_metadata(&file_name)?;
+            if !metadata.is_file() || metadata.file_type().is_symlink() {
+                return Err(anyhow!(
+                    "Path '{}' is not a regular file",
+                    read_path.display()
+                ));
+            }
+
+            let mut options = OpenOptions::new();
+            options.read(true).follow(FollowSymlinks::No);
+            let mut file = parent.open_with(file_name, &options)?;
+            let limit = u64::try_from(max_bytes)
+                .map_err(|_| anyhow!("Binary file size limit is too large"))?;
+            let mut bytes = Vec::new();
+            std::io::Read::by_ref(&mut file)
+                .take(limit.saturating_add(1))
+                .read_to_end(&mut bytes)?;
+            if bytes.len() > max_bytes {
+                return Err(anyhow!(
+                    "File '{}' exceeds the remaining image attachment limit",
+                    read_path.display()
+                ));
+            }
+            Ok(bytes)
+        })
+        .await
+        .map_err(|err| anyhow!("Workspace binary read task failed: {err}"))??;
+
+        Ok((path, bytes))
+    }
+
     fn write_workspace_file_blocking(
         workspace_dir: &Dir,
         path: &Path,

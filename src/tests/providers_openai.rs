@@ -1,6 +1,9 @@
 use serde_json::json;
 
-use super::{extract_response_text, parse_chat_models};
+use std::sync::Arc;
+
+use super::{extract_response_text, map_messages, parse_chat_models};
+use crate::models::{ConversationMessage, ConversationPart, ImageAttachment, ImageMediaType};
 use crate::providers::sse::extract_error_message;
 
 #[test]
@@ -58,5 +61,28 @@ fn extracts_stream_error_events() {
             "delta": "ok"
         }))
         .is_none()
+    );
+}
+
+#[test]
+fn maps_image_inputs_for_responses_api() {
+    let messages = vec![ConversationMessage::user_with_parts(vec![
+        ConversationPart::Text("inspect".to_string()),
+        ConversationPart::Image(ImageAttachment {
+            media_type: ImageMediaType::Png,
+            data: Arc::from(*b"png"),
+            name: "shot.png".to_string(),
+        }),
+    ])];
+
+    assert_eq!(
+        map_messages(&messages),
+        vec![json!({
+            "role": "user",
+            "content": [
+                { "type": "input_text", "text": "inspect" },
+                { "type": "input_image", "image_url": "data:image/png;base64,cG5n" }
+            ]
+        })]
     );
 }

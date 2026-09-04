@@ -4,9 +4,11 @@ use reqwest::Client;
 use reqwest::header::CONTENT_TYPE;
 use serde_json::{Value, json};
 
-use crate::models::{ConversationMessage, MessageRole};
+use crate::models::{ConversationMessage, ConversationPart, MessageRole};
 use crate::providers::sse::{consume_sse, extract_error_message};
-use crate::providers::{Provider, provider_http_client};
+use crate::providers::{
+    Provider, image_data_url, message_text, provider_http_client, request_error,
+};
 
 pub struct OpenAiProvider {
     api_key: String,
@@ -73,7 +75,12 @@ impl Provider for OpenAiProvider {
         if !response.status().is_success() {
             let status = response.status();
             let body = response.text().await.unwrap_or_default();
-            return Err(anyhow!("OpenAI Responses API error {}: {}", status, body));
+            return Err(request_error(
+                "OpenAI Responses API",
+                status,
+                &body,
+                messages,
+            ));
         }
 
         let is_sse = response
@@ -127,13 +134,24 @@ fn map_messages(history: &[ConversationMessage]) -> Vec<Value> {
     history
         .iter()
         .map(|message| match message.role {
-            MessageRole::User => json!({ "role": "user", "content": message.content }),
-            MessageRole::Assistant => {
-                json!({ "role": "assistant", "content": message.content })
-            }
+            MessageRole::User if message.has_images() => json!({
+                "role": "user",
+                "content": message.content.iter().map(|part| match part {
+                    ConversationPart::Text(text) => json!({ "type": "input_text", "text": text }),
+                    ConversationPart::Image(image) => json!({
+                        "type": "input_image",
+                        "image_url": image_data_url(image),
+                    }),
+                }).collect::<Vec<_>>(),
+            }),
+            MessageRole::User => json!({ "role": "user", "content": message_text(message) }),
+            MessageRole::Assistant => json!({
+                "role": "assistant",
+                "content": message_text(message),
+            }),
             MessageRole::Tool => json!({
                 "role": "user",
-                "content": format!("[tool] {}", message.content),
+                "content": format!("[tool] {}", message_text(message)),
             }),
         })
         .collect()

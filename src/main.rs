@@ -1,5 +1,6 @@
 mod agent;
 mod config;
+mod images;
 mod models;
 mod providers;
 mod secrets;

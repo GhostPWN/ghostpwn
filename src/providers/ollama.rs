@@ -4,9 +4,11 @@ use futures_util::{StreamExt, stream};
 use reqwest::Client;
 use serde_json::Value;
 
-use crate::models::{ConversationMessage, MessageRole};
+use crate::models::{ConversationMessage, ConversationPart, MessageRole};
 use crate::providers::sse::consume_sse;
-use crate::providers::{Provider, provider_http_client};
+use crate::providers::{
+    Provider, image_data_url, message_text, provider_http_client, request_error,
+};
 
 const MODEL_PROBE_CONCURRENCY: usize = 8;
 
@@ -105,7 +107,7 @@ impl Provider for OllamaProvider {
         if !response.status().is_success() {
             let status = response.status();
             let body = response.text().await.unwrap_or_default();
-            return Err(anyhow!("Ollama API error {}: {}", status, body));
+            return Err(request_error("Ollama API", status, &body, messages));
         }
 
         let mut full = String::new();
@@ -168,15 +170,26 @@ fn map_messages(system: &str, history: &[ConversationMessage]) -> Vec<Value> {
 
     for m in history {
         match m.role {
-            MessageRole::User => {
-                out.push(serde_json::json!({ "role": "user", "content": m.content }))
-            }
+            MessageRole::User if m.has_images() => out.push(serde_json::json!({
+                "role": "user",
+                "content": m.content.iter().map(|part| match part {
+                    ConversationPart::Text(text) => serde_json::json!({ "type": "text", "text": text }),
+                    ConversationPart::Image(image) => serde_json::json!({
+                        "type": "image_url",
+                        "image_url": image_data_url(image),
+                    }),
+                }).collect::<Vec<_>>(),
+            })),
+            MessageRole::User => out.push(serde_json::json!({
+                "role": "user",
+                "content": message_text(m),
+            })),
             MessageRole::Assistant => {
-                out.push(serde_json::json!({ "role": "assistant", "content": m.content }))
+                out.push(serde_json::json!({ "role": "assistant", "content": message_text(m) }))
             }
             MessageRole::Tool => out.push(serde_json::json!({
                 "role": "user",
-                "content": format!("[tool] {}", m.content),
+                "content": format!("[tool] {}", message_text(m)),
             })),
         }
     }

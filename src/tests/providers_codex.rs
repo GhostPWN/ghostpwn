@@ -5,9 +5,10 @@ use serde_json::json;
 use super::{
     BrowserAuth, BrowserCode, CodexCredentials, credentials_from_device_response,
     extract_account_id, extract_response_text, extract_response_text_from_body,
-    extract_stream_delta, parse_codex_models, parse_credentials, persist_credentials,
+    extract_stream_delta, map_messages, parse_codex_models, parse_credentials, persist_credentials,
     pkce_challenge, serialize_credentials,
 };
+use crate::models::{ConversationMessage, ConversationPart, ImageAttachment, ImageMediaType};
 use crate::secrets::SecretStore;
 
 #[test]
@@ -25,6 +26,26 @@ fn codex_credentials_debug_redacts_tokens() {
     assert!(!output.contains("access-secret-value"));
     assert!(output.contains("expires_at: 42"));
     assert!(output.contains("account-id"));
+}
+
+#[test]
+fn maps_image_inputs_for_codex_responses() {
+    let messages = vec![ConversationMessage::user_with_parts(vec![
+        ConversationPart::Text("inspect".to_string()),
+        ConversationPart::Image(ImageAttachment {
+            media_type: ImageMediaType::Png,
+            data: std::sync::Arc::from(*b"png"),
+            name: "shot.png".to_string(),
+        }),
+    ])];
+    let mapped = map_messages(&messages);
+
+    assert_eq!(mapped[0]["content"][0]["type"], "input_text");
+    assert_eq!(mapped[0]["content"][1]["type"], "input_image");
+    assert_eq!(
+        mapped[0]["content"][1]["image_url"],
+        "data:image/png;base64,cG5n"
+    );
 }
 
 #[test]

@@ -1,3 +1,5 @@
+use std::sync::Arc;
+
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
@@ -11,29 +13,73 @@ pub enum MessageRole {
 #[derive(Debug, Clone)]
 pub struct ConversationMessage {
     pub role: MessageRole,
-    pub content: String,
+    pub content: Vec<ConversationPart>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ConversationPart {
+    Text(String),
+    Image(ImageAttachment),
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ImageAttachment {
+    pub media_type: ImageMediaType,
+    pub data: Arc<[u8]>,
+    pub name: String,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ImageMediaType {
+    Png,
+    Jpeg,
+    Webp,
+}
+
+impl ImageMediaType {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Png => "image/png",
+            Self::Jpeg => "image/jpeg",
+            Self::Webp => "image/webp",
+        }
+    }
 }
 
 impl ConversationMessage {
     pub fn user(content: impl Into<String>) -> Self {
-        Self {
-            role: MessageRole::User,
-            content: content.into(),
-        }
+        Self::with_parts(
+            MessageRole::User,
+            vec![ConversationPart::Text(content.into())],
+        )
+    }
+
+    pub fn user_with_parts(content: Vec<ConversationPart>) -> Self {
+        Self::with_parts(MessageRole::User, content)
+    }
+
+    fn with_parts(role: MessageRole, content: Vec<ConversationPart>) -> Self {
+        Self { role, content }
     }
 
     pub fn assistant(content: impl Into<String>) -> Self {
-        Self {
-            role: MessageRole::Assistant,
-            content: content.into(),
-        }
+        Self::with_parts(
+            MessageRole::Assistant,
+            vec![ConversationPart::Text(content.into())],
+        )
     }
 
     pub fn tool(content: impl Into<String>) -> Self {
-        Self {
-            role: MessageRole::Tool,
-            content: content.into(),
-        }
+        Self::with_parts(
+            MessageRole::Tool,
+            vec![ConversationPart::Text(content.into())],
+        )
+    }
+
+    pub fn has_images(&self) -> bool {
+        self.content
+            .iter()
+            .any(|part| matches!(part, ConversationPart::Image(_)))
     }
 }
 

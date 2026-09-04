@@ -5,7 +5,8 @@ use anyhow::Result;
 use tokio::sync::mpsc::UnboundedSender;
 
 use crate::config::{ProviderKeys, ProviderKind};
-use crate::models::{AgentEvent, ConversationMessage, ModelEnvelope, ToolCall};
+use crate::images::prepare_parts;
+use crate::models::{AgentEvent, ConversationMessage, ImageAttachment, ModelEnvelope, ToolCall};
 use crate::providers::{Provider, build_provider_with_secret_store};
 use crate::secrets::{SETTING_MODEL, SETTING_PROVIDER, SecretMutationReport, SecretStore};
 use crate::tools::{ToolRuntime, audit_tool_allowed};
@@ -347,8 +348,18 @@ impl Agent {
         user_text: String,
         events: UnboundedSender<AgentEvent>,
     ) -> Result<()> {
-        self.handle_input(user_text, events, None, false, MAX_STEPS)
+        let message = self.prepare_user_input(&user_text, Vec::new()).await?;
+        self.handle_input(message, events, None, false, MAX_STEPS)
             .await
+    }
+
+    pub async fn prepare_user_input(
+        &self,
+        user_text: &str,
+        clipboard_images: Vec<ImageAttachment>,
+    ) -> Result<ConversationMessage> {
+        let parts = prepare_parts(&self.tools, user_text, clipboard_images).await?;
+        Ok(ConversationMessage::user_with_parts(parts))
     }
 
     pub fn resolve_audit_scope(&self, target: &str) -> Result<(PathBuf, String)> {
@@ -363,7 +374,7 @@ impl Agent {
         events: UnboundedSender<AgentEvent>,
     ) -> Result<()> {
         self.handle_input(
-            prompt,
+            ConversationMessage::user(prompt),
             events,
             Some(&scope),
             allow_mutations,
@@ -374,13 +385,13 @@ impl Agent {
 
     async fn handle_input(
         &mut self,
-        user_text: String,
+        user_message: ConversationMessage,
         events: UnboundedSender<AgentEvent>,
         audit_scope: Option<&Path>,
         allow_audit_mutations: bool,
         max_steps: usize,
     ) -> Result<()> {
-        self.history.push(ConversationMessage::user(user_text));
+        self.history.push(user_message);
 
         for _ in 0..max_steps {
             self.trim_history();

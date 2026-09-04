@@ -1,5 +1,5 @@
 use crate::config::{ProviderKeys, ProviderKind};
-use crate::models::ConversationMessage;
+use crate::models::{ConversationMessage, ConversationPart};
 use crate::secrets::{SecretMutationReport, SecretStore};
 use crate::tools::ToolRuntime;
 
@@ -199,7 +199,10 @@ fn history_is_bounded_to_recent_messages() {
     agent.trim_history();
 
     assert_eq!(agent.history.len(), 100);
-    assert_eq!(agent.history[0].content, "5");
+    assert_eq!(
+        agent.history[0].content,
+        vec![ConversationPart::Text("5".to_string())]
+    );
 }
 
 #[test]

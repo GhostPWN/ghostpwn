@@ -10,10 +10,11 @@ use std::time::Duration;
 
 use anyhow::{Result, anyhow};
 use async_trait::async_trait;
+use base64::Engine;
 use reqwest::Client;
 
 use crate::config::{ProviderKeys, ProviderKind};
-use crate::models::ConversationMessage;
+use crate::models::{ConversationMessage, ConversationPart, ImageAttachment};
 use crate::secrets::SecretStore;
 
 pub use anthropic::AnthropicProvider;
@@ -29,6 +30,50 @@ fn provider_http_client() -> Client {
         .read_timeout(Duration::from_secs(90))
         .build()
         .unwrap_or_default()
+}
+
+fn image_base64(image: &ImageAttachment) -> String {
+    base64::engine::general_purpose::STANDARD.encode(&image.data)
+}
+
+fn image_data_url(image: &ImageAttachment) -> String {
+    format!(
+        "data:{};base64,{}",
+        image.media_type.as_str(),
+        image_base64(image)
+    )
+}
+
+fn message_text(message: &ConversationMessage) -> String {
+    message
+        .content
+        .iter()
+        .filter_map(|part| match part {
+            ConversationPart::Text(text) => Some(text.as_str()),
+            ConversationPart::Image(_) => None,
+        })
+        .collect()
+}
+
+fn request_error(
+    operation: &str,
+    status: reqwest::StatusCode,
+    body: &str,
+    messages: &[ConversationMessage],
+) -> anyhow::Error {
+    let image_hint = messages
+        .iter()
+        .any(ConversationMessage::has_images)
+        .then_some(
+            " Request included image input; verify that the selected model supports vision.",
+        );
+    anyhow!(
+        "{} error {}: {}{}",
+        operation,
+        status,
+        body,
+        image_hint.unwrap_or_default()
+    )
 }
 
 #[async_trait]

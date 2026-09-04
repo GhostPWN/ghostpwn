@@ -1,6 +1,9 @@
 use serde_json::json;
 
-use super::parse_models_for_chat_completions;
+use std::sync::Arc;
+
+use super::{map_messages, map_response_messages, parse_models_for_chat_completions};
+use crate::models::{ConversationMessage, ConversationPart, ImageAttachment, ImageMediaType};
 
 #[test]
 fn keeps_models_even_when_only_responses_endpoint_is_present() {
@@ -13,6 +16,31 @@ fn keeps_models_even_when_only_responses_endpoint_is_present() {
 
     let models = parse_models_for_chat_completions(&body);
     assert_eq!(models, vec!["gpt-4o", "gpt-5"]);
+}
+
+#[test]
+fn maps_images_for_both_copilot_endpoints() {
+    let messages = vec![ConversationMessage::user_with_parts(vec![
+        ConversationPart::Text("inspect".to_string()),
+        ConversationPart::Image(ImageAttachment {
+            media_type: ImageMediaType::Png,
+            data: Arc::from(*b"png"),
+            name: "shot.png".to_string(),
+        }),
+    ])];
+
+    let chat = map_messages("system", &messages);
+    assert_eq!(
+        chat[1]["content"][1]["image_url"]["url"],
+        "data:image/png;base64,cG5n"
+    );
+
+    let responses = map_response_messages("system", &messages);
+    assert_eq!(responses[1]["content"][1]["type"], "input_image");
+    assert_eq!(
+        responses[1]["content"][1]["image_url"],
+        "data:image/png;base64,cG5n"
+    );
 }
 
 #[test]

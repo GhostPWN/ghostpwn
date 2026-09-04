@@ -7,7 +7,10 @@ use std::time::Duration;
 
 use serde_json::json;
 
-use super::{MODEL_PROBE_CONCURRENCY, OllamaProvider, ollama_base_url, supports_completion};
+use super::{
+    MODEL_PROBE_CONCURRENCY, OllamaProvider, map_messages, ollama_base_url, supports_completion,
+};
+use crate::models::{ConversationMessage, ConversationPart, ImageAttachment, ImageMediaType};
 use crate::providers::Provider;
 
 #[test]
@@ -31,6 +34,26 @@ fn rejects_models_with_explicit_non_completion_capabilities() {
         &json!({ "capabilities": ["embedding"] })
     ));
     assert!(supports_completion(&json!({})));
+}
+
+#[test]
+fn maps_image_inputs_for_openai_compatibility() {
+    let messages = vec![ConversationMessage::user_with_parts(vec![
+        ConversationPart::Text("inspect".to_string()),
+        ConversationPart::Image(ImageAttachment {
+            media_type: ImageMediaType::Png,
+            data: Arc::from(*b"png"),
+            name: "shot.png".to_string(),
+        }),
+    ])];
+    let mapped = map_messages("system", &messages);
+
+    assert_eq!(mapped[1]["content"][0]["type"], "text");
+    assert_eq!(mapped[1]["content"][1]["type"], "image_url");
+    assert_eq!(
+        mapped[1]["content"][1]["image_url"],
+        "data:image/png;base64,cG5n"
+    );
 }
 
 #[tokio::test]

@@ -9,9 +9,11 @@ use serde::Deserialize;
 use serde_json::{Value, json};
 use tokio::sync::Mutex;
 
-use crate::models::{ConversationMessage, MessageRole};
+use crate::models::{ConversationMessage, ConversationPart, MessageRole};
 use crate::providers::sse::{consume_sse, extract_error_message};
-use crate::providers::{Provider, provider_http_client};
+use crate::providers::{
+    Provider, image_data_url, message_text, provider_http_client, request_error,
+};
 
 const CLIENT_ID: &str = "Iv1.b507a08c87ecfe98";
 const DEVICE_CODE_URL: &str = "https://github.com/login/device/code";
@@ -219,7 +221,7 @@ impl CopilotProvider {
             "model": self.model,
             "temperature": 0.2,
             "stream": true,
-            "input": map_messages(system, messages),
+            "input": map_response_messages(system, messages),
         });
 
         let response = self
@@ -237,7 +239,12 @@ impl CopilotProvider {
         if !response.status().is_success() {
             let status = response.status();
             let body = response.text().await.unwrap_or_default();
-            return Err(anyhow!("Copilot Responses API error {}: {}", status, body));
+            return Err(request_error(
+                "Copilot Responses API",
+                status,
+                &body,
+                messages,
+            ));
         }
 
         let is_sse = response
@@ -358,7 +365,7 @@ impl Provider for CopilotProvider {
                     .await;
             }
 
-            return Err(anyhow!("Copilot API error {}: {}", status, body));
+            return Err(request_error("Copilot API", status, &body, messages));
         }
 
         let is_sse = response
@@ -419,17 +426,64 @@ fn map_messages(system: &str, history: &[ConversationMessage]) -> Vec<Value> {
 
     for m in history {
         match m.role {
-            MessageRole::User => out.push(json!({ "role": "user", "content": m.content })),
+            MessageRole::User if m.has_images() => out.push(json!({
+                "role": "user",
+                "content": m.content.iter().map(|part| match part {
+                    ConversationPart::Text(text) => json!({ "type": "text", "text": text }),
+                    ConversationPart::Image(image) => json!({
+                        "type": "image_url",
+                        "image_url": { "url": image_data_url(image) },
+                    }),
+                }).collect::<Vec<_>>(),
+            })),
+            MessageRole::User => out.push(json!({ "role": "user", "content": message_text(m) })),
             MessageRole::Assistant => {
-                out.push(json!({ "role": "assistant", "content": m.content }))
+                out.push(json!({ "role": "assistant", "content": message_text(m) }))
             }
             MessageRole::Tool => out.push(json!({
                 "role": "user",
-                "content": format!("[tool] {}", m.content),
+                "content": format!("[tool] {}", message_text(m)),
             })),
         }
     }
 
+    out
+}
+
+fn map_response_messages(system: &str, history: &[ConversationMessage]) -> Vec<Value> {
+    let mut out = Vec::with_capacity(history.len() + 1);
+    out.push(json!({
+        "role": "system",
+        "content": [{ "type": "input_text", "text": system }],
+    }));
+    out.extend(history.iter().map(|message| {
+        let role = match message.role {
+            MessageRole::Assistant => "assistant",
+            MessageRole::User | MessageRole::Tool => "user",
+        };
+        let content = if message.role == MessageRole::Tool {
+            vec![json!({
+                "type": "input_text",
+                "text": format!("[tool] {}", message_text(message)),
+            })]
+        } else {
+            message
+                .content
+                .iter()
+                .map(|part| match part {
+                    ConversationPart::Text(text) => json!({
+                        "type": if message.role == MessageRole::Assistant { "output_text" } else { "input_text" },
+                        "text": text,
+                    }),
+                    ConversationPart::Image(image) => json!({
+                        "type": "input_image",
+                        "image_url": image_data_url(image),
+                    }),
+                })
+                .collect::<Vec<_>>()
+        };
+        json!({ "role": role, "content": content })
+    }));
     out
 }
 

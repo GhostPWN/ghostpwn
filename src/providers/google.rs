@@ -4,9 +4,11 @@ use reqwest::Client;
 use reqwest::header::CONTENT_TYPE;
 use serde_json::{Value, json};
 
-use crate::models::{ConversationMessage, MessageRole};
+use crate::models::{ConversationMessage, ConversationPart, MessageRole};
 use crate::providers::sse::{consume_sse, extract_error_message};
-use crate::providers::{Provider, provider_http_client};
+use crate::providers::{Provider, image_base64, message_text, provider_http_client, request_error};
+
+const MAX_INLINE_REQUEST_BYTES: usize = 20_000_000;
 
 pub struct GoogleProvider {
     api_key: String,
@@ -87,6 +89,7 @@ impl Provider for GoogleProvider {
                 "maxOutputTokens": 2048
             }
         });
+        ensure_inline_request_size(&payload)?;
 
         let url = format!(
             "https://generativelanguage.googleapis.com/v1beta/models/{}:streamGenerateContent?alt=sse",
@@ -103,7 +106,7 @@ impl Provider for GoogleProvider {
         if !response.status().is_success() {
             let status = response.status();
             let body = response.text().await.unwrap_or_default();
-            return Err(anyhow!("Google API error {}: {}", status, body));
+            return Err(request_error("Google API", status, &body, messages));
         }
 
         let is_sse = response
@@ -182,18 +185,36 @@ fn map_messages(history: &[ConversationMessage]) -> Vec<Value> {
         .map(|m| match m.role {
             MessageRole::User => json!({
                 "role": "user",
-                "parts": [{ "text": m.content }],
+                "parts": m.content.iter().map(|part| match part {
+                    ConversationPart::Text(text) => json!({ "text": text }),
+                    ConversationPart::Image(image) => json!({
+                        "inlineData": {
+                            "mimeType": image.media_type.as_str(),
+                            "data": image_base64(image),
+                        }
+                    }),
+                }).collect::<Vec<_>>(),
             }),
             MessageRole::Assistant => json!({
                 "role": "model",
-                "parts": [{ "text": m.content }],
+                "parts": [{ "text": message_text(m) }],
             }),
             MessageRole::Tool => json!({
                 "role": "user",
-                "parts": [{ "text": format!("[tool] {}", m.content) }],
+                "parts": [{ "text": format!("[tool] {}", message_text(m)) }],
             }),
         })
         .collect()
+}
+
+fn ensure_inline_request_size(payload: &Value) -> Result<()> {
+    let size = serde_json::to_vec(payload)?.len();
+    if size > MAX_INLINE_REQUEST_BYTES {
+        return Err(anyhow!(
+            "Google inline request is {size} bytes and exceeds the {MAX_INLINE_REQUEST_BYTES}-byte limit; clear old image messages or attach smaller images"
+        ));
+    }
+    Ok(())
 }
 
 fn parse_gemini_models(body: &Value) -> Vec<String> {
