@@ -15,6 +15,7 @@ export const NAV: NavSection[] = [
     items: [
       { title: "Installation", href: "/docs/getting-started/installation" },
       { title: "Commands", href: "/docs/getting-started/commands" },
+      { title: "Image input", href: "/docs/getting-started/image-input" },
     ],
   },
   {

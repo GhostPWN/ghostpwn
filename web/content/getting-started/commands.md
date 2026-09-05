@@ -11,10 +11,15 @@
 - Codex uses ChatGPT/Codex OAuth from the Codex tab, opening a browser first and falling back to device authorization when browser login is unavailable
 - Non-Copilot cloud providers accept pasted API keys from their `/model` tab
 - Disconnecting a provider from `/model` removes its key from the OS keychain when available
-- `/clear` resets in-memory conversation
+- `/paste-image` queues an image from the system clipboard
+- `/clear-images` removes queued clipboard images
+- `/clear` resets the in-memory conversation and removes queued clipboard images
 - `/quit` or `/exit` exits the TUI
 - `Ctrl`+`C` exits immediately
+- `Ctrl`+`V` queues clipboard bitmap data as PNG, or pastes normalized text when no bitmap is available
 - Status bar shows streaming state and live/manual scroll position
+
+See [Image input](/docs/getting-started/image-input) for path syntax, limits, retention, and provider requirements.
 
 ## Scroll controls
 

@@ -16,6 +16,7 @@ GhostPWN is a Rust terminal assistant for offensive security research. It uses a
 The current code base focuses on:
 
 - provider support for OpenAI, Anthropic, Google, GitHub Copilot, Codex, and local Ollama
+- retained image input for vision-capable models
 - in-session provider/model switching
 - local tools for reading files, listing directories, searching, and running commands
 - persistent API key storage via the OS keychain, with a local state-file fallback
@@ -31,5 +32,6 @@ Contributions are welcome. Open an issue before submitting a pull request. Ghost
 
 - [Installation](/docs/getting-started/installation)
 - [Commands](/docs/getting-started/commands)
+- [Image input](/docs/getting-started/image-input)
 - [Configuration](/docs/configuration)
 - [Architecture](/docs/architecture)
