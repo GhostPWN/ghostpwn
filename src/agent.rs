@@ -351,13 +351,18 @@ impl Agent {
         clipboard_images: Vec<ImageAttachment>,
     ) -> impl Future<Output = Result<ConversationMessage>> + use<> {
         let tools = self.tools.clone();
-        let retained_image_bytes = self.history.iter().try_fold(0_usize, |total, message| {
-            image_bytes(&message.content).and_then(|bytes| {
-                total
-                    .checked_add(bytes)
-                    .ok_or_else(|| anyhow::anyhow!("Image attachment size overflow"))
-            })
-        });
+        let surviving_old_messages = (self.history.len() + 1).saturating_sub(MAX_HISTORY_MESSAGES);
+        let retained_image_bytes =
+            self.history
+                .iter()
+                .skip(surviving_old_messages)
+                .try_fold(0_usize, |total, message| {
+                    image_bytes(&message.content).and_then(|bytes| {
+                        total
+                            .checked_add(bytes)
+                            .ok_or_else(|| anyhow::anyhow!("Image attachment size overflow"))
+                    })
+                });
         async move {
             let parts = prepare_parts(&tools, &user_text, clipboard_images).await?;
             let total_image_bytes = retained_image_bytes?

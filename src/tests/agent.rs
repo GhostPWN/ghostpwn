@@ -268,6 +268,48 @@ async fn rejects_images_above_conversation_retention_limit() {
     assert!(error.to_string().contains("60 MiB retention limit"));
 }
 
+#[tokio::test]
+async fn accepts_images_when_trim_drops_oldest_image() {
+    use std::sync::Arc;
+
+    use crate::images::{MAX_IMAGE_BYTES_PER_MESSAGE, MAX_RETAINED_IMAGE_BYTES};
+    use crate::models::{ImageAttachment, ImageMediaType};
+
+    use super::MAX_HISTORY_MESSAGES;
+
+    let mut agent = test_agent(ProviderKind::Google);
+    let data: Arc<[u8]> = Arc::from(vec![0; MAX_IMAGE_BYTES_PER_MESSAGE]);
+    for index in 0..(MAX_RETAINED_IMAGE_BYTES / MAX_IMAGE_BYTES_PER_MESSAGE) {
+        agent
+            .history
+            .push(ConversationMessage::user_with_parts(vec![
+                ConversationPart::Image(ImageAttachment {
+                    media_type: ImageMediaType::Png,
+                    data: Arc::clone(&data),
+                    name: format!("shot-{index}.png"),
+                }),
+            ]));
+    }
+    while agent.history.len() < MAX_HISTORY_MESSAGES {
+        agent
+            .history
+            .push(ConversationMessage::user("filler".to_string()));
+    }
+    assert_eq!(agent.history.len(), MAX_HISTORY_MESSAGES);
+
+    let next = ImageAttachment {
+        media_type: ImageMediaType::Png,
+        data: Arc::from(*b"x"),
+        name: "next.png".to_string(),
+    };
+
+    let message = agent
+        .prepare_user_input(String::new(), vec![next])
+        .await
+        .expect("trimmed history should accept new image");
+    assert!(message.has_images());
+}
+
 #[test]
 fn connected_copilot_becomes_active_with_default_model() {
     let mut agent = test_agent(ProviderKind::Google);
