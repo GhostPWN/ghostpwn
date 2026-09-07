@@ -190,20 +190,47 @@ fn parse_image_references(input: &str) -> Result<Vec<PromptPart>> {
         }
 
         let after_at = index + 1;
-        let (candidate, end, quoted) = if input[after_at..].starts_with('"') {
+        if input[after_at..].starts_with('"') {
             let path_start = after_at + 1;
             let Some(close_offset) = input[path_start..].find('"') else {
                 return Err(anyhow!("Unclosed quoted image path"));
             };
             let close = path_start + close_offset;
-            (&input[path_start..close], close + 1, true)
-        } else {
-            let end_offset = input[after_at..]
-                .find(|ch: char| ch.is_whitespace() || matches!(ch, ',' | ';'))
-                .unwrap_or(input.len() - after_at);
-            let end = after_at + end_offset;
-            (&input[after_at..end], end, false)
-        };
+            let candidate = &input[path_start..close];
+            let end = close + 1;
+            if supported_extension(candidate) {
+                if !text.is_empty() {
+                    parts.push(PromptPart::Text(std::mem::take(&mut text)));
+                }
+                parts.push(PromptPart::ImagePath(candidate.to_string()));
+                index = end;
+                continue;
+            }
+            return Err(anyhow!(
+                "Unsupported image '{}'; use PNG, JPEG, or WebP",
+                candidate
+            ));
+        }
+
+        let ws_end_offset = input[after_at..]
+            .find(char::is_whitespace)
+            .unwrap_or(input.len() - after_at);
+        let ws_end = after_at + ws_end_offset;
+        let full_candidate = &input[after_at..ws_end];
+        if supported_extension(full_candidate) {
+            if !text.is_empty() {
+                parts.push(PromptPart::Text(std::mem::take(&mut text)));
+            }
+            parts.push(PromptPart::ImagePath(full_candidate.to_string()));
+            index = ws_end;
+            continue;
+        }
+
+        let split_offset = input[after_at..]
+            .find(|ch: char| ch.is_whitespace() || matches!(ch, ',' | ';'))
+            .unwrap_or(input.len() - after_at);
+        let end = after_at + split_offset;
+        let candidate = &input[after_at..end];
 
         if supported_extension(candidate) {
             if !text.is_empty() {
@@ -213,10 +240,24 @@ fn parse_image_references(input: &str) -> Result<Vec<PromptPart>> {
             index = end;
             continue;
         }
-        if quoted || known_unsupported_image_extension(candidate) {
+        if known_unsupported_image_extension(candidate)
+            || known_unsupported_image_extension(full_candidate)
+        {
+            if end != ws_end && looks_like_image_path(full_candidate) {
+                return Err(anyhow!(
+                    "Invalid image reference '@{}'; if the path contains ',' or ';', quote it like @\"my,file.png\"",
+                    full_candidate
+                ));
+            }
             return Err(anyhow!(
                 "Unsupported image '{}'; use PNG, JPEG, or WebP",
                 candidate
+            ));
+        }
+        if end != ws_end && (candidate.is_empty() || looks_like_image_path(full_candidate)) {
+            return Err(anyhow!(
+                "Invalid image reference '@{}'; if the path contains ',' or ';', quote it like @\"my,file.png\"",
+                full_candidate
             ));
         }
 
@@ -228,6 +269,16 @@ fn parse_image_references(input: &str) -> Result<Vec<PromptPart>> {
         parts.push(PromptPart::Text(text));
     }
     Ok(parts)
+}
+
+fn looks_like_image_path(path: &str) -> bool {
+    let lower = path.to_ascii_lowercase();
+    [
+        ".png", ".jpg", ".jpeg", ".webp", ".gif", ".bmp", ".tif", ".tiff", ".heic", ".heif",
+        ".avif",
+    ]
+    .iter()
+    .any(|marker| lower.contains(marker))
 }
 
 fn supported_extension(path: &str) -> bool {
@@ -322,6 +373,56 @@ mod tests {
                 PromptPart::ImagePath("two.jpg".to_string()),
                 PromptPart::Text(";done".to_string()),
             ]
+        );
+    }
+
+    #[test]
+    fn parses_unquoted_delimiter_filenames() {
+        assert_eq!(
+            parse_image_references("@my,file.png").unwrap(),
+            vec![PromptPart::ImagePath("my,file.png".to_string())]
+        );
+        assert_eq!(
+            parse_image_references("@my;file.png").unwrap(),
+            vec![PromptPart::ImagePath("my;file.png".to_string())]
+        );
+        assert_eq!(
+            parse_image_references("inspect @screens/my,file.webp now").unwrap(),
+            vec![
+                PromptPart::Text("inspect ".to_string()),
+                PromptPart::ImagePath("screens/my,file.webp".to_string()),
+                PromptPart::Text(" now".to_string()),
+            ]
+        );
+    }
+
+    #[test]
+    fn parses_quoted_delimiter_filenames() {
+        assert_eq!(
+            parse_image_references("@\"my,file.png\" and @\"my;file.png\"").unwrap(),
+            vec![
+                PromptPart::ImagePath("my,file.png".to_string()),
+                PromptPart::Text(" and ".to_string()),
+                PromptPart::ImagePath("my;file.png".to_string()),
+            ]
+        );
+    }
+
+    #[test]
+    fn rejects_dangling_delimiter_references() {
+        let error = parse_image_references("@,foo").unwrap_err();
+        assert!(error.to_string().contains("quote"));
+        let error = parse_image_references("@;foo").unwrap_err();
+        assert!(error.to_string().contains("quote"));
+        let error = parse_image_references("@bad,path.gif").unwrap_err();
+        assert!(error.to_string().contains("quote"));
+    }
+
+    #[test]
+    fn preserves_mentions_with_commas() {
+        assert_eq!(
+            parse_image_references("hi @user, how are you").unwrap(),
+            vec![PromptPart::Text("hi @user, how are you".to_string())]
         );
     }
 
