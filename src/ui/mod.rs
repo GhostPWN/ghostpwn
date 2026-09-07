@@ -641,6 +641,17 @@ async fn handle_submit(
         let label = format!("/audit{flag} {target}");
         state.push_message(UiRole::User, label.trim().to_string());
         state.input.clear();
+        if !state.pending_images.is_empty() {
+            let dropped = state.pending_images.len();
+            state.push_message(
+                UiRole::Assistant,
+                format!(
+                    "Dropped {} queued image{}; /audit runs text-only.",
+                    dropped,
+                    if dropped == 1 { "" } else { "s" }
+                ),
+            );
+        }
         state.pending_images.clear();
         state.is_streaming = true;
         state.streaming_content.clear();

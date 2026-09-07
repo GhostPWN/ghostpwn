@@ -187,6 +187,32 @@ async fn audit_command_clears_pending_images() {
 
     assert!(state.pending_images.is_empty());
     assert!(state.is_streaming);
+    let notice = state.messages.last().unwrap();
+    assert_eq!(notice.role, UiRole::Assistant);
+    assert!(notice.content.contains("Dropped 1 queued image"));
+    assert!(notice.content.contains("/audit runs text-only"));
+}
+
+#[tokio::test]
+async fn audit_command_without_pending_images_stays_quiet() {
+    let workspace = tempfile::tempdir().unwrap();
+    let tools = ToolRuntime::new(workspace.path().to_path_buf()).unwrap();
+    let agent = Arc::new(tokio::sync::Mutex::new(Agent::new(
+        ProviderKind::Ollama,
+        "test".to_string(),
+        ProviderKeys::default(),
+        SecretStore::file_only(workspace.path().join("state.json")),
+        tools,
+    )));
+    let (events, _received) = tokio::sync::mpsc::unbounded_channel();
+    let mut state = UiState::new("test".to_string());
+
+    handle_submit("/audit".to_string(), &mut state, &agent, &events).await;
+
+    assert!(state.pending_images.is_empty());
+    assert!(state.is_streaming);
+    assert_eq!(state.messages.len(), 1);
+    assert_eq!(state.messages.last().unwrap().role, UiRole::User);
 }
 
 #[test]
