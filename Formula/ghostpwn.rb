@@ -3,7 +3,7 @@ class Ghostpwn < Formula
   REPO = "https://github.com/GhostPWN/ghostpwn.git"
   homepage "https://github.com/GhostPWN/ghostpwn"
   version "0.3.2"
-  url REPO, tag: "v#{version}"
+  url REPO, tag: "v#{version}", revision: "4c82e19d5655aa4c1dfa81a7ec0b5f9bc6107c32"
   license "MIT"
   head REPO, branch: "main"
 
