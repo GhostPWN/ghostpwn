@@ -545,10 +545,10 @@ where
 
 fn paste_terminal_text(state: &mut UiState, text: &str) {
     let text = normalize_pasted_text(text);
-    if let Some(selector) = state.selector.as_mut() {
-        if let ModelSelectorMode::ApiKeyInput { input, .. } = &mut selector.mode {
-            input.push_str(&text);
-        }
+    if let Some(selector) = state.selector.as_mut()
+        && let ModelSelectorMode::ApiKeyInput { input, .. } = &mut selector.mode
+    {
+        input.push_str(&text);
         return;
     }
 

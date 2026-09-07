@@ -74,6 +74,29 @@ fn terminal_paste_reaches_api_key_input() {
         panic!("expected API key input");
     };
     assert_eq!(input, "secret key");
+    assert!(state.input.is_empty());
+}
+
+#[test]
+fn terminal_paste_reaches_input_when_selector_browsing() {
+    let mut state = UiState::new("test".to_string());
+    state.selector = Some(ModelSelector {
+        id: 1,
+        providers: vec![ProviderKind::OpenAi],
+        provider_index: 0,
+        provider_states: HashMap::new(),
+        mode: ModelSelectorMode::Browse,
+        status: None,
+        oauth_task: None,
+    });
+
+    paste_terminal_text(&mut state, "hello\r\nworld");
+
+    assert_eq!(state.input, "hello world");
+    assert!(matches!(
+        state.selector.unwrap().mode,
+        ModelSelectorMode::Browse
+    ));
 }
 
 #[test]
