@@ -35,12 +35,10 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      - name: Check manifest and formula versions
+      - name: Check release tag matches manifest version
         shell: bash
         run: |
           cargo_version="$(sed -n 's/^version = "\(.*\)"/\1/p' Cargo.toml | head -1)"
-          formula_version="$(sed -n 's/.*version "\(.*\)"/\1/p' Formula/ghostpwn.rb)"
-          test "$cargo_version" = "$formula_version"
           if [[ "$GITHUB_REF_TYPE" == "tag" ]]; then
             test "v$cargo_version" = "$GITHUB_REF_NAME"
           fi

@@ -7,7 +7,7 @@ brew install GhostPWN/tap/ghostpwn
 ghostpwn
 ```
 
-The Homebrew formula lives in `Formula/ghostpwn.rb`.
+The Homebrew formula is maintained in [GhostPWN/homebrew-tap](https://github.com/GhostPWN/homebrew-tap).
 
 ## Linux
 

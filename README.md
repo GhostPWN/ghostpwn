@@ -35,6 +35,8 @@ brew install GhostPWN/tap/ghostpwn
 ghostpwn
 ```
 
+The Homebrew formula is maintained in [GhostPWN/homebrew-tap](https://github.com/GhostPWN/homebrew-tap).
+
 ### Linux
 
 ```bash
