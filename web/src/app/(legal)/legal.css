@@ -1,0 +1,43 @@
+.prose-legal {
+  line-height: 1.8;
+  overflow-wrap: anywhere;
+}
+.prose-legal h1,
+.prose-legal h2 {
+  color: var(--foreground);
+  text-wrap: balance;
+}
+.prose-legal h1 {
+  font-size: 2rem;
+  font-weight: 600;
+  line-height: 1.2;
+}
+.prose-legal h2 {
+  margin-top: 2.5rem;
+  font-size: 1.125rem;
+  font-weight: 600;
+}
+.prose-legal p,
+.prose-legal ul {
+  margin-top: 1rem;
+  text-wrap: pretty;
+}
+.prose-legal ul {
+  padding-left: 1.5rem;
+  list-style: disc;
+}
+.prose-legal li + li {
+  margin-top: 0.5rem;
+}
+.prose-legal a {
+  text-decoration: underline;
+  text-underline-offset: 0.2em;
+}
+.prose-legal a:focus-visible {
+  outline: 2px solid var(--ring);
+  outline-offset: 4px;
+}
+.prose-legal code {
+  font-family: var(--font-mono, monospace);
+  font-size: 0.9em;
+}

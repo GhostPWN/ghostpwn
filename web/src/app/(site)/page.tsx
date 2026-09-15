@@ -1,3 +1,4 @@
+import { SiteFooter } from "@/components/site-footer";
 import Image from "next/image";
 import Link from "next/link";
 import { Button } from "@/components/ui/button";
@@ -78,7 +79,10 @@ export default function Home() {
             />
             <span className="font-semibold">GhostPWN</span>
           </div>
-          <nav aria-label="Primary navigation" className="flex items-center gap-2">
+          <nav
+            aria-label="Primary navigation"
+            className="flex items-center gap-2"
+          >
             <ThemeToggle />
             <Button variant="ghost" size="sm" render={<Link href={DOCS_URL} />}>
               Docs
@@ -158,19 +162,7 @@ export default function Home() {
       </section>
 
       {/* Footer */}
-      <footer className="mt-auto border-t">
-        <div className="mx-auto flex w-full max-w-5xl flex-col items-center justify-between gap-4 px-6 py-8 text-sm text-muted-foreground sm:flex-row">
-          <span>© {new Date().getFullYear()} GhostPWN · MIT</span>
-          <nav aria-label="Footer navigation" className="flex items-center gap-5">
-            <Link href={DOCS_URL} className="hover:text-foreground">
-              Documentation
-            </Link>
-            <a href={GITHUB_URL} className="hover:text-foreground">
-              GitHub
-            </a>
-          </nav>
-        </div>
-      </footer>
+      <SiteFooter />
     </main>
   );
 }

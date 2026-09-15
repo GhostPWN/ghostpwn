@@ -1,3 +1,4 @@
+import { SiteFooter } from "@/components/site-footer";
 import Image from "next/image";
 import Link from "next/link";
 import { Button } from "@/components/ui/button";
@@ -17,13 +18,25 @@ export default function DocsLayout({
       <header className="sticky top-0 z-20 px-4 pt-4">
         <div className="mx-auto flex w-full max-w-6xl items-center justify-between rounded-2xl border bg-background/70 px-5 py-3 shadow-sm backdrop-blur-md">
           <Link href="/" className="flex items-center gap-2.5">
-            <Image src={asset("/ghostpwn-logo.svg")} alt="GhostPWN" width={28} height={28} />
+            <Image
+              src={asset("/ghostpwn-logo.svg")}
+              alt="GhostPWN"
+              width={28}
+              height={28}
+            />
             <span className="font-semibold">GhostPWN</span>
           </Link>
-          <nav aria-label="Documentation actions" className="flex items-center gap-2">
+          <nav
+            aria-label="Documentation actions"
+            className="flex items-center gap-2"
+          >
             <MobileDocsMenu />
             <ThemeToggle />
-            <Button variant="outline" size="sm" render={<a href={GITHUB_URL} />}>
+            <Button
+              variant="outline"
+              size="sm"
+              render={<a href={GITHUB_URL} />}
+            >
               GitHub
             </Button>
           </nav>
@@ -40,6 +53,7 @@ export default function DocsLayout({
           {children}
         </main>
       </div>
+      <SiteFooter />
     </div>
   );
 }
