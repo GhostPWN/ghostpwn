@@ -6,7 +6,7 @@ export const metadata: Metadata = {
   title: "Cookies policy",
   description:
     "How GhostPWN handles cookies, browser storage, and preferences.",
-  alternates: { canonical: null },
+  alternates: { canonical: "https://ghostpwn.github.io/ghostpwn/cookies/" },
   openGraph: {
     title: "Cookies policy | GhostPWN",
     description:

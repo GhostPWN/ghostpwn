@@ -5,7 +5,7 @@ import { LEGAL_UPDATED } from "../updated";
 export const metadata: Metadata = {
   title: "Privacy policy",
   description: "How GhostPWN handles data, hosting requests, and your privacy.",
-  alternates: { canonical: null },
+  alternates: { canonical: "https://ghostpwn.github.io/ghostpwn/privacy/" },
   openGraph: {
     title: "Privacy policy | GhostPWN",
     description:
