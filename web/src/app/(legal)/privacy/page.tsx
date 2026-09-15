@@ -42,16 +42,13 @@ export default function PolicyPage() {
       </p>
       <h2>Hosting and request logs</h2>
       <p>
-        This site is hosted on a VPS administered by Gaya KACI, on Oracle Cloud
-        Infrastructure in its Paris region. Serving a page requires processing
-        your IP address and request details. Oracle provides the infrastructure
-        that carries this traffic and holds the server’s data.
+        This site is published with GitHub Pages. Serving a page requires GitHub
+        to process your IP address and request details under its own privacy
+        statement.
       </p>
       <p>
-        Hosting request logs are separate from browser storage. This policy does
-        not promise IP anonymisation or a fixed deletion period for hosting
-        logs. Contact the operator for information about logs associated with
-        your request.
+        GitHub controls its hosting logs, retention, and infrastructure. I do
+        not receive or control those logs. See GitHub’s <a href="https://docs.github.com/en/site-policy/privacy-policies/github-general-privacy-statement">privacy statement</a> for details.
       </p>
       <h2>Browser storage</h2>
       <p>
