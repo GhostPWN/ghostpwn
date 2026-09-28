@@ -89,7 +89,7 @@ jobs:
 
       - name: Upload Windows artifact
         if: matrix.os == 'windows-latest'
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: ghostpwn-windows-x86_64
           path: dist/ghostpwn-windows-x86_64.zip
