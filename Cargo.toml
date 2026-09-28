@@ -11,7 +11,7 @@ repository = "https://github.com/GhostPWN/ghostpwn"
 anyhow = "1.0.104"
 arboard = { version = "3.6.1", features = ["wayland-data-control"] }
 async-trait = "0.1.91"
-base64 = "0.22.1"
+base64 = "0.23.1"
 cap-fs-ext = "4.0.3"
 cap-std = "4.0.3"
 crossterm = "0.29.0"
