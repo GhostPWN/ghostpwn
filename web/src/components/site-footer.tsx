@@ -24,6 +24,12 @@ export function SiteFooter() {
           <Link href="/cookies" className="hover:text-foreground">
             Cookies
           </Link>
+          <Link href="/terms" className="hover:text-foreground">
+            Terms
+          </Link>
+          <Link href="/legal-notice" className="hover:text-foreground">
+            Legal notice
+          </Link>
         </nav>
       </div>
     </footer>
