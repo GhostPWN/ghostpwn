@@ -15,7 +15,7 @@ permissions:
 jobs:
   dependencies:
     name: Audit dependencies
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v7
       - uses: dtolnay/rust-toolchain@stable
@@ -32,7 +32,7 @@ jobs:
 
   version:
     name: Check versions
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v7
       - name: Check release tag matches manifest version
@@ -50,7 +50,7 @@ jobs:
       fail-fast: false
       matrix:
         os:
-          - ubuntu-latest
+          - ubuntu-24.04
           - macos-latest
           - windows-latest
     needs: version
@@ -72,7 +72,7 @@ jobs:
         run: cargo test
 
       - name: Test bundled security scripts
-        if: matrix.os == 'ubuntu-latest'
+        if: matrix.os == 'ubuntu-24.04'
         run: |
           python3 -m compileall -q src/skills
           python3 src/tests/security_scripts.py
@@ -96,7 +96,7 @@ jobs:
 
   web:
     name: Validate website
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     defaults:
       run:
         working-directory: web
