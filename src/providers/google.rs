@@ -6,7 +6,9 @@ use serde_json::{Value, json};
 
 use crate::models::{ConversationMessage, ConversationPart, MessageRole};
 use crate::providers::sse::{consume_sse, extract_error_message};
-use crate::providers::{Provider, image_base64, message_text, provider_http_client, request_error};
+use crate::providers::{
+    MAX_OUTPUT_TOKENS, Provider, image_base64, message_text, provider_http_client, request_error,
+};
 
 const MAX_INLINE_REQUEST_BYTES: usize = 20_000_000;
 
@@ -86,7 +88,7 @@ impl Provider for GoogleProvider {
             "contents": map_messages(messages),
             "generationConfig": {
                 "temperature": 0.2,
-                "maxOutputTokens": 2048
+                "maxOutputTokens": MAX_OUTPUT_TOKENS
             }
         });
         ensure_inline_request_size(&payload)?;

@@ -7,7 +7,7 @@ use tokio::sync::mpsc::UnboundedSender;
 
 use crate::config::{ProviderKeys, ProviderKind};
 use crate::images::{MAX_RETAINED_IMAGE_BYTES, image_bytes, prepare_parts};
-use crate::models::{AgentEvent, ConversationMessage, ImageAttachment, ModelEnvelope, ToolCall};
+use crate::models::{AgentEvent, ConversationMessage, ImageAttachment, ModelEnvelope};
 use crate::providers::{Provider, build_provider_with_secret_store};
 use crate::secrets::{SETTING_MODEL, SETTING_PROVIDER, SecretMutationReport, SecretStore};
 use crate::tools::{ToolRuntime, audit_tool_allowed};
@@ -433,7 +433,12 @@ impl Agent {
                 .stream_complete(&system_prompt, &self.history, &mut on_delta)
                 .await?;
 
-            let envelope = parse_envelope(&raw);
+            let structured = try_parse_envelope(&raw);
+            let parsed_structured = structured.is_some();
+            let envelope = structured.unwrap_or_else(|| ModelEnvelope {
+                assistant: Some(raw.clone()),
+                tool_calls: Vec::new(),
+            });
             let has_tool_calls = !envelope.tool_calls.is_empty();
 
             if let Some(assistant) = envelope.assistant.as_deref()
@@ -449,6 +454,14 @@ impl Agent {
             }
 
             if !has_tool_calls {
+                if !parsed_structured && looks_like_structured_attempt(&raw) {
+                    let _ = events.send(AgentEvent::Error(
+                        "The model's structured JSON response could not be parsed; it was likely \
+                         truncated by the output token limit. Showing the raw text. Retry with a \
+                         smaller change or a model with a larger output budget."
+                            .to_string(),
+                    ));
+                }
                 let _ = events.send(AgentEvent::Done);
                 return Ok(());
             }
@@ -552,6 +565,17 @@ fn normalize_model_name(model: &str) -> String {
         .to_string()
 }
 
+/// Heuristic for "the model tried to emit the JSON envelope but it did not parse".
+///
+/// Used only to warn the user about a likely output-token truncation; a positive result still shows
+/// the raw text unchanged. We require a JSON object opener plus one of the schema keys so ordinary
+/// prose that merely mentions braces is not flagged.
+fn looks_like_structured_attempt(raw: &str) -> bool {
+    let trimmed = raw.trim_start();
+    trimmed.starts_with('{') && (raw.contains("\"tool_calls\"") || raw.contains("\"assistant\""))
+}
+
+#[cfg(test)]
 fn parse_envelope(raw: &str) -> ModelEnvelope {
     if let Some(env) = try_parse_envelope(raw) {
         return env;
@@ -559,7 +583,7 @@ fn parse_envelope(raw: &str) -> ModelEnvelope {
 
     ModelEnvelope {
         assistant: Some(raw.to_string()),
-        tool_calls: Vec::<ToolCall>::new(),
+        tool_calls: Vec::<crate::models::ToolCall>::new(),
     }
 }
 

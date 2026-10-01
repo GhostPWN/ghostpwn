@@ -5,7 +5,7 @@ use crate::tools::ToolRuntime;
 
 use super::{
     Agent, AssistantStreamExtractor, append_secret_warnings, extract_partial_assistant_value,
-    normalize_model_name, parse_envelope,
+    looks_like_structured_attempt, normalize_model_name, parse_envelope,
 };
 
 fn test_agent(provider: ProviderKind) -> Agent {
@@ -28,6 +28,18 @@ fn parse_envelope_reads_json_block() {
     let env = parse_envelope(raw);
     assert_eq!(env.assistant.as_deref(), Some("ok"));
     assert!(env.tool_calls.is_empty());
+}
+
+#[test]
+fn flags_truncated_envelope_but_not_plain_prose() {
+    // A cut-off envelope (valid opener + schema key, unparsable) should be flagged.
+    let truncated = "{\"assistant\":\"writing\",\"tool_calls\":[{\"name\":\"writeFile\",\"argument";
+    assert!(looks_like_structured_attempt(truncated));
+    // Ordinary prose that merely mentions braces must not be flagged.
+    assert!(!looks_like_structured_attempt(
+        "Here is a JSON object like {\"key\": 1} you could use."
+    ));
+    assert!(!looks_like_structured_attempt("Just a normal answer."));
 }
 
 #[test]

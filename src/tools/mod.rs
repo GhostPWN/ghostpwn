@@ -995,9 +995,7 @@ impl ToolRuntime {
             "exists": true,
             "type": kind,
             "size": metadata.len(),
-            "modified": metadata.modified().ok().map(|t| {
-                chrono_like(t)
-            }),
+            "modified": metadata.modified().ok().map(format_rfc3339),
         }))
     }
 
@@ -2644,12 +2642,47 @@ fn hex_value(byte: u8) -> Option<u8> {
     }
 }
 
-fn chrono_like(time: std::time::SystemTime) -> String {
-    let datetime = time
+/// Format a `SystemTime` as a UTC RFC 3339 timestamp (second precision).
+///
+/// Done without a date/time dependency: the field is labelled `modified`, so it must read as a
+/// datetime rather than a bare epoch counter. Times before the epoch clamp to `1970-01-01T00:00:00Z`.
+fn format_rfc3339(time: std::time::SystemTime) -> String {
+    let secs = time
         .duration_since(std::time::UNIX_EPOCH)
-        .map(|v| v.as_secs())
+        .map(|value| value.as_secs())
         .unwrap_or(0);
-    format!("{}", datetime)
+    let days = (secs / 86_400) as i64;
+    let seconds_of_day = secs % 86_400;
+    let hour = seconds_of_day / 3_600;
+    let minute = (seconds_of_day % 3_600) / 60;
+    let second = seconds_of_day % 60;
+    let (year, month, day) = civil_from_days(days);
+    format!("{year:04}-{month:02}-{day:02}T{hour:02}:{minute:02}:{second:02}Z")
+}
+
+/// Convert a count of days since the Unix epoch into a `(year, month, day)` civil date.
+///
+/// Uses Howard Hinnant's `civil_from_days` algorithm (proleptic Gregorian calendar).
+fn civil_from_days(days: i64) -> (i64, u32, u32) {
+    let shifted = days + 719_468;
+    let era = if shifted >= 0 {
+        shifted
+    } else {
+        shifted - 146_096
+    } / 146_097;
+    let day_of_era = (shifted - era * 146_097) as u64;
+    let year_of_era =
+        (day_of_era - day_of_era / 1_460 + day_of_era / 36_524 - day_of_era / 146_096) / 365;
+    let year = year_of_era as i64 + era * 400;
+    let day_of_year = day_of_era - (365 * year_of_era + year_of_era / 4 - year_of_era / 100);
+    let month_position = (5 * day_of_year + 2) / 153;
+    let day = (day_of_year - (153 * month_position + 2) / 5 + 1) as u32;
+    let month = if month_position < 10 {
+        month_position + 3
+    } else {
+        month_position - 9
+    } as u32;
+    (if month <= 2 { year + 1 } else { year }, month, day)
 }
 
 fn validate_public_url(url: &reqwest::Url) -> std::result::Result<(), String> {

@@ -6,7 +6,9 @@ use serde_json::{Value, json};
 
 use crate::models::{ConversationMessage, ConversationPart, MessageRole};
 use crate::providers::sse::{consume_sse, extract_error_message};
-use crate::providers::{Provider, image_base64, message_text, provider_http_client, request_error};
+use crate::providers::{
+    MAX_OUTPUT_TOKENS, Provider, image_base64, message_text, provider_http_client, request_error,
+};
 
 pub struct AnthropicProvider {
     api_key: String,
@@ -81,7 +83,7 @@ impl Provider for AnthropicProvider {
     ) -> Result<String> {
         let payload = json!({
             "model": self.model,
-            "max_tokens": 2048,
+            "max_tokens": MAX_OUTPUT_TOKENS,
             "temperature": 0.2,
             "system": system,
             "stream": true,

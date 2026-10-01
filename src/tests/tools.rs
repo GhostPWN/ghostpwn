@@ -10,6 +10,7 @@ use super::ToolRuntime;
 use super::audit_tool_allowed;
 use super::command_shell;
 use super::decode_duckduckgo_url;
+use super::format_rfc3339;
 use super::parse_cargo_lock;
 use super::parse_duckduckgo_results;
 use super::resolve_public_host;
@@ -1438,4 +1439,20 @@ fn duckduckgo_url_decode_handles_direct_and_encoded_urls() {
 fn url_encode_query_encodes_spaces_and_unicode() {
     assert_eq!(url_encode_query("rust tui"), "rust+tui");
     assert_eq!(url_encode_query("café"), "caf%C3%A9");
+}
+
+#[test]
+fn format_rfc3339_renders_utc_timestamps() {
+    use std::time::{Duration, UNIX_EPOCH};
+
+    assert_eq!(format_rfc3339(UNIX_EPOCH), "1970-01-01T00:00:00Z");
+    assert_eq!(
+        format_rfc3339(UNIX_EPOCH + Duration::from_secs(1_700_000_000)),
+        "2023-11-14T22:13:20Z"
+    );
+    // Leap-year day handling (2024-02-29).
+    assert_eq!(
+        format_rfc3339(UNIX_EPOCH + Duration::from_secs(1_709_208_896)),
+        "2024-02-29T12:14:56Z"
+    );
 }

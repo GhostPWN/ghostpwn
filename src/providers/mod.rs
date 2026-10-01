@@ -17,6 +17,13 @@ use crate::config::{ProviderKeys, ProviderKind};
 use crate::models::{ConversationMessage, ConversationPart, ImageAttachment};
 use crate::secrets::SecretStore;
 
+/// Upper bound on model output tokens for providers that require an explicit cap.
+///
+/// The agent contract requires the model to answer with a single JSON envelope that can carry full
+/// file bodies (`writeFile`, `applyPatch`). A small cap truncates that JSON mid-string, which makes
+/// the envelope unparsable and silently drops the tool calls. Keep this generous so edits survive.
+pub(crate) const MAX_OUTPUT_TOKENS: u32 = 8192;
+
 pub use anthropic::AnthropicProvider;
 pub use codex::CodexProvider;
 pub use copilot::CopilotProvider;

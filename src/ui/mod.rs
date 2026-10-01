@@ -170,6 +170,10 @@ struct UiState {
     next_selector_id: u64,
     pending_approval: Option<PendingApproval>,
     tick: u64,
+    transcript_lines: Vec<Line<'static>>,
+    transcript_line_count: u16,
+    transcript_signature: u64,
+    transcript_width: u16,
 }
 
 impl UiState {
@@ -191,6 +195,36 @@ impl UiState {
             next_selector_id: 0,
             pending_approval: None,
             tick: 0,
+            transcript_lines: Vec::new(),
+            transcript_line_count: 0,
+            transcript_signature: 0,
+            transcript_width: 0,
+        }
+    }
+
+    /// Cheap fingerprint of the rendered transcript. Messages are append-only and never mutated in
+    /// place, so `(message count, streaming buffer)` uniquely identifies the current transcript.
+    fn transcript_signature(&self) -> u64 {
+        use std::hash::{Hash, Hasher};
+
+        let mut hasher = std::collections::hash_map::DefaultHasher::new();
+        self.messages.len().hash(&mut hasher);
+        self.streaming_content.hash(&mut hasher);
+        hasher.finish()
+    }
+
+    /// Rebuild the cached transcript lines and wrapped line count only when the transcript content
+    /// or the available width actually changed, so typing and spinner ticks do not re-style history.
+    fn refresh_transcript_cache(&mut self, width: u16) {
+        let signature = self.transcript_signature();
+        if signature != self.transcript_signature {
+            self.transcript_lines = build_transcript_lines(self);
+            self.transcript_signature = signature;
+            self.transcript_width = u16::MAX;
+        }
+        if width != self.transcript_width {
+            self.transcript_line_count = wrapped_line_count(&self.transcript_lines, width);
+            self.transcript_width = width;
         }
     }
 
@@ -409,26 +443,44 @@ async fn ui_loop<B: Backend>(
 where
     B::Error: Send + Sync + 'static,
 {
+    let mut needs_redraw = true;
     loop {
+        let mut dirty = false;
         while let Ok(ev) = event_rx.try_recv() {
             apply_agent_event(state, ev);
+            dirty = true;
         }
 
-        state.tick = state.tick.wrapping_add(1);
+        // The status/input spinner is the only continuous animation, so advance it (and force a
+        // redraw) only while streaming. Otherwise the loop stays idle until an event arrives.
+        if state.is_streaming {
+            state.tick = state.tick.wrapping_add(1);
+            dirty = true;
+        }
+
         state.refresh_completions();
 
-        let size = terminal.size()?;
-        let line_count = transcript_line_count(state, transcript_content_width(size.width));
-        let visible_lines = message_visible_lines(size.height);
-        state.sync_scroll(line_count, visible_lines);
-
-        terminal.draw(|frame| render(frame, state))?;
+        if dirty || needs_redraw {
+            let size = terminal.size()?;
+            let visible_lines = message_visible_lines(size.height);
+            state.refresh_transcript_cache(transcript_content_width(size.width));
+            state.sync_scroll(state.transcript_line_count, visible_lines);
+            terminal.draw(|frame| render(frame, state))?;
+            needs_redraw = false;
+        }
 
         if state.should_quit {
             break;
         }
 
-        if event::poll(Duration::from_millis(25))? {
+        let poll_timeout = if state.is_streaming {
+            Duration::from_millis(60)
+        } else {
+            Duration::from_millis(150)
+        };
+
+        if event::poll(poll_timeout)? {
+            needs_redraw = true;
             match event::read()? {
                 Event::Key(key) => {
                     if key.kind != KeyEventKind::Press {
@@ -463,8 +515,8 @@ where
                     }
 
                     let size = terminal.size()?;
-                    let line_count =
-                        transcript_line_count(state, transcript_content_width(size.width));
+                    state.refresh_transcript_cache(transcript_content_width(size.width));
+                    let line_count = state.transcript_line_count;
                     let visible_lines = message_visible_lines(size.height);
 
                     match key.code {
@@ -518,8 +570,8 @@ where
                 }
                 Event::Mouse(mouse) => {
                     let size = terminal.size()?;
-                    let line_count =
-                        transcript_line_count(state, transcript_content_width(size.width));
+                    state.refresh_transcript_cache(transcript_content_width(size.width));
+                    let line_count = state.transcript_line_count;
                     let visible_lines = message_visible_lines(size.height);
 
                     match mouse.kind {
@@ -554,6 +606,40 @@ fn paste_terminal_text(state: &mut UiState, text: &str) {
 
     state.input.push_str(&text);
     state.refresh_completions();
+}
+
+/// Ensures the UI leaves the streaming state even if the agent task panics.
+///
+/// `handle_input` emits `Done` on every normal and error path, so the guard is disarmed on
+/// completion. If the task unwinds instead, `Drop` still reports the failure and clears the
+/// streaming indicator, so the input area cannot lock up permanently.
+struct StreamGuard {
+    events: UnboundedSender<AgentEvent>,
+    armed: bool,
+}
+
+impl StreamGuard {
+    fn new(events: UnboundedSender<AgentEvent>) -> Self {
+        Self {
+            events,
+            armed: true,
+        }
+    }
+
+    fn disarm(&mut self) {
+        self.armed = false;
+    }
+}
+
+impl Drop for StreamGuard {
+    fn drop(&mut self) {
+        if self.armed {
+            let _ = self.events.send(AgentEvent::Error(
+                "agent task ended unexpectedly".to_string(),
+            ));
+            let _ = self.events.send(AgentEvent::Done);
+        }
+    }
 }
 
 async fn handle_submit(
@@ -660,6 +746,7 @@ async fn handle_submit(
         let tx = event_tx.clone();
         let handle = Arc::clone(agent);
         tokio::spawn(async move {
+            let mut guard = StreamGuard::new(tx.clone());
             let mut locked = handle.lock().await;
             if let Err(err) = locked
                 .handle_audit(prompt, scope_root, apply_fixes, tx.clone())
@@ -668,6 +755,7 @@ async fn handle_submit(
                 let _ = tx.send(AgentEvent::Error(err.to_string()));
                 let _ = tx.send(AgentEvent::Done);
             }
+            guard.disarm();
         });
         return;
     }
@@ -704,11 +792,13 @@ async fn handle_submit(
     let handle = Arc::clone(agent);
 
     tokio::spawn(async move {
+        let mut guard = StreamGuard::new(tx.clone());
         let mut locked = handle.lock().await;
         if let Err(err) = locked.handle_user_message(message, tx.clone()).await {
             let _ = tx.send(AgentEvent::Error(err.to_string()));
             let _ = tx.send(AgentEvent::Done);
         }
+        guard.disarm();
     });
 }
 
@@ -1336,7 +1426,7 @@ fn resolve_approval(state: &mut UiState, approved: bool) {
     }
 }
 
-fn render(frame: &mut Frame, state: &mut UiState) {
+fn render(frame: &mut Frame, state: &UiState) {
     let root = Layout::default()
         .direction(Direction::Vertical)
         .constraints([
@@ -1568,7 +1658,7 @@ fn centered_rect(percent_x: u16, percent_y: u16, area: Rect) -> Rect {
     .split(vertical[1])[1]
 }
 
-fn render_transcript(frame: &mut Frame, area: Rect, state: &mut UiState) {
+fn render_transcript(frame: &mut Frame, area: Rect, state: &UiState) {
     let is_home = state.messages.is_empty() && state.streaming_content.is_empty();
 
     let block = Block::default()
@@ -1583,11 +1673,10 @@ fn render_transcript(frame: &mut Frame, area: Rect, state: &mut UiState) {
     }
 
     let inner = block.inner(area);
-    let lines = build_transcript_lines(state);
-    let paragraph = Paragraph::new(lines)
+    let paragraph = Paragraph::new(state.transcript_lines.clone())
         .block(block)
         .wrap(Wrap { trim: false });
-    let line_count = paragraph.line_count(inner.width).min(u16::MAX as usize) as u16;
+    let line_count = state.transcript_line_count;
     let visible = inner.height;
     let max_scroll = line_count.saturating_sub(visible);
     let scroll = state.scroll_offset.min(max_scroll);
@@ -1742,11 +1831,9 @@ fn render_input(frame: &mut Frame, area: Rect, state: &UiState) {
             ])
         }
     } else {
-        let caret = if (state.tick / 8).is_multiple_of(2) {
-            "▌"
-        } else {
-            " "
-        };
+        // A solid caret keeps the idle UI fully event-driven; a blinking caret would force a redraw
+        // on every tick even when nothing changed.
+        let caret = "▌";
         let mut spans = vec![
             Span::styled("❯ ", Style::default().fg(palette::PHOSPHOR).bold()),
             Span::styled(state.input.clone(), Style::default().fg(palette::BONE)),
@@ -2061,11 +2148,16 @@ fn find_marker(text: &str, start: usize, marker: &str) -> Option<usize> {
     text[start..].find(marker).map(|p| start + p)
 }
 
-fn transcript_line_count(state: &UiState, width: u16) -> u16 {
-    Paragraph::new(build_transcript_lines(state))
+fn wrapped_line_count(lines: &[Line<'static>], width: u16) -> u16 {
+    Paragraph::new(lines.to_vec())
         .wrap(Wrap { trim: false })
         .line_count(width)
         .min(u16::MAX as usize) as u16
+}
+
+#[cfg(test)]
+fn transcript_line_count(state: &UiState, width: u16) -> u16 {
+    wrapped_line_count(&build_transcript_lines(state), width)
 }
 
 fn message_visible_lines(total_height: u16) -> u16 {

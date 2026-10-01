@@ -176,7 +176,7 @@ fn map_messages(system: &str, history: &[ConversationMessage]) -> Vec<Value> {
                     ConversationPart::Text(text) => serde_json::json!({ "type": "text", "text": text }),
                     ConversationPart::Image(image) => serde_json::json!({
                         "type": "image_url",
-                        "image_url": image_data_url(image),
+                        "image_url": { "url": image_data_url(image) },
                     }),
                 }).collect::<Vec<_>>(),
             })),

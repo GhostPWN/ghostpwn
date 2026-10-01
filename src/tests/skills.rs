@@ -16,9 +16,7 @@ async fn list_reads_skill_frontmatter() {
     )
     .expect("skill");
 
-    let runtime = SkillRuntime {
-        root: root.path().join("skills"),
-    };
+    let runtime = SkillRuntime::with_root(root.path().join("skills"));
     let result = runtime.list_tool().await.expect("list");
     assert_eq!(result["count"].as_u64(), Some(1));
     assert_eq!(result["skills"][0]["name"].as_str(), Some("example-skill"));
@@ -39,9 +37,7 @@ async fn search_and_read_skill_by_name() {
     )
     .expect("skill");
 
-    let runtime = SkillRuntime {
-        root: root.path().join("skills"),
-    };
+    let runtime = SkillRuntime::with_root(root.path().join("skills"));
     let search = runtime
         .search_tool(&json!({ "query": "directory traversal" }))
         .await
