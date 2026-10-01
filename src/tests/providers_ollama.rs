@@ -51,7 +51,7 @@ fn maps_image_inputs_for_openai_compatibility() {
     assert_eq!(mapped[1]["content"][0]["type"], "text");
     assert_eq!(mapped[1]["content"][1]["type"], "image_url");
     assert_eq!(
-        mapped[1]["content"][1]["image_url"],
+        mapped[1]["content"][1]["image_url"]["url"],
         "data:image/png;base64,cG5n"
     );
 }

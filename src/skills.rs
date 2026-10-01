@@ -1,12 +1,14 @@
 use std::env;
 use std::fs as std_fs;
 use std::path::{Path, PathBuf};
+use std::sync::Arc;
 
 use anyhow::{Result, anyhow};
 use include_dir::{Dir, include_dir};
 use serde::Serialize;
 use serde_json::{Value, json};
 use tokio::fs;
+use tokio::sync::OnceCell;
 use walkdir::WalkDir;
 
 const MAX_SKILL_CONTENT_BYTES: usize = 200_000;
@@ -24,12 +26,15 @@ pub struct SkillSummary {
 #[derive(Debug, Clone)]
 pub struct SkillRuntime {
     root: PathBuf,
+    // Skill files are static at runtime (bundled or a fixed directory), so the parsed catalog is
+    // built once and shared across clones instead of re-walked and re-read on every agent step.
+    cache: Arc<OnceCell<Vec<SkillSummary>>>,
 }
 
 impl SkillRuntime {
     pub fn new() -> Self {
-        Self {
-            root: env::var("GHOSTPWN_SKILLS_DIR")
+        Self::with_root(
+            env::var("GHOSTPWN_SKILLS_DIR")
                 .ok()
                 .filter(|value| !value.trim().is_empty())
                 .map(PathBuf::from)
@@ -46,12 +51,14 @@ impl SkillRuntime {
                     }
                     root
                 }),
-        }
+        )
     }
 
-    #[cfg(test)]
     pub(crate) fn with_root(root: PathBuf) -> Self {
-        Self { root }
+        Self {
+            root,
+            cache: Arc::new(OnceCell::new()),
+        }
     }
 
     pub async fn list_tool(&self) -> Result<Value> {
@@ -123,6 +130,11 @@ impl SkillRuntime {
     }
 
     async fn list(&self) -> Result<Vec<SkillSummary>> {
+        let skills = self.cache.get_or_try_init(|| self.load_skills()).await?;
+        Ok(skills.clone())
+    }
+
+    async fn load_skills(&self) -> Result<Vec<SkillSummary>> {
         if fs::metadata(&self.root).await.is_err() {
             return Ok(Vec::new());
         }
@@ -155,16 +167,7 @@ impl SkillRuntime {
     }
 
     async fn count_skill_files(&self) -> Result<usize> {
-        if fs::metadata(&self.root).await.is_err() {
-            return Ok(0);
-        }
-
-        Ok(WalkDir::new(&self.root)
-            .follow_links(false)
-            .into_iter()
-            .filter_map(|entry| entry.ok())
-            .filter(|entry| entry.file_type().is_file() && entry.file_name() == "SKILL.md")
-            .count())
+        Ok(self.list().await?.len())
     }
 
     async fn search(&self, query: &str, limit: usize) -> Result<Vec<SkillSummary>> {
