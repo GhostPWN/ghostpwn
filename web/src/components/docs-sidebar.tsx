@@ -48,16 +48,23 @@ export function MobileDocsMenu() {
   const details = useRef<HTMLDetailsElement>(null);
 
   return (
-    <details ref={details} className="relative md:hidden">
+    <details
+      ref={details}
+      className="relative md:hidden"
+      onKeyDown={(event) => {
+        if (event.key !== "Escape" || !details.current?.open) return;
+        details.current.removeAttribute("open");
+        details.current.querySelector("summary")?.focus();
+      }}
+    >
       <summary
-        aria-label="Open documentation menu"
         className="flex size-8 cursor-pointer list-none items-center justify-center rounded-md border outline-none hover:bg-accent focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-1 focus-visible:ring-offset-background [&::-webkit-details-marker]:hidden"
       >
         <Menu aria-hidden="true" className="size-4" />
         <span className="sr-only">Open documentation menu</span>
       </summary>
       <div
-        className="fixed inset-x-4 top-24 max-h-[calc(100vh-7rem)] overflow-y-auto rounded-xl border bg-background p-4 shadow-lg"
+        className="fixed inset-x-4 top-24 max-h-[calc(100dvh-7rem)] overflow-y-auto rounded-xl border bg-background p-4 shadow-lg"
         onClick={() => details.current?.removeAttribute("open")}
       >
         <DocsSidebar />

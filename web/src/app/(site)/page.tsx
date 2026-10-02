@@ -66,7 +66,7 @@ const COMMANDS = `/help     # show all commands
 
 export default function Home() {
   return (
-    <main id="main-content" tabIndex={-1} className="flex flex-1 flex-col">
+    <>
       {/* Nav */}
       <header className="sticky top-0 z-20 px-4 pt-4">
         <div className="mx-auto flex w-full max-w-6xl items-center justify-between rounded-2xl border bg-background/70 px-5 py-3 shadow-sm backdrop-blur-md">
@@ -98,71 +98,73 @@ export default function Home() {
         </div>
       </header>
 
-      {/* Hero */}
-      <section className="mx-auto flex w-full max-w-5xl flex-col items-center px-6 py-24 text-center">
-        <Image
-          src={asset("/ghostpwn-logo.svg")}
-          alt="GhostPWN logo"
-          width={96}
-          height={96}
-          className="mb-8"
-          loading="eager"
-        />
-        <Badge variant="secondary" className="mb-6">
-          Rust · ratatui · Multi-provider LLM
-        </Badge>
-        <h1 className="text-balance font-heading text-5xl font-bold sm:text-6xl">
-          Autonomous penetration testing agent
-        </h1>
-        <p className="mt-6 max-w-2xl text-pretty text-lg text-muted-foreground">
-          GhostPWN is a Rust terminal assistant for offensive security research.
-          It streams from multiple LLM providers and runs local tools inside a
-          workspace boundary.
-        </p>
-        <div className="mt-10 flex flex-col gap-3 sm:flex-row">
-          <Button size="xl" render={<Link href={DOCS_URL} />}>
-            View Documentation
-          </Button>
-          <Button size="xl" variant="outline" render={<a href={GITHUB_URL} />}>
-            Star on GitHub
-          </Button>
-        </div>
-      </section>
+      <main id="main-content" tabIndex={-1} className="flex flex-1 flex-col">
+        {/* Hero */}
+        <section className="mx-auto flex w-full max-w-5xl flex-col items-center px-6 py-24 text-center">
+          <Image
+            src={asset("/ghostpwn-logo.svg")}
+            alt="GhostPWN logo"
+            width={96}
+            height={96}
+            className="mb-8"
+            loading="eager"
+          />
+          <Badge variant="secondary" className="mb-6">
+            Rust · ratatui · Multi-provider LLM
+          </Badge>
+          <h1 className="text-balance font-heading text-5xl font-bold sm:text-6xl">
+            Autonomous penetration testing agent
+          </h1>
+          <p className="mt-6 max-w-2xl text-pretty text-lg text-muted-foreground">
+            GhostPWN is a Rust terminal assistant for offensive security research.
+            It streams from multiple LLM providers and runs local tools inside a
+            workspace boundary.
+          </p>
+          <div className="mt-10 flex flex-col gap-3 sm:flex-row">
+            <Button size="xl" render={<Link href={DOCS_URL} />}>
+              View Documentation
+            </Button>
+            <Button size="xl" variant="outline" render={<a href={GITHUB_URL} />}>
+              Star on GitHub
+            </Button>
+          </div>
+        </section>
 
-      {/* Install */}
-      <section className="mx-auto w-full max-w-3xl px-6 pb-24">
-        <CodeBlock code={INSTALL} lang="bash" />
-      </section>
+        {/* Install */}
+        <section className="mx-auto w-full max-w-3xl px-6 pb-24">
+          <CodeBlock code={INSTALL} lang="bash" />
+        </section>
 
-      {/* Features */}
-      <section className="mx-auto w-full max-w-5xl px-6 pb-24">
-        <h2 className="mb-10 text-balance text-center font-heading text-3xl font-bold">
-          Built for offensive security research
-        </h2>
-        <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-3">
-          {FEATURES.map((feature) => (
-            <Card key={feature.title}>
-              <CardHeader>
-                <CardTitle render={<h3 />}>{feature.title}</CardTitle>
-                <CardDescription className="text-pretty">
-                  {feature.description}
-                </CardDescription>
-              </CardHeader>
-            </Card>
-          ))}
-        </div>
-      </section>
+        {/* Features */}
+        <section className="mx-auto w-full max-w-5xl px-6 pb-24">
+          <h2 className="mb-10 text-balance text-center font-heading text-3xl font-bold">
+            Built for offensive security research
+          </h2>
+          <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-3">
+            {FEATURES.map((feature) => (
+              <Card key={feature.title}>
+                <CardHeader>
+                  <CardTitle render={<h3 />}>{feature.title}</CardTitle>
+                  <CardDescription className="text-pretty">
+                    {feature.description}
+                  </CardDescription>
+                </CardHeader>
+              </Card>
+            ))}
+          </div>
+        </section>
 
-      {/* Commands */}
-      <section className="mx-auto w-full max-w-3xl px-6 pb-24">
-        <h2 className="mb-6 text-balance text-center font-heading text-3xl font-bold">
-          In-session commands
-        </h2>
-        <CodeBlock code={COMMANDS} lang="bash" />
-      </section>
+        {/* Commands */}
+        <section className="mx-auto w-full max-w-3xl px-6 pb-24">
+          <h2 className="mb-6 text-balance text-center font-heading text-3xl font-bold">
+            In-session commands
+          </h2>
+          <CodeBlock code={COMMANDS} lang="bash" />
+        </section>
+      </main>
 
       {/* Footer */}
       <SiteFooter />
-    </main>
+    </>
   );
 }
