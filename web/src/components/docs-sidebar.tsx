@@ -2,8 +2,8 @@
 
 import Link from "next/link";
 import { usePathname } from "next/navigation";
-import { Menu } from "lucide-react";
-import { useRef } from "react";
+import { MorphIcon, type IconNode } from "morphicons/react";
+import { useEffect, useRef, useState } from "react";
 import { NAV } from "@/lib/docs-nav";
 import { cn } from "@/lib/utils";
 
@@ -44,31 +44,71 @@ export function DocsSidebar() {
   );
 }
 
+// Lucide's menu and x as icon data, so morphicons can morph between them.
+const MENU_ICON: IconNode = [
+  ["path", { d: "M4 5h16" }],
+  ["path", { d: "M4 12h16" }],
+  ["path", { d: "M4 19h16" }],
+];
+const CLOSE_ICON: IconNode = [
+  ["path", { d: "M18 6 6 18" }],
+  ["path", { d: "m6 6 12 12" }],
+];
+
 export function MobileDocsMenu() {
-  const details = useRef<HTMLDetailsElement>(null);
+  const [open, setOpen] = useState(false);
+  const button = useRef<HTMLButtonElement>(null);
+  const panel = useRef<HTMLDivElement>(null);
+
+  // Escape closes and returns focus to the toggle; a press outside closes.
+  useEffect(() => {
+    if (!open) return;
+    const onKeyDown = (event: KeyboardEvent) => {
+      if (event.key !== "Escape") return;
+      setOpen(false);
+      button.current?.focus();
+    };
+    const onPointerDown = (event: PointerEvent) => {
+      if (!(event.target instanceof Node)) return;
+      if (button.current?.contains(event.target) || panel.current?.contains(event.target)) return;
+      setOpen(false);
+    };
+    document.addEventListener("keydown", onKeyDown);
+    document.addEventListener("pointerdown", onPointerDown);
+    return () => {
+      document.removeEventListener("keydown", onKeyDown);
+      document.removeEventListener("pointerdown", onPointerDown);
+    };
+  }, [open]);
 
   return (
-    <details
-      ref={details}
-      className="relative md:hidden"
-      onKeyDown={(event) => {
-        if (event.key !== "Escape" || !details.current?.open) return;
-        details.current.removeAttribute("open");
-        details.current.querySelector("summary")?.focus();
-      }}
-    >
-      <summary
-        className="flex size-8 cursor-pointer list-none items-center justify-center rounded-md border outline-none hover:bg-accent focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-1 focus-visible:ring-offset-background [&::-webkit-details-marker]:hidden"
+    <div className="md:hidden">
+      <button
+        ref={button}
+        type="button"
+        aria-expanded={open}
+        aria-controls="mobile-docs-menu"
+        aria-label={open ? "Close documentation menu" : "Open documentation menu"}
+        onClick={() => setOpen((value) => !value)}
+        className="flex size-8 cursor-pointer items-center justify-center rounded-md border outline-none hover:bg-accent focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-1 focus-visible:ring-offset-background"
       >
-        <Menu aria-hidden="true" className="size-4" />
-        <span className="sr-only">Open documentation menu</span>
-      </summary>
+        <MorphIcon icon={open ? CLOSE_ICON : MENU_ICON} className="size-4" reducedMotion="user" />
+      </button>
+      {/* Stays mounted so closing can animate; inert keeps it out of focus and the a11y tree. */}
       <div
-        className="fixed inset-x-4 top-24 max-h-[calc(100dvh-7rem)] overflow-y-auto rounded-lg border bg-background p-4 shadow-lg"
-        onClick={() => details.current?.removeAttribute("open")}
+        ref={panel}
+        id="mobile-docs-menu"
+        inert={!open}
+        onClick={(event) => {
+          if (event.target instanceof Element && event.target.closest("a")) setOpen(false);
+        }}
+        className={cn(
+          "fixed inset-x-4 top-24 max-h-[calc(100dvh-7rem)] overflow-y-auto rounded-lg border bg-background p-4 shadow-lg transition-[opacity,translate] duration-300 ease-out motion-reduce:transition-none",
+          open ? "translate-y-0 opacity-100" : "pointer-events-none -translate-y-2 opacity-0",
+        )}
       >
         <DocsSidebar />
       </div>
-    </details>
+    </div>
   );
 }
