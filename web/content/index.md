@@ -1,3 +1,7 @@
+---
+description: Install GhostPWN, a Rust terminal assistant for offensive security research with multi-provider LLM streaming and workspace-bounded local tools.
+---
+
 # GhostPWN
 
 Autonomous penetration testing agent. A Rust TUI that streams from multiple LLM providers and runs local tools inside a workspace boundary.

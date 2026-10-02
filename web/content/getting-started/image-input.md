@@ -1,3 +1,7 @@
+---
+description: Send PNG, JPEG, and WebP images to vision-capable models from workspace files with @ references or from the system clipboard.
+---
+
 # Image input
 
 GhostPWN can send PNG, JPEG, and WebP images to vision-capable models. Images can come from files inside the active workspace or from the system clipboard.

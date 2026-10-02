@@ -1,5 +1,5 @@
 import { SiteFooter } from "@/components/site-footer";
-import Image from "next/image";
+import { SiteHeader } from "@/components/site-header";
 import Link from "next/link";
 import { Button } from "@/components/ui/button";
 import {
@@ -10,8 +10,6 @@ import {
 } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
 import { CodeBlock } from "@/components/code-block";
-import { ThemeToggle } from "@/components/theme-toggle";
-import { asset } from "@/lib/asset";
 
 const DOCS_URL = "/docs";
 const GITHUB_URL = "https://github.com/GhostPWN/ghostpwn";
@@ -67,77 +65,38 @@ const COMMANDS = `/help     # show all commands
 export default function Home() {
   return (
     <>
-      {/* Nav */}
-      <header className="sticky top-0 z-20 px-4 pt-4">
-        <div className="mx-auto flex w-full max-w-6xl items-center justify-between rounded-2xl border bg-background/70 px-5 py-3 shadow-sm backdrop-blur-md">
-          <div className="flex items-center gap-2.5">
-            <Image
-              src={asset("/ghostpwn-logo.svg")}
-              alt="GhostPWN"
-              width={28}
-              height={28}
-            />
-            <span className="font-semibold">GhostPWN</span>
-          </div>
-          <nav
-            aria-label="Primary navigation"
-            className="flex items-center gap-2"
-          >
-            <ThemeToggle />
-            <Button variant="ghost" size="sm" render={<Link href={DOCS_URL} />}>
-              Docs
-            </Button>
-            <Button
-              variant="outline"
-              size="sm"
-              render={<a href={GITHUB_URL} />}
-            >
-              GitHub
-            </Button>
-          </nav>
-        </div>
-      </header>
+      <SiteHeader />
 
       <main id="main-content" tabIndex={-1} className="flex flex-1 flex-col">
         {/* Hero */}
-        <section className="mx-auto flex w-full max-w-5xl flex-col items-center px-6 py-24 text-center">
-          <Image
-            src={asset("/ghostpwn-logo.svg")}
-            alt="GhostPWN logo"
-            width={96}
-            height={96}
-            className="mb-8"
-            loading="eager"
-          />
-          <Badge variant="secondary" className="mb-6">
-            Rust · ratatui · Multi-provider LLM
-          </Badge>
-          <h1 className="text-balance font-heading text-5xl font-bold sm:text-6xl">
-            Autonomous penetration testing agent
-          </h1>
-          <p className="mt-6 max-w-2xl text-pretty text-lg text-muted-foreground">
-            GhostPWN is a Rust terminal assistant for offensive security research.
-            It streams from multiple LLM providers and runs local tools inside a
-            workspace boundary.
-          </p>
-          <div className="mt-10 flex flex-col gap-3 sm:flex-row">
-            <Button size="xl" render={<Link href={DOCS_URL} />}>
-              View Documentation
-            </Button>
-            <Button size="xl" variant="outline" render={<a href={GITHUB_URL} />}>
-              Star on GitHub
-            </Button>
+        <section className="mx-auto grid w-full max-w-6xl grid-cols-1 items-center gap-10 px-6 py-16 sm:py-24 lg:grid-cols-2 lg:gap-12">
+          <div className="flex flex-col items-start">
+            <Badge variant="secondary" className="mb-6">
+              Rust · ratatui · Multi-provider LLM
+            </Badge>
+            <h1 className="text-balance font-heading text-4xl font-bold tracking-tight sm:text-5xl">
+              Autonomous penetration testing agent
+            </h1>
+            <p className="mt-6 max-w-2xl text-pretty text-lg text-muted-foreground">
+              GhostPWN is a Rust terminal assistant for offensive security research.
+              It streams from multiple LLM providers and runs local tools inside a
+              workspace boundary, and every shell command waits for your approval.
+            </p>
+            <div className="mt-8 flex w-full flex-col gap-3 sm:w-auto sm:flex-row">
+              <Button size="xl" render={<Link href={DOCS_URL} />}>
+                View Documentation
+              </Button>
+              <Button size="xl" variant="outline" render={<a href={GITHUB_URL} />}>
+                Star on GitHub
+              </Button>
+            </div>
           </div>
-        </section>
-
-        {/* Install */}
-        <section className="mx-auto w-full max-w-3xl px-6 pb-24">
           <CodeBlock code={INSTALL} lang="bash" />
         </section>
 
         {/* Features */}
-        <section className="mx-auto w-full max-w-5xl px-6 pb-24">
-          <h2 className="mb-10 text-balance text-center font-heading text-3xl font-bold">
+        <section className="mx-auto w-full max-w-6xl px-6 pb-24">
+          <h2 className="mb-8 text-balance font-heading text-3xl font-bold tracking-tight">
             Built for offensive security research
           </h2>
           <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-3">
@@ -145,7 +104,7 @@ export default function Home() {
               <Card key={feature.title}>
                 <CardHeader>
                   <CardTitle render={<h3 />}>{feature.title}</CardTitle>
-                  <CardDescription className="text-pretty">
+                  <CardDescription render={<p />} className="text-pretty">
                     {feature.description}
                   </CardDescription>
                 </CardHeader>
@@ -155,15 +114,16 @@ export default function Home() {
         </section>
 
         {/* Commands */}
-        <section className="mx-auto w-full max-w-3xl px-6 pb-24">
-          <h2 className="mb-6 text-balance text-center font-heading text-3xl font-bold">
+        <section className="mx-auto w-full max-w-6xl px-6 pb-24">
+          <h2 className="mb-6 text-balance font-heading text-3xl font-bold tracking-tight">
             In-session commands
           </h2>
-          <CodeBlock code={COMMANDS} lang="bash" />
+          <div className="max-w-3xl">
+            <CodeBlock code={COMMANDS} lang="bash" />
+          </div>
         </section>
       </main>
 
-      {/* Footer */}
       <SiteFooter />
     </>
   );

@@ -34,6 +34,7 @@
   --color-secondary-foreground: var(--secondary-foreground);
   --color-secondary: var(--secondary);
   --color-ring: var(--ring);
+  --color-brand: var(--brand);
   --color-primary-foreground: var(--primary-foreground);
   --color-primary: var(--primary);
   --color-popover-foreground: var(--popover-foreground);
@@ -139,6 +140,8 @@
 }
 
 :root {
+  /* One accent, taken from the logo: links, active nav, focus rings. */
+  --brand: var(--color-violet-700);
   --destructive-foreground: var(--color-red-700);
   --info: var(--color-blue-500);
   --info-foreground: var(--color-blue-700);
@@ -161,7 +164,7 @@
   --popover-foreground: var(--color-neutral-800);
   --primary: var(--color-neutral-800);
   --primary-foreground: var(--color-neutral-50);
-  --ring: var(--color-neutral-400);
+  --ring: var(--brand);
   --secondary: --alpha(var(--color-black) / 4%);
   --secondary-foreground: var(--color-neutral-800);
   --chart-1: var(--color-orange-600);
@@ -184,6 +187,7 @@
 }
 
 .dark {
+  --brand: var(--color-violet-400);
   --destructive-foreground: var(--color-red-400);
   --info: var(--color-blue-500);
   --info-foreground: var(--color-blue-400);
@@ -206,7 +210,7 @@
   --popover-foreground: var(--color-neutral-100);
   --primary: var(--color-neutral-100);
   --primary-foreground: var(--color-neutral-800);
-  --ring: var(--color-neutral-500);
+  --ring: var(--brand);
   --secondary: --alpha(var(--color-white) / 4%);
   --secondary-foreground: var(--color-neutral-100);
   --chart-1: var(--color-blue-700);
@@ -271,4 +275,16 @@ code[data-theme*=" "] span {
 .prose :where(code):not(:where([data-theme], pre *))::before,
 .prose :where(code):not(:where([data-theme], pre *))::after {
   content: none;
+}
+
+/* Docs headings link to themselves; keep them looking like headings. */
+.prose :where(h2, h3) > a.heading-anchor {
+  color: inherit;
+  font-weight: inherit;
+  text-decoration: none;
+}
+.prose :where(h2, h3) > a.heading-anchor:hover {
+  text-decoration: underline;
+  text-decoration-color: var(--muted-foreground);
+  text-underline-offset: 0.2em;
 }

@@ -30,7 +30,7 @@ export function DocsSidebar() {
                 className={cn(
                   "rounded-md px-2 py-1.5 transition-colors",
                   active
-                    ? "bg-accent font-medium text-foreground"
+                    ? "bg-accent font-medium text-brand"
                     : "text-muted-foreground hover:bg-accent/50 hover:text-foreground",
                 )}
               >
@@ -64,7 +64,7 @@ export function MobileDocsMenu() {
         <span className="sr-only">Open documentation menu</span>
       </summary>
       <div
-        className="fixed inset-x-4 top-24 max-h-[calc(100dvh-7rem)] overflow-y-auto rounded-xl border bg-background p-4 shadow-lg"
+        className="fixed inset-x-4 top-16 max-h-[calc(100dvh-5rem)] overflow-y-auto rounded-lg border bg-background p-4 shadow-lg"
         onClick={() => details.current?.removeAttribute("open")}
       >
         <DocsSidebar />

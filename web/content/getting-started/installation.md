@@ -1,3 +1,7 @@
+---
+description: Install GhostPWN with Homebrew on macOS or Cargo on Linux and Windows, plus the native build dependencies each platform needs.
+---
+
 # Installation
 
 ## macOS

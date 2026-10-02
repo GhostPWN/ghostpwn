@@ -1,3 +1,7 @@
+---
+description: How GhostPWN is built: the agent loop, provider adapters, workspace-safe tools, skills, the ratatui UI, and secret storage.
+---
+
 # Architecture
 
 - `src/main.rs`: bootstrap and dependency wiring

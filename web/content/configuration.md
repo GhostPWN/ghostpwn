@@ -1,3 +1,7 @@
+---
+description: Configure GhostPWN with environment variables for provider, model, workspace boundary, skills, state file, and provider API keys.
+---
+
 # Configuration
 
 ## Environment variables

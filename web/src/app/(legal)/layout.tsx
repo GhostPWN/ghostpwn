@@ -1,4 +1,4 @@
-import Link from "next/link";
+import { SiteHeader } from "@/components/site-header";
 import { SiteFooter } from "@/components/site-footer";
 import "./legal.css";
 
@@ -9,11 +9,7 @@ export default function LegalLayout({
 }) {
   return (
     <div className="flex min-h-dvh flex-col" lang="en">
-      <header className="mx-auto w-full max-w-3xl px-6 pt-8">
-        <Link href="/" className="font-semibold underline underline-offset-4">
-          GhostPWN
-        </Link>
-      </header>
+      <SiteHeader />
       <main
         id="main-content"
         tabIndex={-1}

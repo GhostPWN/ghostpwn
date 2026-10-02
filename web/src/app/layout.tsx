@@ -3,6 +3,13 @@ import { Geist_Mono, Inter } from "next/font/google";
 import "./globals.css";
 import { cn } from "@/lib/utils";
 import { ThemeProvider } from "@/components/theme-provider";
+import {
+  DEFAULT_DESCRIPTION,
+  DEFAULT_TITLE,
+  SITE_NAME,
+  SITE_URL,
+  SOCIAL_IMAGE_URL,
+} from "@/lib/seo";
 
 const inter = Inter({ subsets: ["latin"], variable: "--font-sans" });
 
@@ -11,30 +18,27 @@ const geistMono = Geist_Mono({
   subsets: ["latin"],
 });
 
-const SITE_URL = "https://ghostpwn.github.io/ghostpwn";
-const TITLE = "GhostPWN | Autonomous penetration testing agent";
-const DESCRIPTION =
-  "GhostPWN is a Rust terminal assistant for offensive security research, streaming from multiple LLM providers and running local tools inside a workspace boundary.";
-
 export const metadata: Metadata = {
   metadataBase: new URL(SITE_URL),
   title: {
-    default: TITLE,
-    template: "%s | GhostPWN",
+    default: DEFAULT_TITLE,
+    template: `%s | ${SITE_NAME}`,
   },
-  description: DESCRIPTION,
-  alternates: { canonical: SITE_URL },
+  description: DEFAULT_DESCRIPTION,
+  alternates: { canonical: "/" },
   openGraph: {
     type: "website",
     url: SITE_URL,
-    siteName: "GhostPWN",
-    title: TITLE,
-    description: DESCRIPTION,
+    siteName: SITE_NAME,
+    title: DEFAULT_TITLE,
+    description: DEFAULT_DESCRIPTION,
+    images: [{ url: SOCIAL_IMAGE_URL, width: 1200, height: 630, alt: `${SITE_NAME} documentation` }],
   },
   twitter: {
-    card: "summary",
-    title: TITLE,
-    description: DESCRIPTION,
+    card: "summary_large_image",
+    title: DEFAULT_TITLE,
+    description: DEFAULT_DESCRIPTION,
+    images: [SOCIAL_IMAGE_URL],
   },
 };
 

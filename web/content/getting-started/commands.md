@@ -1,3 +1,7 @@
+---
+description: GhostPWN slash commands: /help, /model provider and model switching, /audit read-only workspace audits, and approved fixes.
+---
+
 # Commands
 
 - `/help` shows all commands

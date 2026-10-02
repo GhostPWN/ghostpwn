@@ -1,7 +1,6 @@
 import type { MetadataRoute } from "next";
 import { getDocSlugs } from "@/lib/docs-nav";
-
-const SITE_URL = "https://ghostpwn.github.io/ghostpwn";
+import { SITE_URL } from "@/lib/seo";
 
 export const dynamic = "force-static";
 
