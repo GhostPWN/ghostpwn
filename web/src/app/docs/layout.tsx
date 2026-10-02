@@ -1,6 +1,6 @@
 import { SiteFooter } from "@/components/site-footer";
 import { SiteHeader } from "@/components/site-header";
-import { DocsSidebar, MobileDocsMenu } from "@/components/docs-sidebar";
+import { DocsSidebar } from "@/components/docs-sidebar";
 
 export default function DocsLayout({
   children,
@@ -9,9 +9,7 @@ export default function DocsLayout({
 }) {
   return (
     <div className="flex min-h-full flex-col">
-      <SiteHeader showDocsLink={false}>
-        <MobileDocsMenu />
-      </SiteHeader>
+      <SiteHeader showDocsLink={false} mobileMenu={<DocsSidebar />} />
 
       <div className="mx-auto flex w-full max-w-6xl flex-1 gap-10 px-6">
         <aside className="hidden w-56 shrink-0 py-10 md:block">
