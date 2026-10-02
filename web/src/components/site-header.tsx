@@ -16,8 +16,8 @@ export function SiteHeader({
   showDocsLink?: boolean;
 }) {
   return (
-    <header className="sticky top-0 z-20 border-b bg-background">
-      <div className="mx-auto flex h-14 w-full max-w-6xl items-center justify-between px-6">
+    <header className="sticky top-0 z-20 px-4 pt-4">
+      <div className="mx-auto flex w-full max-w-6xl items-center justify-between rounded-2xl border bg-background/70 px-5 py-3 shadow-sm backdrop-blur-md">
         <Link
           href="/"
           className="flex items-center gap-2.5 rounded-md outline-none focus-visible:ring-2 focus-visible:ring-ring"

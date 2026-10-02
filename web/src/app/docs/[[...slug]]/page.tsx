@@ -75,7 +75,7 @@ export default async function DocPage(props: DocPageProps) {
         </div>
         {doc.toc.length > 1 && (
           <aside className="hidden xl:block">
-            <div className="sticky top-20 flex max-h-[calc(100dvh-6rem)] flex-col gap-3 overflow-y-auto">
+            <div className="sticky top-24 flex max-h-[calc(100dvh-7rem)] flex-col gap-3 overflow-y-auto">
               <p className="text-xs font-semibold uppercase text-muted-foreground">
                 On this page
               </p>
