@@ -85,10 +85,7 @@ const processor = unified()
   .use(rehypeSlug)
   .use(rehypeHeadingLinks)
   .use(rehypePrettyCode, {
-    theme: {
-      light: "github-light-high-contrast",
-      dark: "github-dark-high-contrast",
-    },
+    theme: { light: "github-light", dark: "github-dark" },
     keepBackground: false,
   })
   .use(rehypeStringify);
