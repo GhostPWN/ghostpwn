@@ -82,3 +82,20 @@ fn split_crlf_is_normalized_as_one_line_ending() {
     assert_eq!(buffer, "data: one\n\ndata: two\n\n");
     assert!(!pending_cr);
 }
+#[test]
+fn detects_event_stream_content_type() {
+    use reqwest::header::{CONTENT_TYPE, HeaderMap, HeaderValue};
+
+    let mut headers = HeaderMap::new();
+    assert!(!super::is_event_stream(&headers));
+    for (content_type, expected) in [
+        ("text/event-stream", true),
+        ("text/event-stream; charset=utf-8", true),
+        ("application/json", false),
+    ] {
+        headers.insert(CONTENT_TYPE, HeaderValue::from_static(content_type));
+        assert_eq!(super::is_event_stream(&headers), expected);
+    }
+    headers.insert(CONTENT_TYPE, HeaderValue::from_bytes(b"\xff").unwrap());
+    assert!(!super::is_event_stream(&headers));
+}

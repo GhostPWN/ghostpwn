@@ -4,11 +4,9 @@ use futures_util::{StreamExt, stream};
 use reqwest::Client;
 use serde_json::Value;
 
-use crate::models::{ConversationMessage, ConversationPart, MessageRole};
+use crate::models::ConversationMessage;
 use crate::providers::sse::consume_sse;
-use crate::providers::{
-    Provider, image_data_url, message_text, provider_http_client, request_error,
-};
+use crate::providers::{Provider, map_chat_messages, provider_http_client, request_error};
 
 const MODEL_PROBE_CONCURRENCY: usize = 8;
 
@@ -94,7 +92,7 @@ impl Provider for OllamaProvider {
         let payload = serde_json::json!({
             "model": self.model,
             "stream": true,
-            "messages": map_messages(system, messages),
+            "messages": map_chat_messages(system, messages),
         });
 
         let response = self
@@ -162,39 +160,6 @@ fn supports_completion(body: &Value) -> bool {
                 .iter()
                 .any(|capability| capability.as_str() == Some("completion"))
         })
-}
-
-fn map_messages(system: &str, history: &[ConversationMessage]) -> Vec<Value> {
-    let mut out = Vec::with_capacity(history.len() + 1);
-    out.push(serde_json::json!({ "role": "system", "content": system }));
-
-    for m in history {
-        match m.role {
-            MessageRole::User if m.has_images() => out.push(serde_json::json!({
-                "role": "user",
-                "content": m.content.iter().map(|part| match part {
-                    ConversationPart::Text(text) => serde_json::json!({ "type": "text", "text": text }),
-                    ConversationPart::Image(image) => serde_json::json!({
-                        "type": "image_url",
-                        "image_url": { "url": image_data_url(image) },
-                    }),
-                }).collect::<Vec<_>>(),
-            })),
-            MessageRole::User => out.push(serde_json::json!({
-                "role": "user",
-                "content": message_text(m),
-            })),
-            MessageRole::Assistant => {
-                out.push(serde_json::json!({ "role": "assistant", "content": message_text(m) }))
-            }
-            MessageRole::Tool => out.push(serde_json::json!({
-                "role": "user",
-                "content": format!("[tool] {}", message_text(m)),
-            })),
-        }
-    }
-
-    out
 }
 
 #[cfg(test)]

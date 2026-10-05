@@ -4,15 +4,15 @@ use anyhow::{Result, anyhow};
 use async_trait::async_trait;
 use reqwest::Client;
 use reqwest::StatusCode;
-use reqwest::header::CONTENT_TYPE;
 use serde::Deserialize;
 use serde_json::{Value, json};
 use tokio::sync::Mutex;
 
 use crate::models::{ConversationMessage, ConversationPart, MessageRole};
-use crate::providers::sse::{consume_sse, extract_error_message};
+use crate::providers::sse::{consume_sse, extract_error_message, is_event_stream};
 use crate::providers::{
-    Provider, image_data_url, message_text, provider_http_client, request_error,
+    Provider, dedup_preserve_order, extract_response_text, image_data_url, map_chat_messages,
+    message_text, provider_http_client, request_error,
 };
 
 const CLIENT_ID: &str = "Iv1.b507a08c87ecfe98";
@@ -247,16 +247,9 @@ impl CopilotProvider {
             ));
         }
 
-        let is_sse = response
-            .headers()
-            .get(CONTENT_TYPE)
-            .and_then(|v| v.to_str().ok())
-            .map(|v| v.contains("text/event-stream"))
-            .unwrap_or(false);
-
-        if !is_sse {
+        if !is_event_stream(response.headers()) {
             let body: Value = response.json().await?;
-            let out = extract_responses_content(&body).unwrap_or_default();
+            let out = extract_response_text(&body).unwrap_or_default();
             if !out.is_empty() {
                 on_delta(out.clone());
             }
@@ -340,7 +333,7 @@ impl Provider for CopilotProvider {
             "model": self.model,
             "temperature": 0.2,
             "stream": true,
-            "messages": map_messages(system, messages),
+            "messages": map_chat_messages(system, messages),
         });
 
         let response = self
@@ -368,14 +361,7 @@ impl Provider for CopilotProvider {
             return Err(request_error("Copilot API", status, &body, messages));
         }
 
-        let is_sse = response
-            .headers()
-            .get(CONTENT_TYPE)
-            .and_then(|v| v.to_str().ok())
-            .map(|v| v.contains("text/event-stream"))
-            .unwrap_or(false);
-
-        if !is_sse {
+        if !is_event_stream(response.headers()) {
             let body: Value = response.json().await?;
             let out = extract_content(&body).unwrap_or_default();
             if !out.is_empty() {
@@ -418,36 +404,6 @@ impl Provider for CopilotProvider {
 
         Ok(full)
     }
-}
-
-fn map_messages(system: &str, history: &[ConversationMessage]) -> Vec<Value> {
-    let mut out = Vec::with_capacity(history.len() + 1);
-    out.push(json!({ "role": "system", "content": system }));
-
-    for m in history {
-        match m.role {
-            MessageRole::User if m.has_images() => out.push(json!({
-                "role": "user",
-                "content": m.content.iter().map(|part| match part {
-                    ConversationPart::Text(text) => json!({ "type": "text", "text": text }),
-                    ConversationPart::Image(image) => json!({
-                        "type": "image_url",
-                        "image_url": { "url": image_data_url(image) },
-                    }),
-                }).collect::<Vec<_>>(),
-            })),
-            MessageRole::User => out.push(json!({ "role": "user", "content": message_text(m) })),
-            MessageRole::Assistant => {
-                out.push(json!({ "role": "assistant", "content": message_text(m) }))
-            }
-            MessageRole::Tool => out.push(json!({
-                "role": "user",
-                "content": format!("[tool] {}", message_text(m)),
-            })),
-        }
-    }
-
-    out
 }
 
 fn map_response_messages(system: &str, history: &[ConversationMessage]) -> Vec<Value> {
@@ -495,29 +451,6 @@ fn extract_content(body: &Value) -> Option<String> {
         .get("content")?
         .as_str()
         .map(|s| s.to_string())
-}
-
-fn extract_responses_content(body: &Value) -> Option<String> {
-    if let Some(text) = body.get("output_text").and_then(|v| v.as_str()) {
-        return Some(text.to_string());
-    }
-
-    let mut out = String::new();
-    let output_items = body.get("output")?.as_array()?;
-    for item in output_items {
-        let contents = item.get("content").and_then(|v| v.as_array());
-        let Some(contents) = contents else {
-            continue;
-        };
-
-        for content in contents {
-            if let Some(text) = content.get("text").and_then(|v| v.as_str()) {
-                out.push_str(text);
-            }
-        }
-    }
-
-    if out.is_empty() { None } else { Some(out) }
 }
 
 fn parse_models_for_chat_completions(body: &Value) -> Vec<String> {
@@ -671,11 +604,6 @@ fn model_alias_key(value: &str) -> String {
         .filter(|c| c.is_ascii_alphanumeric())
         .flat_map(char::to_lowercase)
         .collect()
-}
-
-fn dedup_preserve_order(values: &mut Vec<String>) {
-    let mut seen = std::collections::HashSet::<String>::new();
-    values.retain(|value| seen.insert(value.clone()));
 }
 
 fn is_unsupported_chat_model_error(body: &str) -> bool {

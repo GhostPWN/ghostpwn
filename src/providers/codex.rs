@@ -10,7 +10,7 @@ use base64::Engine;
 use base64::engine::general_purpose::URL_SAFE_NO_PAD;
 use rand::RngCore;
 use reqwest::Client;
-use reqwest::header::{ACCEPT, CONTENT_TYPE, HeaderMap, HeaderValue, USER_AGENT};
+use reqwest::header::{ACCEPT, HeaderMap, HeaderValue, USER_AGENT};
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use sha2::{Digest, Sha256};
@@ -19,9 +19,10 @@ use url::Url;
 
 use crate::config::ProviderKind;
 use crate::models::{ConversationMessage, ConversationPart, MessageRole};
-use crate::providers::sse::{consume_sse, extract_error_message};
+use crate::providers::sse::{consume_sse, extract_error_message, is_event_stream};
 use crate::providers::{
-    Provider, image_data_url, message_text, provider_http_client, request_error,
+    Provider, dedup_preserve_order, extract_response_text, image_data_url, message_text,
+    provider_http_client, request_error,
 };
 use crate::secrets::SecretStore;
 
@@ -263,14 +264,7 @@ impl Provider for CodexProvider {
             return Err(request_error("Codex API", status, &body, messages));
         }
 
-        let is_sse = response
-            .headers()
-            .get(CONTENT_TYPE)
-            .and_then(|v| v.to_str().ok())
-            .map(|v| v.contains("text/event-stream"))
-            .unwrap_or(false);
-
-        if !is_sse {
+        if !is_event_stream(response.headers()) {
             let body = response.text().await?;
             let out = extract_response_text_from_body(&body)?;
             if !out.is_empty() {
@@ -645,11 +639,6 @@ fn codex_fallback_models() -> Vec<String> {
         .collect()
 }
 
-fn dedup_preserve_order(values: &mut Vec<String>) {
-    let mut seen = std::collections::HashSet::new();
-    values.retain(|value| seen.insert(value.clone()));
-}
-
 fn map_messages(history: &[ConversationMessage]) -> Vec<Value> {
     history
         .iter()
@@ -707,26 +696,6 @@ fn extract_stream_delta(chunk: &Value) -> Option<String> {
         .and_then(|v| v.get("content"))
         .and_then(|v| v.as_str())
         .map(ToString::to_string)
-}
-
-fn extract_response_text(body: &Value) -> Option<String> {
-    if let Some(text) = body.get("output_text").and_then(|v| v.as_str()) {
-        return Some(text.to_string());
-    }
-
-    let mut out = String::new();
-    for item in body.get("output")?.as_array()? {
-        let Some(contents) = item.get("content").and_then(|v| v.as_array()) else {
-            continue;
-        };
-        for content in contents {
-            if let Some(text) = content.get("text").and_then(|v| v.as_str()) {
-                out.push_str(text);
-            }
-        }
-    }
-
-    if out.is_empty() { None } else { Some(out) }
 }
 
 fn extract_response_text_from_body(body: &str) -> Result<String> {

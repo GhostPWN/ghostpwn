@@ -1,13 +1,13 @@
 use anyhow::{Result, anyhow};
 use async_trait::async_trait;
 use reqwest::Client;
-use reqwest::header::CONTENT_TYPE;
 use serde_json::{Value, json};
 
 use crate::models::{ConversationMessage, ConversationPart, MessageRole};
-use crate::providers::sse::{consume_sse, extract_error_message};
+use crate::providers::sse::{consume_sse, extract_error_message, is_event_stream};
 use crate::providers::{
-    Provider, image_data_url, message_text, provider_http_client, request_error,
+    Provider, extract_response_text, image_data_url, message_text, provider_http_client,
+    request_error,
 };
 
 pub struct OpenAiProvider {
@@ -83,14 +83,7 @@ impl Provider for OpenAiProvider {
             ));
         }
 
-        let is_sse = response
-            .headers()
-            .get(CONTENT_TYPE)
-            .and_then(|v| v.to_str().ok())
-            .map(|v| v.contains("text/event-stream"))
-            .unwrap_or(false);
-
-        if !is_sse {
+        if !is_event_stream(response.headers()) {
             let body: Value = response.json().await?;
             let out = extract_response_text(&body).unwrap_or_default();
             if !out.is_empty() {
@@ -155,25 +148,6 @@ fn map_messages(history: &[ConversationMessage]) -> Vec<Value> {
             }),
         })
         .collect()
-}
-
-fn extract_response_text(body: &Value) -> Option<String> {
-    if let Some(text) = body.get("output_text").and_then(Value::as_str) {
-        return Some(text.to_string());
-    }
-
-    let mut out = String::new();
-    for item in body.get("output")?.as_array()? {
-        if let Some(content) = item.get("content").and_then(Value::as_array) {
-            for part in content {
-                if let Some(text) = part.get("text").and_then(Value::as_str) {
-                    out.push_str(text);
-                }
-            }
-        }
-    }
-
-    (!out.is_empty()).then_some(out)
 }
 
 fn parse_chat_models(body: &Value) -> Vec<String> {

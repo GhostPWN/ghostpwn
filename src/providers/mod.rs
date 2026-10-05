@@ -6,15 +6,17 @@ mod ollama;
 mod openai;
 mod sse;
 
+use std::collections::HashSet;
 use std::time::Duration;
 
 use anyhow::{Result, anyhow};
 use async_trait::async_trait;
 use base64::Engine;
 use reqwest::Client;
+use serde_json::{Value, json};
 
 use crate::config::{ProviderKeys, ProviderKind};
-use crate::models::{ConversationMessage, ConversationPart, ImageAttachment};
+use crate::models::{ConversationMessage, ConversationPart, ImageAttachment, MessageRole};
 use crate::secrets::SecretStore;
 
 /// Upper bound on model output tokens for providers that require an explicit cap.
@@ -62,6 +64,62 @@ fn message_text(message: &ConversationMessage) -> String {
         .collect()
 }
 
+fn map_chat_messages(system: &str, history: &[ConversationMessage]) -> Vec<Value> {
+    let mut out = Vec::with_capacity(history.len() + 1);
+    out.push(json!({ "role": "system", "content": system }));
+
+    for message in history {
+        match message.role {
+            MessageRole::User if message.has_images() => out.push(json!({
+                "role": "user",
+                "content": message.content.iter().map(|part| match part {
+                    ConversationPart::Text(text) => json!({ "type": "text", "text": text }),
+                    ConversationPart::Image(image) => json!({
+                        "type": "image_url",
+                        "image_url": { "url": image_data_url(image) },
+                    }),
+                }).collect::<Vec<_>>(),
+            })),
+            MessageRole::User => {
+                out.push(json!({ "role": "user", "content": message_text(message) }))
+            }
+            MessageRole::Assistant => {
+                out.push(json!({ "role": "assistant", "content": message_text(message) }))
+            }
+            MessageRole::Tool => out.push(json!({
+                "role": "user",
+                "content": format!("[tool] {}", message_text(message)),
+            })),
+        }
+    }
+
+    out
+}
+
+fn extract_response_text(body: &Value) -> Option<String> {
+    if let Some(text) = body.get("output_text").and_then(Value::as_str) {
+        return Some(text.to_string());
+    }
+
+    let mut out = String::new();
+    for item in body.get("output")?.as_array()? {
+        if let Some(content) = item.get("content").and_then(Value::as_array) {
+            for part in content {
+                if let Some(text) = part.get("text").and_then(Value::as_str) {
+                    out.push_str(text);
+                }
+            }
+        }
+    }
+
+    (!out.is_empty()).then_some(out)
+}
+
+fn dedup_preserve_order(values: &mut Vec<String>) {
+    let mut seen = HashSet::new();
+    values.retain(|value| seen.insert(value.clone()));
+}
+
 fn request_error(
     operation: &str,
     status: reqwest::StatusCode,
@@ -103,35 +161,22 @@ pub fn build_provider_with_secret_store(
     keys: &ProviderKeys,
     secret_store: SecretStore,
 ) -> Box<dyn Provider> {
-    build_provider_inner(provider, model, keys, Some(secret_store))
-}
-
-fn build_provider_inner(
-    provider: ProviderKind,
-    model: String,
-    keys: &ProviderKeys,
-    secret_store: Option<SecretStore>,
-) -> Box<dyn Provider> {
-    match provider {
-        ProviderKind::Ollama => Box::new(OllamaProvider::new(model)),
-        _ => {
-            let Some(api_key) = keys.get(provider) else {
-                return Box::new(DisconnectedProvider { provider, model });
-            };
-
-            match provider {
-                ProviderKind::Anthropic => {
-                    Box::new(AnthropicProvider::new(api_key.to_string(), model))
-                }
-                ProviderKind::OpenAi => Box::new(OpenAiProvider::new(api_key.to_string(), model)),
-                ProviderKind::Google => Box::new(GoogleProvider::new(api_key.to_string(), model)),
-                ProviderKind::Copilot => Box::new(CopilotProvider::new(api_key.to_string(), model)),
-                ProviderKind::Codex => {
-                    Box::new(CodexProvider::new(api_key.to_string(), model, secret_store))
-                }
-                ProviderKind::Ollama => Box::new(OllamaProvider::new(model)),
-            }
+    match (provider, keys.get(provider)) {
+        (ProviderKind::Ollama, _) => Box::new(OllamaProvider::new(model)),
+        (_, None) => Box::new(DisconnectedProvider { provider, model }),
+        (ProviderKind::Anthropic, Some(key)) => {
+            Box::new(AnthropicProvider::new(key.to_string(), model))
         }
+        (ProviderKind::OpenAi, Some(key)) => Box::new(OpenAiProvider::new(key.to_string(), model)),
+        (ProviderKind::Google, Some(key)) => Box::new(GoogleProvider::new(key.to_string(), model)),
+        (ProviderKind::Copilot, Some(key)) => {
+            Box::new(CopilotProvider::new(key.to_string(), model))
+        }
+        (ProviderKind::Codex, Some(key)) => Box::new(CodexProvider::new(
+            key.to_string(),
+            model,
+            Some(secret_store),
+        )),
     }
 }
 
@@ -146,29 +191,20 @@ impl Provider for DisconnectedProvider {
         format!("{} / {} (disconnected)", self.provider.as_str(), self.model)
     }
 
-    async fn list_models(&self) -> Result<Vec<String>> {
-        Ok(vec![])
-    }
-
     async fn stream_complete(
         &self,
         _system: &str,
         _messages: &[ConversationMessage],
         _on_delta: &mut (dyn FnMut(String) + Send),
     ) -> Result<String> {
-        let usage = match self.provider {
-            ProviderKind::Copilot => "open /model and press c on the copilot tab".to_string(),
-            ProviderKind::Codex => "open /model and press c on the codex tab".to_string(),
-            _ => format!(
-                "open /model and press c on the {} tab",
-                self.provider.as_str()
-            ),
-        };
-
         Err(anyhow!(
-            "No API key connected for {}. {}",
+            "No API key connected for {}. open /model and press c on the {} tab",
             self.provider.as_str(),
-            usage
+            self.provider.as_str()
         ))
     }
 }
+
+#[cfg(test)]
+#[path = "../tests/providers.rs"]
+mod tests;

@@ -4,9 +4,9 @@ use serde_json::json;
 
 use super::{
     BrowserAuth, BrowserCode, CodexCredentials, credentials_from_device_response,
-    extract_account_id, extract_response_text, extract_response_text_from_body,
-    extract_stream_delta, map_messages, parse_codex_models, parse_credentials, persist_credentials,
-    pkce_challenge, serialize_credentials,
+    extract_account_id, extract_response_text_from_body, extract_stream_delta, map_messages,
+    parse_codex_models, parse_credentials, persist_credentials, pkce_challenge,
+    serialize_credentials,
 };
 use crate::models::{ConversationMessage, ConversationPart, ImageAttachment, ImageMediaType};
 use crate::secrets::SecretStore;
@@ -173,7 +173,10 @@ fn parses_non_stream_response_text() {
         }]
     });
 
-    assert_eq!(extract_response_text(&body).as_deref(), Some("hello world"));
+    assert_eq!(
+        extract_response_text_from_body(&body.to_string()).unwrap(),
+        "hello world"
+    );
 }
 
 #[test]

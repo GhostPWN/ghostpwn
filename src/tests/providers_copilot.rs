@@ -2,7 +2,7 @@ use serde_json::json;
 
 use std::sync::Arc;
 
-use super::{map_messages, map_response_messages, parse_models_for_chat_completions};
+use super::{map_response_messages, parse_models_for_chat_completions};
 use crate::models::{ConversationMessage, ConversationPart, ImageAttachment, ImageMediaType};
 
 #[test]
@@ -19,7 +19,7 @@ fn keeps_models_even_when_only_responses_endpoint_is_present() {
 }
 
 #[test]
-fn maps_images_for_both_copilot_endpoints() {
+fn maps_images_for_copilot_responses() {
     let messages = vec![ConversationMessage::user_with_parts(vec![
         ConversationPart::Text("inspect".to_string()),
         ConversationPart::Image(ImageAttachment {
@@ -28,12 +28,6 @@ fn maps_images_for_both_copilot_endpoints() {
             name: "shot.png".to_string(),
         }),
     ])];
-
-    let chat = map_messages("system", &messages);
-    assert_eq!(
-        chat[1]["content"][1]["image_url"]["url"],
-        "data:image/png;base64,cG5n"
-    );
 
     let responses = map_response_messages("system", &messages);
     assert_eq!(responses[1]["content"][1]["type"], "input_image");

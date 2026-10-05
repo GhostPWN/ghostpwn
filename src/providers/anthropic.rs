@@ -1,13 +1,13 @@
 use anyhow::{Result, anyhow};
 use async_trait::async_trait;
 use reqwest::Client;
-use reqwest::header::CONTENT_TYPE;
 use serde_json::{Value, json};
 
 use crate::models::{ConversationMessage, ConversationPart, MessageRole};
-use crate::providers::sse::{consume_sse, extract_error_message};
+use crate::providers::sse::{consume_sse, extract_error_message, is_event_stream};
 use crate::providers::{
-    MAX_OUTPUT_TOKENS, Provider, image_base64, message_text, provider_http_client, request_error,
+    MAX_OUTPUT_TOKENS, Provider, dedup_preserve_order, image_base64, message_text,
+    provider_http_client, request_error,
 };
 
 pub struct AnthropicProvider {
@@ -105,14 +105,7 @@ impl Provider for AnthropicProvider {
             return Err(request_error("Anthropic API", status, &body, messages));
         }
 
-        let is_sse = response
-            .headers()
-            .get(CONTENT_TYPE)
-            .and_then(|v| v.to_str().ok())
-            .map(|v| v.contains("text/event-stream"))
-            .unwrap_or(false);
-
-        if !is_sse {
+        if !is_event_stream(response.headers()) {
             let body: Value = response.json().await?;
             let text = body
                 .get("content")
@@ -211,11 +204,6 @@ fn parse_claude_models(body: &Value) -> Vec<String> {
                 .collect::<Vec<String>>()
         })
         .unwrap_or_default()
-}
-
-fn dedup_preserve_order(values: &mut Vec<String>) {
-    let mut seen = std::collections::HashSet::new();
-    values.retain(|value| seen.insert(value.clone()));
 }
 
 #[cfg(test)]

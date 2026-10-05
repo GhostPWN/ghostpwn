@@ -2,7 +2,7 @@ use serde_json::json;
 
 use std::sync::Arc;
 
-use super::{extract_response_text, map_messages, parse_chat_models};
+use super::{map_messages, parse_chat_models};
 use crate::models::{ConversationMessage, ConversationPart, ImageAttachment, ImageMediaType};
 use crate::providers::sse::extract_error_message;
 
@@ -21,20 +21,6 @@ fn model_catalog_keeps_active_text_models_only() {
     });
 
     assert_eq!(parse_chat_models(&body), vec!["gpt-5.6-sol", "o3"]);
-}
-
-#[test]
-fn extracts_buffered_responses_text() {
-    let body = json!({
-        "output": [{
-            "content": [
-                { "type": "output_text", "text": "hello " },
-                { "type": "output_text", "text": "world" }
-            ]
-        }]
-    });
-
-    assert_eq!(extract_response_text(&body).as_deref(), Some("hello world"));
 }
 
 #[test]

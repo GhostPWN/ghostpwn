@@ -1,7 +1,15 @@
 use anyhow::{Result, anyhow};
 use futures_util::StreamExt;
 use reqwest::Response;
+use reqwest::header::{CONTENT_TYPE, HeaderMap};
 use serde_json::Value;
+
+pub fn is_event_stream(headers: &HeaderMap) -> bool {
+    headers
+        .get(CONTENT_TYPE)
+        .and_then(|value| value.to_str().ok())
+        .is_some_and(|value| value.contains("text/event-stream"))
+}
 
 pub fn extract_error_message(event: &Value) -> Option<String> {
     if event
