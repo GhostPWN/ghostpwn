@@ -265,7 +265,8 @@ async fn audit_mode_rejects_tools_and_paths_outside_scope() {
     fs::write(scope.join("inside.rs"), "safe").expect("inside");
     fs::write(workspace.join("outside.rs"), "outside").expect("outside");
 
-    let tools = ToolRuntime::new(workspace).expect("runtime");
+    let workspace = workspace.canonicalize().expect("canonical workspace");
+    let tools = ToolRuntime::new(workspace.clone()).expect("runtime");
     let scope = scope.canonicalize().expect("canonical scope");
     let blocked_tool = ToolCall {
         name: "webFetch".to_string(),
@@ -282,7 +283,7 @@ async fn audit_mode_rejects_tools_and_paths_outside_scope() {
 
     let outside_read = ToolCall {
         name: "readFile".to_string(),
-        arguments: json!({"path": root.path().join("workspace/outside.rs").display().to_string()}),
+        arguments: json!({"path": workspace.join("outside.rs").display().to_string()}),
     };
     assert!(
         tools
@@ -328,7 +329,7 @@ async fn audit_mode_rejects_tools_and_paths_outside_scope() {
     let outside_write = ToolCall {
         name: "writeFile".to_string(),
         arguments: json!({
-            "path": root.path().join("workspace/not-scoped.rs").display().to_string(),
+            "path": workspace.join("not-scoped.rs").display().to_string(),
             "content": "blocked",
         }),
     };
@@ -355,6 +356,7 @@ async fn audit_mode_rejects_tools_and_paths_outside_scope() {
             .to_string()
             .contains("outside audit scope")
     );
+    assert!(!workspace.join("not-scoped.rs").exists());
 }
 
 #[test]
