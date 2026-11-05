@@ -13,7 +13,7 @@ use crate::models::{
 };
 use crate::providers::{Provider, build_provider_with_secret_store};
 use crate::secrets::{SETTING_MODEL, SETTING_PROVIDER, SecretMutationReport, SecretStore};
-use crate::tools::{ToolRuntime, audit_tool_allowed, tool_can_interrupt};
+use crate::tools::{ExecutionMode, PolicyDecision, ToolRuntime, tool_can_interrupt};
 
 const MAX_STEPS: usize = 15;
 const AUDIT_MAX_STEPS: usize = 30;
@@ -549,29 +549,27 @@ impl Agent {
                     );
                     continue;
                 }
-                if audit_scope.is_some() && !audit_tool_allowed(&call.name, allow_audit_mutations) {
-                    self.record_tool_result(
-                        &request,
-                        serde_json::json!({"error": "unavailable in this audit mode"}),
-                        true,
-                    );
+                let mode = match audit_scope {
+                    Some(scope) => ExecutionMode::Audit {
+                        scope,
+                        allow_mutations: allow_audit_mutations,
+                    },
+                    None => ExecutionMode::Workspace,
+                };
+                let mut prepared = self.tools.prepare_call(call, mode);
+                if let PolicyDecision::Deny(reason) = prepared.decision() {
+                    self.record_tool_result(&request, serde_json::json!({"error": reason}), true);
                     continue;
                 }
-
-                if native_tools && let Err(error) = crate::tools::schema::validate_call(call) {
-                    self.record_tool_result(
-                        &request,
-                        serde_json::json!({"error": error.to_string()}),
-                        true,
-                    );
-                    continue;
-                }
-                let summary = self.tools.arg_summary(&call.name, &call.arguments);
-                if self.tools.call_requires_approval(call) {
+                let summary = self
+                    .tools
+                    .arg_summary(&prepared.call().name, &prepared.call().arguments);
+                if let PolicyDecision::RequireApproval(reason) = prepared.decision() {
+                    let approval_summary = format!("{summary}; {reason}");
                     let (response, approval) = tokio::sync::oneshot::channel();
                     let _ = events.send(AgentEvent::ApprovalRequired {
                         name: call.name.clone(),
-                        args_summary: summary.clone(),
+                        args_summary: approval_summary,
                         response,
                     });
                     let approved = tokio::select! {
@@ -595,6 +593,7 @@ impl Agent {
                         );
                         continue;
                     }
+                    prepared.approve();
                 }
 
                 if cancellation.is_cancelled() {
@@ -606,27 +605,14 @@ impl Agent {
                     continue;
                 }
 
+                let interruptible = tool_can_interrupt(&prepared.call().name);
                 let _ = events.send(AgentEvent::ToolCall {
-                    name: call.name.clone(),
+                    name: prepared.call().name.clone(),
                     args_summary: summary,
                 });
-
-                let operation = async {
-                    match audit_scope {
-                        Some(scope) => {
-                            self.tools
-                                .execute_audit(call, scope, allow_audit_mutations)
-                                .await
-                        }
-                        None => {
-                            self.tools
-                                .execute_with_cancellation(call, cancellation)
-                                .await
-                        }
-                    }
-                };
+                let operation = self.tools.execute_prepared(prepared, cancellation);
                 // File changes must finish or roll back. Commands handle process cleanup themselves.
-                let result = if tool_can_interrupt(&call.name) {
+                let result = if interruptible {
                     tokio::select! {
                         biased;
                         _ = cancellation.cancelled() => Err(anyhow::anyhow!("Tool cancelled")),

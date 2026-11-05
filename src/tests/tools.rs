@@ -226,7 +226,7 @@ fn approval_summaries_expose_command_risk_and_mutation_size() {
 
     assert_eq!(
         tools.arg_summary("runCommand", &json!({"command": "cargo test"})),
-        "UNSANDBOXED shell command: cargo test"
+        "UNSANDBOXED shell command in .: cargo test"
     );
     assert_eq!(
         tools.arg_summary(

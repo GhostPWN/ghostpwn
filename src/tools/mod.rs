@@ -1,4 +1,9 @@
+mod policy;
 pub mod schema;
+
+pub use policy::{ExecutionMode, PolicyDecision};
+#[cfg(test)]
+use policy::{audit_tool_allowed, tool_requires_approval};
 
 use std::io::Read as _;
 use std::io::{Error as IoError, ErrorKind};
@@ -63,13 +68,6 @@ pub fn tool_can_interrupt(name: &str) -> bool {
             | "generateDiff"
             | "webFetch"
             | "webSearch"
-    )
-}
-
-pub fn tool_requires_approval(name: &str) -> bool {
-    matches!(
-        canonical_tool_name(name),
-        "runCommand" | "auditDependencies" | "writeFile" | "editFile" | "multiEdit" | "applyPatch"
     )
 }
 
@@ -146,25 +144,6 @@ fn sensitive_data_filename(name: &str) -> bool {
     }) || STEMS.iter().any(|stem| name == format!("{stem}.yml"))
 }
 
-pub fn audit_tool_allowed(name: &str, allow_mutations: bool) -> bool {
-    matches!(
-        canonical_tool_name(name),
-        "listSkills"
-            | "searchSkills"
-            | "readSkill"
-            | "readFile"
-            | "listDirectory"
-            | "searchFiles"
-            | "grep"
-            | "fileInfo"
-            | "auditDependencies"
-    ) || allow_mutations
-        && matches!(
-            canonical_tool_name(name),
-            "generateDiff" | "writeFile" | "editFile" | "multiEdit" | "applyPatch"
-        )
-}
-
 #[derive(Clone)]
 pub struct ToolRuntime {
     workspace_root: PathBuf,
@@ -227,17 +206,9 @@ impl ToolRuntime {
         self.skills.prompt_section().await
     }
 
-    pub fn call_requires_approval(&self, call: &ToolCall) -> bool {
-        if tool_requires_approval(&call.name) {
-            return true;
-        }
-
-        canonical_tool_name(&call.name) == "readFile"
-            && path_arg(&call.arguments).is_some_and(|path| self.read_path_is_sensitive(path))
-    }
-
     fn read_path_is_sensitive(&self, path: &str) -> bool {
-        is_sensitive_path(Path::new(path))
+        let input = Path::new(path);
+        is_sensitive_path(input.strip_prefix(&self.workspace_root).unwrap_or(input))
             || self
                 .resolve_in_workspace(path)
                 .is_ok_and(|resolved| self.is_sensitive_workspace_path(&resolved))
@@ -252,7 +223,8 @@ impl ToolRuntime {
         let canonical = canonical_tool_name(name);
         let detailed = match canonical {
             "runCommand" => Some(format!(
-                "UNSANDBOXED shell command: {}",
+                "UNSANDBOXED shell command in {}: {}",
+                args.get("cwd").and_then(Value::as_str).unwrap_or("."),
                 args.get("command")
                     .and_then(Value::as_str)
                     .unwrap_or_default()
@@ -298,7 +270,9 @@ impl ToolRuntime {
                     .and_then(Value::as_str)
                     .unwrap_or_default()
             )),
-            "readFile" if path_arg(args).is_some_and(|path| self.read_path_is_sensitive(path)) => {
+            "readFile" | "generateDiff"
+                if path_arg(args).is_some_and(|path| self.read_path_is_sensitive(path)) =>
+            {
                 Some(format!(
                     "SENSITIVE file read: {}",
                     path_arg(args).unwrap_or_default()
@@ -355,16 +329,25 @@ impl ToolRuntime {
             .collect()
     }
 
-    pub async fn execute(&self, call: &ToolCall) -> Result<Value> {
+    // Handler tests grant approval explicitly. Production uses execute_prepared.
+    #[cfg(test)]
+    async fn execute(&self, call: &ToolCall) -> Result<Value> {
         self.execute_with_cancellation(call, &TurnCancellation::default())
             .await
     }
 
-    pub async fn execute_with_cancellation(
+    #[cfg(test)]
+    async fn execute_with_cancellation(
         &self,
         call: &ToolCall,
         cancellation: &TurnCancellation,
     ) -> Result<Value> {
+        let mut prepared = self.prepare_call(call, ExecutionMode::Workspace);
+        prepared.approve();
+        self.execute_prepared(prepared, cancellation).await
+    }
+
+    async fn dispatch(&self, call: &ToolCall, cancellation: &TurnCancellation) -> Result<Value> {
         if cancellation.is_cancelled() {
             return Err(anyhow!("Tool cancelled before execution"));
         }
@@ -390,94 +373,23 @@ impl ToolRuntime {
         }
     }
 
-    pub async fn execute_audit(
+    #[cfg(test)]
+    async fn execute_audit(
         &self,
         call: &ToolCall,
         scope: &Path,
         allow_mutations: bool,
     ) -> Result<Value> {
-        if !audit_tool_allowed(&call.name, allow_mutations) {
-            return Err(anyhow!(
-                "Tool '{}' is unavailable in this audit mode",
-                call.name
-            ));
-        }
-
-        let mut scoped_call = call.clone();
-        let name = canonical_tool_name(&scoped_call.name);
-        if matches!(
-            name,
-            "listDirectory" | "searchFiles" | "grep" | "auditDependencies"
-        ) && tool_path_arg(name, &scoped_call.arguments).is_none()
-        {
-            scoped_call.arguments["path"] = json!(scope.display().to_string());
-        }
-        if matches!(name, "searchFiles" | "grep") {
-            scoped_call.arguments["excludeGenerated"] = json!(true);
-        }
-        if name == "readFile" {
-            scoped_call.arguments["lineNumbers"] = json!(true);
-        }
-
-        let resolved = match name {
-            "readFile" | "listDirectory" | "searchFiles" | "grep" | "fileInfo"
-            | "auditDependencies" | "generateDiff" | "editFile" | "multiEdit" => {
-                let path = tool_path_arg(name, &scoped_call.arguments).unwrap_or(".");
-                Some(self.resolve_in_workspace(path)?)
-            }
-            "writeFile" => {
-                let path = required_path(&scoped_call.arguments)?;
-                Some(self.resolve_existing_or_missing_in_workspace(path)?)
-            }
-            "applyPatch" => {
-                self.ensure_patch_in_scope(&scoped_call.arguments, scope)?;
-                None
-            }
-            _ => None,
-        };
-        if let Some(resolved) = resolved
-            && !resolved.starts_with(scope)
-        {
-            return Err(anyhow!(
-                "Path '{}' is outside audit scope '{}'",
-                resolved.display(),
-                scope.display()
-            ));
-        }
-
-        self.execute(&scoped_call).await
-    }
-
-    fn ensure_patch_in_scope(&self, args: &Value, scope: &Path) -> Result<()> {
-        let patch_text = required_any_str(args, &["patchText", "patch_text", "patch"])?;
-        for op in parse_apply_patch(patch_text)? {
-            let mut paths = match op {
-                PatchOp::Add { path, .. } => vec![(path, false)],
-                PatchOp::Delete { path } => vec![(path, true)],
-                PatchOp::Update { path, move_to, .. } => {
-                    let mut paths = vec![(path, true)];
-                    if let Some(move_to) = move_to {
-                        paths.push((move_to, false));
-                    }
-                    paths
-                }
-            };
-            for (path, must_exist) in paths.drain(..) {
-                let resolved = if must_exist {
-                    self.resolve_in_workspace(&path)?
-                } else {
-                    self.resolve_existing_or_missing_in_workspace(&path)?
-                };
-                if !resolved.starts_with(scope) {
-                    return Err(anyhow!(
-                        "Path '{}' is outside audit scope '{}'",
-                        resolved.display(),
-                        scope.display()
-                    ));
-                }
-            }
-        }
-        Ok(())
+        let mut prepared = self.prepare_call(
+            call,
+            ExecutionMode::Audit {
+                scope,
+                allow_mutations,
+            },
+        );
+        prepared.approve();
+        self.execute_prepared(prepared, &TurnCancellation::default())
+            .await
     }
 
     pub fn resolve_audit_scope(&self, target: &str) -> Result<(PathBuf, String)> {
@@ -526,8 +438,9 @@ impl ToolRuntime {
             .map(|v| v as usize)
             .unwrap_or(0);
 
-        let resolved = self.resolve_in_workspace(path)?;
-        let content = read_text_file(&resolved).await?;
+        let relative = self.workspace_relative_path(path)?;
+        let resolved = self.workspace_root.join(&relative);
+        let content = self.read_workspace_text(&relative).await?;
         let total_lines = content.lines().count();
 
         let selected = content
@@ -727,7 +640,8 @@ impl ToolRuntime {
                 }
             }
 
-            let content = match read_text_file(path).await {
+            let relative = path.strip_prefix(&self.workspace_root)?;
+            let content = match self.read_workspace_text(relative).await {
                 Ok(v) => v,
                 Err(_) => {
                     skipped_files += 1;
@@ -783,7 +697,9 @@ impl ToolRuntime {
 
         let mut packages = Vec::<CargoPackage>::new();
         for lockfile in &lockfiles {
-            let content = read_text_file(lockfile).await?;
+            let content = self
+                .read_workspace_text(lockfile.strip_prefix(&self.workspace_root)?)
+                .await?;
             for (name, version) in parse_cargo_lock(&content) {
                 packages.push(CargoPackage {
                     lockfile: lockfile.display().to_string(),
@@ -1042,15 +958,19 @@ impl ToolRuntime {
     async fn generate_diff(&self, args: &Value) -> Result<Value> {
         let path = required_path(args)?;
         let proposed = required_any_string(args, &["content"])?;
-        let resolved = self.resolve_in_workspace(path)?;
-        let original = read_text_file(&resolved).await?;
+        let relative = self.workspace_relative_path(path)?;
+        let resolved = self.workspace_root.join(&relative);
+        let original = self.read_workspace_text(&relative).await?;
         if original.lines().count() > MAX_DIFF_LINES || proposed.lines().count() > MAX_DIFF_LINES {
             return Err(anyhow!(
                 "Diff input exceeds the {}-line safety limit; split the edit into smaller files",
                 MAX_DIFF_LINES
             ));
         }
-        let diff = unified_diff(path, &original, proposed);
+        let diff_path = resolved
+            .strip_prefix(&self.workspace_root)
+            .unwrap_or(&resolved);
+        let diff = unified_diff(&diff_path.to_string_lossy(), &original, proposed);
 
         Ok(json!({
             "path": resolved.display().to_string(),
@@ -1863,16 +1783,6 @@ fn path_arg(args: &Value) -> Option<&str> {
     args.get("path")
         .or_else(|| args.get("file_path"))
         .and_then(Value::as_str)
-}
-
-fn tool_path_arg<'a>(name: &str, args: &'a Value) -> Option<&'a str> {
-    if name == "searchFiles" {
-        args.get("cwd")
-            .and_then(Value::as_str)
-            .or_else(|| path_arg(args))
-    } else {
-        path_arg(args)
-    }
 }
 
 fn required_any_str<'a>(args: &'a Value, keys: &[&str]) -> Result<&'a str> {
@@ -2800,23 +2710,6 @@ async fn read_capped(mut reader: impl AsyncRead + Unpin, limit: usize) -> Result
     }
 
     Ok((output, truncated))
-}
-
-async fn read_text_file(path: &Path) -> Result<String> {
-    let file = fs::File::open(path).await?;
-    let mut bytes = Vec::new();
-    file.take(MAX_TEXT_FILE_BYTES as u64 + 1)
-        .read_to_end(&mut bytes)
-        .await?;
-    if bytes.len() > MAX_TEXT_FILE_BYTES {
-        return Err(anyhow!(
-            "Text file '{}' exceeds the {}-byte safety limit",
-            path.display(),
-            MAX_TEXT_FILE_BYTES
-        ));
-    }
-    String::from_utf8(bytes)
-        .map_err(|err| anyhow!("Text file '{}' is not valid UTF-8: {}", path.display(), err))
 }
 
 fn is_public_ip(ip: IpAddr) -> bool {

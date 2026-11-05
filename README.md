@@ -67,9 +67,24 @@ call IDs and matching results, including errors and denied actions. Incomplete
 native tool streams do not execute tools. Ollama keeps the JSON response format
 for models that do not support native tools.
 
-Approvals, workspace file controls, and command timeouts still apply. Shell
-commands do not run in an OS sandbox. `/clear` removes chat and tool history.
-Sessions stay in memory; closing the app removes them.
+One execution policy checks each tool call in normal turns and audits. It allows
+the call, denies it, or requests approval. Invalid arguments, conflicting
+aliases, workspace escapes, and calls outside the audit scope are denied before
+approval. Sensitive file reads and diffs require approval. These checks also
+apply to the Ollama JSON fallback.
+
+Approval covers the reviewed arguments and resolved targets. Execution checks
+them again. If a target changes while approval is pending, the call fails and
+must be submitted again. File changes reject symlink paths. Patch checks cover
+all source and destination paths.
+
+Shell commands require approval and show their resolved working directory. The
+policy does not restrict paths or network targets inside shell command text.
+Commands do not run in an OS sandbox. File access controls, public URL checks,
+DNS checks, and timeouts still apply.
+
+`/clear` removes chat and tool history. Sessions stay in memory; closing the app
+removes them.
 
 ## Stop a turn
 
