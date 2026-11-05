@@ -44,6 +44,14 @@ It captures build/test commands, project conventions, and coding style.
 - Run full test suite:
 - `cargo test`
 
+## Website Validation
+
+- Working directory: `web/`.
+- Package manager: Bun 1.4.4, pinned in `web/package.json`.
+- Scoped dependency overrides require this Bun version and lockfile format.
+- Install: `bun install --frozen-lockfile`.
+- Validate: `bun audit`, `bun run lint`, `bun run typecheck`, `bun run test`, `bun run build`.
+
 ## Single-Test Commands (Important)
 
 - Run one test by fully-qualified name:

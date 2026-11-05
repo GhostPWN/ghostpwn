@@ -24,6 +24,8 @@ jobs:
       - name: Audit Rust dependencies
         run: cargo audit
       - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version-file: web/package.json
       - name: Audit website dependencies
         working-directory: web
         run: |
@@ -103,6 +105,8 @@ jobs:
     steps:
       - uses: actions/checkout@v7
       - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version-file: web/package.json
       - run: bun install --frozen-lockfile
       - run: bun run lint
       - run: bun run test
