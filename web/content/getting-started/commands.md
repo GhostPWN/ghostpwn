@@ -49,6 +49,21 @@ Local tools available to the agent loop:
 
 Model-requested commands and file mutations pause until you approve them with `y` or deny that tool with `n` or `Enter`. `Esc` stops the entire turn. Shell commands are clearly labeled as unsandboxed; the workspace controls their starting directory, not their operating-system access.
 
+Each tool call receives an allow, deny, or approval decision before execution.
+The same policy applies to normal turns, audits, and the Ollama JSON fallback.
+Invalid arguments, conflicting aliases, workspace escapes, and calls outside
+the audit scope are denied before an approval prompt appears. Sensitive file
+reads and diffs require approval.
+
+Approval covers the reviewed arguments and resolved targets. The runtime checks
+them again before dispatch. A changed target requires a new call and review.
+Patch checks include every source and destination. File changes reject symlink
+paths.
+
+The policy checks a shell command's working directory. It does not restrict
+paths or network targets inside the command text. Shell commands require
+approval and do not run in an OS sandbox.
+
 Claude Code, Codex, and OpenCode-compatible tool aliases are provided for common read/write/edit/shell/search operations.
 
 Fenced `diff` blocks in assistant responses are rendered as highlighted diffs.

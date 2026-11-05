@@ -485,14 +485,7 @@ async fn native_turn_records_batch_results_and_executes_approved_mutation_once()
     result.unwrap();
     assert_eq!(
         events,
-        (
-            vec![
-                "writeFile".to_string(),
-                "readFile".to_string(),
-                "readFile".to_string()
-            ],
-            1
-        )
+        (vec!["writeFile".to_string(), "readFile".to_string()], 1)
     );
     assert_eq!(
         std::fs::read_to_string(directory.path().join("result.txt")).unwrap(),
@@ -927,5 +920,80 @@ async fn cancelling_an_approval_keeps_completed_changes_and_closes_remaining_cal
         assert_eq!(result.call_id, id);
         assert_eq!(result.output["error"], "cancelled before execution");
         assert!(result.is_error);
+    }
+}
+
+#[tokio::test]
+async fn policy_denies_invalid_and_outside_calls_before_approval_for_all_protocols() {
+    use crate::models::{AgentEvent, Completion, ToolCall};
+    use serde_json::json;
+    for native in [true, false] {
+        let directory = tempfile::tempdir().unwrap();
+        let workspace = directory.path().join("workspace");
+        std::fs::create_dir(&workspace).unwrap();
+        let mut agent = test_agent(ProviderKind::OpenAi);
+        agent.tools = ToolRuntime::new(workspace).unwrap();
+        let calls = vec![
+            ToolCall {
+                name: "Write".to_string(),
+                arguments: json!({"file_path":"../blocked", "content":"no"}),
+            },
+            ToolCall {
+                name: "Bash".to_string(),
+                arguments: json!({"command":"must not run", "timeout":"30000"}),
+            },
+        ];
+        let first = if native {
+            Completion {
+                tool_calls: calls
+                    .into_iter()
+                    .enumerate()
+                    .map(|(index, call)| crate::models::ToolRequest {
+                        id: format!("denied_{index}"),
+                        provider_id: None,
+                        call,
+                    })
+                    .collect(),
+                ..Completion::default()
+            }
+        } else {
+            Completion::text(json!({"assistant":"Checking", "tool_calls":calls}).to_string())
+        };
+        let final_text = if native {
+            "No actions were run".to_string()
+        } else {
+            json!({"assistant":"No actions were run", "tool_calls":[]}).to_string()
+        };
+        agent.provider = Box::new(ScriptedProvider {
+            replies: std::sync::Mutex::new(std::collections::VecDeque::from([
+                first,
+                Completion::text(final_text),
+            ])),
+            seen: Default::default(),
+            native,
+        });
+        let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
+        agent
+            .handle_user_message(
+                ConversationMessage::user("inspect"),
+                tx,
+                &TurnCancellation::default(),
+            )
+            .await
+            .unwrap();
+        while let Ok(event) = rx.try_recv() {
+            assert!(!matches!(
+                event,
+                AgentEvent::ApprovalRequired { .. } | AgentEvent::ToolCall { .. }
+            ));
+        }
+        let results = agent
+            .history
+            .iter()
+            .filter_map(|m| m.tool_result.as_ref())
+            .collect::<Vec<_>>();
+        assert_eq!(results.len(), 2);
+        assert!(results.iter().all(|r| r.is_error));
+        assert!(!directory.path().join("blocked").exists());
     }
 }

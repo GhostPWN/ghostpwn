@@ -728,7 +728,7 @@ async fn handle_submit(
         state.push_message(
             UiRole::Assistant,
             format!(
-                "Commands:\n{help}\n\nKeys:\nEsc - Stop the active turn\nCtrl+C - Exit the app"
+                "Commands:\n{help}\n\nKeys:\nEsc - Stop the active turn\nCtrl+C - Exit the app\n\nTools: Invalid or out-of-scope requests are denied before approval."
             ),
         );
         state.input.clear();
