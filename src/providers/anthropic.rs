@@ -3,8 +3,11 @@ use async_trait::async_trait;
 use reqwest::Client;
 use serde_json::{Value, json};
 
-use crate::models::{ConversationMessage, ConversationPart, MessageRole};
-use crate::providers::sse::{consume_sse, extract_error_message, is_event_stream};
+use crate::models::{
+    Completion, ConversationMessage, ConversationPart, MessageRole, NativeContent,
+};
+use crate::providers::native::{AnthropicStream, anthropic_completion, tool_result_text};
+use crate::providers::sse::{consume_sse, is_event_stream};
 use crate::providers::{
     MAX_OUTPUT_TOKENS, Provider, dedup_preserve_order, image_base64, message_text,
     provider_http_client, request_error,
@@ -80,7 +83,7 @@ impl Provider for AnthropicProvider {
         system: &str,
         messages: &[ConversationMessage],
         on_delta: &mut (dyn FnMut(String) + Send),
-    ) -> Result<String> {
+    ) -> Result<Completion> {
         let payload = json!({
             "model": self.model,
             "max_tokens": MAX_OUTPUT_TOKENS,
@@ -88,6 +91,7 @@ impl Provider for AnthropicProvider {
             "system": system,
             "stream": true,
             "messages": map_messages(messages),
+            "tools": crate::tools::schema::definitions().into_iter().map(|t| json!({"name": t.name, "description": t.description, "input_schema": t.parameters})).collect::<Vec<_>>(),
         });
 
         let response = self
@@ -106,66 +110,41 @@ impl Provider for AnthropicProvider {
         }
 
         if !is_event_stream(response.headers()) {
-            let body: Value = response.json().await?;
-            let text = body
-                .get("content")
-                .and_then(|v| v.as_array())
-                .map(|blocks| {
-                    blocks
-                        .iter()
-                        .filter(|b| b.get("type").and_then(|v| v.as_str()) == Some("text"))
-                        .filter_map(|b| b.get("text").and_then(|v| v.as_str()))
-                        .collect::<Vec<&str>>()
-                        .join("")
-                })
-                .unwrap_or_default();
-
-            if !text.is_empty() {
-                on_delta(text.clone());
+            let completion = anthropic_completion(&response.json::<Value>().await?)?;
+            if !completion.text.is_empty() {
+                on_delta(completion.text.clone());
             }
-            return Ok(text);
+            return Ok(completion);
         }
-
-        let mut full = String::new();
+        let mut stream = AnthropicStream::default();
         consume_sse(response, |data| {
-            let event: Value = match serde_json::from_str(data) {
-                Ok(v) => v,
-                Err(_) => return Ok(true),
-            };
-
-            if let Some(error) = extract_error_message(&event) {
-                return Err(anyhow!("Anthropic stream error: {}", error));
-            }
-
-            if let Some(event_type) = event.get("type").and_then(|v| v.as_str()) {
-                if event_type == "message_stop" {
-                    return Ok(false);
-                }
-
-                if event_type == "content_block_delta"
-                    && let Some(text) = event
-                        .get("delta")
-                        .and_then(|v| v.get("text"))
-                        .and_then(|v| v.as_str())
-                    && !text.is_empty()
-                {
-                    full.push_str(text);
-                    on_delta(text.to_string());
-                }
-            }
-
-            Ok(true)
+            let event: Value = serde_json::from_str(data)?;
+            stream.ingest(&event, on_delta)?;
+            Ok(event["type"] != "message_stop")
         })
         .await?;
-
-        Ok(full)
+        stream.finish()
     }
 }
 
 fn map_messages(history: &[ConversationMessage]) -> Vec<Value> {
-    history
+    let messages: Vec<Value> = history
         .iter()
-        .map(|m| match m.role {
+        .map(|m| {
+            if let Some(NativeContent::Anthropic(blocks)) = &m.native_content {
+                return json!({"role": "assistant", "content": blocks});
+            }
+            if let Some(result) = &m.tool_result {
+                return json!({"role": "user", "content": [{"type": "tool_result", "tool_use_id": result.call_id, "content": tool_result_text(m), "is_error": result.is_error}]});
+            }
+            if !m.tool_calls.is_empty() {
+                let mut content = Vec::new();
+                let text = message_text(m);
+                if !text.is_empty() { content.push(json!({"type": "text", "text": text})); }
+                content.extend(m.tool_calls.iter().map(|c| json!({"type": "tool_use", "id": c.id, "name": c.call.name, "input": c.call.arguments})));
+                return json!({"role": "assistant", "content": content});
+            }
+            match m.role {
             MessageRole::User if m.has_images() => json!({
                 "role": "user",
                 "content": m.content.iter().map(|part| match part {
@@ -189,8 +168,24 @@ fn map_messages(history: &[ConversationMessage]) -> Vec<Value> {
                 "role": "user",
                 "content": format!("[tool] {}", message_text(m)),
             }),
-        })
-        .collect()
+        }})
+        .collect();
+    let mut out: Vec<Value> = Vec::new();
+    for message in messages {
+        if message["content"].as_array().is_some_and(|parts| {
+            parts
+                .first()
+                .is_some_and(|part| part["type"] == "tool_result")
+        }) && let Some(last) = out.last_mut()
+            && last["role"] == "user"
+            && let Some(parts) = last["content"].as_array_mut()
+        {
+            parts.extend(message["content"].as_array().into_iter().flatten().cloned());
+        } else {
+            out.push(message);
+        }
+    }
+    out
 }
 
 fn parse_claude_models(body: &Value) -> Vec<String> {

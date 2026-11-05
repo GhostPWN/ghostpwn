@@ -59,6 +59,18 @@ ghostpwn
 See the [documentation](https://ghostpwn.github.io/ghostpwn/docs/) for detailed
 requirements, configuration, commands, and architecture.
 
+## Tool execution
+
+OpenAI, Codex, Anthropic, Google, and Copilot use native tool calls. GhostPWN
+checks tool arguments before requesting approval. Conversation history keeps
+call IDs and matching results, including errors and denied actions. Incomplete
+native tool streams do not execute tools. Ollama keeps the JSON response format
+for models that do not support native tools.
+
+Approvals, workspace file controls, and command timeouts still apply. Shell
+commands do not run in an OS sandbox. `/clear` removes chat and tool history.
+Sessions stay in memory; closing the app removes them.
+
 ## Image input
 
 Vision-capable models can analyze PNG, JPEG, and WebP files from the current

@@ -14,6 +14,9 @@ pub enum MessageRole {
 pub struct ConversationMessage {
     pub role: MessageRole,
     pub content: Vec<ConversationPart>,
+    pub tool_calls: Vec<ToolRequest>,
+    pub tool_result: Option<ToolResult>,
+    pub native_content: Option<NativeContent>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -59,7 +62,13 @@ impl ConversationMessage {
     }
 
     fn with_parts(role: MessageRole, content: Vec<ConversationPart>) -> Self {
-        Self { role, content }
+        Self {
+            role,
+            content,
+            tool_calls: Vec::new(),
+            tool_result: None,
+            native_content: None,
+        }
     }
 
     pub fn assistant(content: impl Into<String>) -> Self {
@@ -88,6 +97,47 @@ pub struct ToolCall {
     pub name: String,
     #[serde(default)]
     pub arguments: Value,
+}
+
+#[derive(Debug, Clone)]
+pub struct ToolRequest {
+    pub id: String,
+    // Google can omit a wire ID. The local ID still links each call and result.
+    pub provider_id: Option<String>,
+    pub call: ToolCall,
+}
+
+#[derive(Debug, Clone)]
+pub struct ToolResult {
+    pub call_id: String,
+    pub provider_id: Option<String>,
+    pub name: String,
+    pub output: Value,
+    pub is_error: bool,
+}
+
+// Preserve provider-owned reasoning and signature fields when replaying assistant turns.
+#[derive(Debug, Clone)]
+pub enum NativeContent {
+    Responses(Vec<Value>),
+    Anthropic(Vec<Value>),
+    Google(Vec<Value>),
+}
+
+#[derive(Debug, Default)]
+pub struct Completion {
+    pub text: String,
+    pub tool_calls: Vec<ToolRequest>,
+    pub native_content: Option<NativeContent>,
+}
+
+impl Completion {
+    pub fn text(text: String) -> Self {
+        Self {
+            text,
+            ..Self::default()
+        }
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]

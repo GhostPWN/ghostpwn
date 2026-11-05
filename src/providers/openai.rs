@@ -3,12 +3,9 @@ use async_trait::async_trait;
 use reqwest::Client;
 use serde_json::{Value, json};
 
-use crate::models::{ConversationMessage, ConversationPart, MessageRole};
-use crate::providers::sse::{consume_sse, extract_error_message, is_event_stream};
-use crate::providers::{
-    Provider, extract_response_text, image_data_url, message_text, provider_http_client,
-    request_error,
-};
+use crate::models::{Completion, ConversationMessage};
+use crate::providers::native::{read_responses, response_messages};
+use crate::providers::{Provider, provider_http_client, request_error};
 
 pub struct OpenAiProvider {
     api_key: String,
@@ -55,13 +52,15 @@ impl Provider for OpenAiProvider {
         system: &str,
         messages: &[ConversationMessage],
         on_delta: &mut (dyn FnMut(String) + Send),
-    ) -> Result<String> {
+    ) -> Result<Completion> {
         let payload = json!({
             "model": self.model,
             "stream": true,
             "store": false,
             "instructions": system,
             "input": map_messages(messages),
+            "tools": crate::tools::schema::response_tools(),
+            "include": ["reasoning.encrypted_content"],
         });
 
         let response = self
@@ -83,71 +82,12 @@ impl Provider for OpenAiProvider {
             ));
         }
 
-        if !is_event_stream(response.headers()) {
-            let body: Value = response.json().await?;
-            let out = extract_response_text(&body).unwrap_or_default();
-            if !out.is_empty() {
-                on_delta(out.clone());
-            }
-            return Ok(out);
-        }
-
-        let mut full = String::new();
-        consume_sse(response, |data| {
-            if data.trim() == "[DONE]" {
-                return Ok(false);
-            }
-
-            let chunk: Value = match serde_json::from_str(data) {
-                Ok(v) => v,
-                Err(_) => return Ok(true),
-            };
-
-            if let Some(error) = extract_error_message(&chunk) {
-                return Err(anyhow!("OpenAI stream error: {}", error));
-            }
-
-            if chunk.get("type").and_then(Value::as_str) == Some("response.output_text.delta")
-                && let Some(text) = chunk.get("delta").and_then(Value::as_str)
-                && !text.is_empty()
-            {
-                full.push_str(text);
-                on_delta(text.to_string());
-            }
-
-            Ok(true)
-        })
-        .await?;
-
-        Ok(full)
+        read_responses(response, on_delta).await
     }
 }
 
 fn map_messages(history: &[ConversationMessage]) -> Vec<Value> {
-    history
-        .iter()
-        .map(|message| match message.role {
-            MessageRole::User if message.has_images() => json!({
-                "role": "user",
-                "content": message.content.iter().map(|part| match part {
-                    ConversationPart::Text(text) => json!({ "type": "input_text", "text": text }),
-                    ConversationPart::Image(image) => json!({
-                        "type": "input_image",
-                        "image_url": image_data_url(image),
-                    }),
-                }).collect::<Vec<_>>(),
-            }),
-            MessageRole::User => json!({ "role": "user", "content": message_text(message) }),
-            MessageRole::Assistant => json!({
-                "role": "assistant",
-                "content": message_text(message),
-            }),
-            MessageRole::Tool => json!({
-                "role": "user",
-                "content": format!("[tool] {}", message_text(message)),
-            }),
-        })
-        .collect()
+    response_messages(history)
 }
 
 fn parse_chat_models(body: &Value) -> Vec<String> {

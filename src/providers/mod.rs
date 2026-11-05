@@ -2,6 +2,7 @@ mod anthropic;
 pub mod codex;
 pub mod copilot;
 mod google;
+mod native;
 mod ollama;
 mod openai;
 mod sse;
@@ -16,14 +17,14 @@ use reqwest::Client;
 use serde_json::{Value, json};
 
 use crate::config::{ProviderKeys, ProviderKind};
-use crate::models::{ConversationMessage, ConversationPart, ImageAttachment, MessageRole};
+use crate::models::{
+    Completion, ConversationMessage, ConversationPart, ImageAttachment, MessageRole,
+};
 use crate::secrets::SecretStore;
 
 /// Upper bound on model output tokens for providers that require an explicit cap.
 ///
-/// The agent contract requires the model to answer with a single JSON envelope that can carry full
-/// file bodies (`writeFile`, `applyPatch`). A small cap truncates that JSON mid-string, which makes
-/// the envelope unparsable and silently drops the tool calls. Keep this generous so edits survive.
+/// Tool arguments can contain full file bodies. Leave enough output space for edits.
 pub(crate) const MAX_OUTPUT_TOKENS: u32 = 8192;
 
 pub use anthropic::AnthropicProvider;
@@ -69,6 +70,16 @@ fn map_chat_messages(system: &str, history: &[ConversationMessage]) -> Vec<Value
     out.push(json!({ "role": "system", "content": system }));
 
     for message in history {
+        if let Some(result) = &message.tool_result {
+            out.push(json!({"role": "tool", "tool_call_id": result.call_id, "content": result.output.to_string()}));
+            continue;
+        }
+        if !message.tool_calls.is_empty() {
+            out.push(json!({"role": "assistant", "content": message_text(message), "tool_calls": message.tool_calls.iter().map(|c| json!({
+                "id": c.id, "type": "function", "function": {"name": c.call.name, "arguments": c.call.arguments.to_string()}
+            })).collect::<Vec<_>>()}));
+            continue;
+        }
         match message.role {
             MessageRole::User if message.has_images() => out.push(json!({
                 "role": "user",
@@ -94,25 +105,6 @@ fn map_chat_messages(system: &str, history: &[ConversationMessage]) -> Vec<Value
     }
 
     out
-}
-
-fn extract_response_text(body: &Value) -> Option<String> {
-    if let Some(text) = body.get("output_text").and_then(Value::as_str) {
-        return Some(text.to_string());
-    }
-
-    let mut out = String::new();
-    for item in body.get("output")?.as_array()? {
-        if let Some(content) = item.get("content").and_then(Value::as_array) {
-            for part in content {
-                if let Some(text) = part.get("text").and_then(Value::as_str) {
-                    out.push_str(text);
-                }
-            }
-        }
-    }
-
-    (!out.is_empty()).then_some(out)
 }
 
 fn dedup_preserve_order(values: &mut Vec<String>) {
@@ -144,12 +136,15 @@ fn request_error(
 #[async_trait]
 pub trait Provider: Send + Sync {
     fn display_name(&self) -> String;
+    fn uses_native_tools(&self) -> bool {
+        true
+    }
     async fn stream_complete(
         &self,
         system: &str,
         messages: &[ConversationMessage],
         on_delta: &mut (dyn FnMut(String) + Send),
-    ) -> Result<String>;
+    ) -> Result<Completion>;
     async fn list_models(&self) -> Result<Vec<String>> {
         Ok(vec![])
     }
@@ -196,7 +191,7 @@ impl Provider for DisconnectedProvider {
         _system: &str,
         _messages: &[ConversationMessage],
         _on_delta: &mut (dyn FnMut(String) + Send),
-    ) -> Result<String> {
+    ) -> Result<Completion> {
         Err(anyhow!(
             "No API key connected for {}. open /model and press c on the {} tab",
             self.provider.as_str(),
@@ -208,3 +203,20 @@ impl Provider for DisconnectedProvider {
 #[cfg(test)]
 #[path = "../tests/providers.rs"]
 mod tests;
+
+fn map_legacy_chat_messages(system: &str, history: &[ConversationMessage]) -> Vec<Value> {
+    let history = history.iter().map(|message| {
+        let mut message = message.clone();
+        if !message.tool_calls.is_empty() {
+            message.content = vec![ConversationPart::Text(json!({
+                "assistant": message_text(&message), "tool_calls": message.tool_calls.iter().map(|r| &r.call).collect::<Vec<_>>()
+            }).to_string())];
+            message.tool_calls.clear();
+        }
+        if let Some(result) = message.tool_result.take() {
+            message.content = vec![ConversationPart::Text(format!("tool_{} {}: {}", if result.is_error {"error"} else {"result"}, result.name, result.output))];
+        }
+        message
+    }).collect::<Vec<_>>();
+    map_chat_messages(system, &history)
+}

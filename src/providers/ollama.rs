@@ -4,9 +4,9 @@ use futures_util::{StreamExt, stream};
 use reqwest::Client;
 use serde_json::Value;
 
-use crate::models::ConversationMessage;
+use crate::models::{Completion, ConversationMessage};
 use crate::providers::sse::consume_sse;
-use crate::providers::{Provider, map_chat_messages, provider_http_client, request_error};
+use crate::providers::{Provider, map_legacy_chat_messages, provider_http_client, request_error};
 
 const MODEL_PROBE_CONCURRENCY: usize = 8;
 
@@ -28,6 +28,9 @@ impl OllamaProvider {
 
 #[async_trait]
 impl Provider for OllamaProvider {
+    fn uses_native_tools(&self) -> bool {
+        false
+    }
     fn display_name(&self) -> String {
         format!("ollama / {}", self.model)
     }
@@ -88,11 +91,11 @@ impl Provider for OllamaProvider {
         system: &str,
         messages: &[ConversationMessage],
         on_delta: &mut (dyn FnMut(String) + Send),
-    ) -> Result<String> {
+    ) -> Result<Completion> {
         let payload = serde_json::json!({
             "model": self.model,
             "stream": true,
-            "messages": map_chat_messages(system, messages),
+            "messages": map_legacy_chat_messages(system, messages),
         });
 
         let response = self
@@ -137,7 +140,7 @@ impl Provider for OllamaProvider {
         })
         .await?;
 
-        Ok(full)
+        Ok(Completion::text(full))
     }
 }
 

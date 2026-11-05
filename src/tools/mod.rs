@@ -1,3 +1,5 @@
+pub mod schema;
+
 use std::io::Read as _;
 use std::io::{Error as IoError, ErrorKind};
 use std::net::{IpAddr, SocketAddr, ToSocketAddrs};

@@ -2,12 +2,14 @@ use std::collections::HashSet;
 use std::future::Future;
 use std::path::{Path, PathBuf};
 
-use anyhow::Result;
+use anyhow::{Result, bail};
 use tokio::sync::mpsc::UnboundedSender;
 
 use crate::config::{ProviderKeys, ProviderKind};
 use crate::images::{MAX_RETAINED_IMAGE_BYTES, image_bytes, prepare_parts};
-use crate::models::{AgentEvent, ConversationMessage, ImageAttachment, ModelEnvelope};
+use crate::models::{
+    AgentEvent, ConversationMessage, ImageAttachment, ModelEnvelope, ToolRequest, ToolResult,
+};
 use crate::providers::{Provider, build_provider_with_secret_store};
 use crate::secrets::{SETTING_MODEL, SETTING_PROVIDER, SecretMutationReport, SecretStore};
 use crate::tools::{ToolRuntime, audit_tool_allowed};
@@ -100,6 +102,7 @@ pub struct Agent {
     provider: Box<dyn Provider>,
     tools: ToolRuntime,
     history: Vec<ConversationMessage>,
+    next_tool_call_id: u64,
 }
 
 impl Agent {
@@ -125,6 +128,7 @@ impl Agent {
             provider,
             tools,
             history: Vec::new(),
+            next_tool_call_id: 0,
         }
     }
 
@@ -351,7 +355,7 @@ impl Agent {
         clipboard_images: Vec<ImageAttachment>,
     ) -> impl Future<Output = Result<ConversationMessage>> + use<> {
         let tools = self.tools.clone();
-        let surviving_old_messages = (self.history.len() + 1).saturating_sub(MAX_HISTORY_MESSAGES);
+        let surviving_old_messages = self.history_trim_index(1);
         let retained_image_bytes =
             self.history
                 .iter()
@@ -421,38 +425,76 @@ impl Agent {
         for _ in 0..max_steps {
             self.trim_history();
             let system_prompt = self.system_prompt().await;
+            let native_tools = self.provider.uses_native_tools();
             let mut stream_extractor = AssistantStreamExtractor::default();
             let mut on_delta = |chunk: String| {
-                if let Some(delta) = stream_extractor.ingest_chunk(&chunk) {
+                if native_tools {
+                    let _ = events.send(AgentEvent::AssistantDelta(chunk));
+                } else if let Some(delta) = stream_extractor.ingest_chunk(&chunk) {
                     let _ = events.send(AgentEvent::AssistantDelta(delta));
                 }
             };
 
-            let raw = self
+            let completion = self
                 .provider
                 .stream_complete(&system_prompt, &self.history, &mut on_delta)
                 .await?;
 
-            let structured = try_parse_envelope(&raw);
-            let parsed_structured = structured.is_some();
-            let envelope = structured.unwrap_or_else(|| ModelEnvelope {
-                assistant: Some(raw.clone()),
-                tool_calls: Vec::new(),
-            });
-            let has_tool_calls = !envelope.tool_calls.is_empty();
-
-            if let Some(assistant) = envelope.assistant.as_deref()
-                && !assistant.trim().is_empty()
-                && !has_tool_calls
-            {
-                if let Some(remaining) = stream_extractor.finish_with(assistant) {
-                    let _ = events.send(AgentEvent::AssistantDelta(remaining));
+            let raw = completion.text.clone();
+            let (text, mut calls, parsed_structured) = if native_tools {
+                (completion.text, completion.tool_calls, true)
+            } else {
+                let structured = try_parse_envelope(&completion.text);
+                let parsed = structured.is_some();
+                let envelope = structured.unwrap_or_else(|| ModelEnvelope {
+                    assistant: Some(completion.text.clone()),
+                    tool_calls: Vec::new(),
+                });
+                let calls = envelope
+                    .tool_calls
+                    .into_iter()
+                    .map(|call| {
+                        self.next_tool_call_id += 1;
+                        ToolRequest {
+                            id: format!("ghostpwn_{}", self.next_tool_call_id),
+                            provider_id: None,
+                            call,
+                        }
+                    })
+                    .collect();
+                (envelope.assistant.unwrap_or_default(), calls, parsed)
+            };
+            for request in &mut calls {
+                if request.id.is_empty() && request.provider_id.is_none() {
+                    self.next_tool_call_id += 1;
+                    request.id = format!("ghostpwn_{}", self.next_tool_call_id);
                 }
-
-                self.history
-                    .push(ConversationMessage::assistant(assistant.to_string()));
             }
-
+            // Validate the complete batch before executing any action.
+            let mut ids = self
+                .history
+                .iter()
+                .flat_map(|m| m.tool_calls.iter().map(|c| c.id.as_str()))
+                .collect::<HashSet<_>>();
+            for request in &calls {
+                if request.id.is_empty()
+                    || request.call.name.is_empty()
+                    || !request.call.arguments.is_object()
+                    || !ids.insert(&request.id)
+                {
+                    bail!("Invalid or repeated tool call ID; no tools were executed");
+                }
+            }
+            let has_tool_calls = !calls.is_empty();
+            if !native_tools && let Some(remaining) = stream_extractor.finish_with(&text) {
+                let _ = events.send(AgentEvent::AssistantDelta(remaining));
+            }
+            if !text.is_empty() || has_tool_calls || completion.native_content.is_some() {
+                let mut assistant = ConversationMessage::assistant(text);
+                assistant.tool_calls = calls.clone();
+                assistant.native_content = completion.native_content;
+                self.history.push(assistant);
+            }
             if !has_tool_calls {
                 if !parsed_structured && looks_like_structured_attempt(&raw) {
                     let _ = events.send(AgentEvent::Error(
@@ -466,17 +508,27 @@ impl Agent {
                 return Ok(());
             }
 
-            for call in envelope.tool_calls {
+            for request in calls {
+                let call = &request.call;
                 if audit_scope.is_some() && !audit_tool_allowed(&call.name, allow_audit_mutations) {
-                    self.history.push(ConversationMessage::tool(format!(
-                        "tool_error {}: unavailable in this audit mode",
-                        call.name
-                    )));
+                    self.record_tool_result(
+                        &request,
+                        serde_json::json!({"error": "unavailable in this audit mode"}),
+                        true,
+                    );
                     continue;
                 }
 
+                if native_tools && let Err(error) = crate::tools::schema::validate_call(call) {
+                    self.record_tool_result(
+                        &request,
+                        serde_json::json!({"error": error.to_string()}),
+                        true,
+                    );
+                    continue;
+                }
                 let summary = self.tools.arg_summary(&call.name, &call.arguments);
-                if self.tools.call_requires_approval(&call) {
+                if self.tools.call_requires_approval(call) {
                     let (response, approval) = tokio::sync::oneshot::channel();
                     let _ = events.send(AgentEvent::ApprovalRequired {
                         name: call.name.clone(),
@@ -484,10 +536,11 @@ impl Agent {
                         response,
                     });
                     if !approval.await.unwrap_or(false) {
-                        self.history.push(ConversationMessage::tool(format!(
-                            "tool_error {}: denied by user",
-                            call.name
-                        )));
+                        self.record_tool_result(
+                            &request,
+                            serde_json::json!({"error": "denied by user"}),
+                            true,
+                        );
                         continue;
                     }
                 }
@@ -500,24 +553,18 @@ impl Agent {
                 let result = match audit_scope {
                     Some(scope) => {
                         self.tools
-                            .execute_audit(&call, scope, allow_audit_mutations)
+                            .execute_audit(call, scope, allow_audit_mutations)
                             .await
                     }
-                    None => self.tools.execute(&call).await,
+                    None => self.tools.execute(call).await,
                 };
                 match result {
-                    Ok(result) => {
-                        let text = format!(
-                            "tool_result {}: {}",
-                            call.name,
-                            serde_json::to_string(&result).unwrap_or_else(|_| "{}".to_string())
-                        );
-                        self.history.push(ConversationMessage::tool(text));
-                    }
-                    Err(err) => {
-                        let text = format!("tool_error {}: {}", call.name, err);
-                        self.history.push(ConversationMessage::tool(text));
-                    }
+                    Ok(result) => self.record_tool_result(&request, result, false),
+                    Err(err) => self.record_tool_result(
+                        &request,
+                        serde_json::json!({"error": err.to_string()}),
+                        true,
+                    ),
                 }
             }
         }
@@ -532,19 +579,58 @@ impl Agent {
         Ok(())
     }
 
+    fn record_tool_result(
+        &mut self,
+        request: &ToolRequest,
+        output: serde_json::Value,
+        is_error: bool,
+    ) {
+        let mut message = ConversationMessage::tool(output.to_string());
+        message.tool_result = Some(ToolResult {
+            call_id: request.id.clone(),
+            provider_id: request.provider_id.clone(),
+            name: request.call.name.clone(),
+            output,
+            is_error,
+        });
+        self.history.push(message);
+    }
+
+    fn history_trim_index(&self, additional: usize) -> usize {
+        let excess = (self.history.len() + additional).saturating_sub(MAX_HISTORY_MESSAGES);
+        if excess == 0 {
+            return 0;
+        }
+        // Drop complete tool batches. Never retain a result without its request.
+        (excess..self.history.len())
+            .find(|&index| self.history[index].role != crate::models::MessageRole::Tool)
+            .unwrap_or_else(|| {
+                self.history[..excess]
+                    .iter()
+                    .rposition(|message| !message.tool_calls.is_empty())
+                    .unwrap_or(self.history.len())
+            })
+    }
+
     fn trim_history(&mut self) {
-        let excess = self.history.len().saturating_sub(MAX_HISTORY_MESSAGES);
+        let excess = self.history_trim_index(0);
         if excess > 0 {
             self.history.drain(..excess);
         }
     }
 
     async fn system_prompt(&self) -> String {
-        format!(
-            "{}\n{}",
-            SYSTEM_PROMPT,
-            self.tools.prompt_skill_section().await
-        )
+        let prompt = if self.provider.uses_native_tools() {
+            let (_, behavior) = SYSTEM_PROMPT
+                .split_once("Security boundaries:")
+                .unwrap_or(("", SYSTEM_PROMPT));
+            format!(
+                "You are GhostPWN, an interactive CLI agent for authorized web security research and software engineering inside a user-selected workspace.\nUse the provided tools when needed. Write user-facing text normally. Do not wrap responses or tool requests in JSON.\nSecurity boundaries:{behavior}"
+            )
+        } else {
+            SYSTEM_PROMPT.to_string()
+        };
+        format!("{}\n{}", prompt, self.tools.prompt_skill_section().await)
     }
 }
 

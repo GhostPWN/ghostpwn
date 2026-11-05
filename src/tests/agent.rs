@@ -381,3 +381,340 @@ fn partial_secret_backend_failures_are_visible() {
         "Connected openai. OS keychain operation failed: locked."
     );
 }
+
+struct ScriptedProvider {
+    replies: std::sync::Mutex<std::collections::VecDeque<crate::models::Completion>>,
+    seen: std::sync::Arc<std::sync::Mutex<Vec<Vec<ConversationMessage>>>>,
+    native: bool,
+}
+
+#[async_trait::async_trait]
+impl crate::providers::Provider for ScriptedProvider {
+    fn display_name(&self) -> String {
+        "scripted".to_string()
+    }
+    fn uses_native_tools(&self) -> bool {
+        self.native
+    }
+    async fn stream_complete(
+        &self,
+        system: &str,
+        messages: &[ConversationMessage],
+        on_delta: &mut (dyn FnMut(String) + Send),
+    ) -> anyhow::Result<crate::models::Completion> {
+        assert_eq!(
+            system.contains("Always output valid JSON only"),
+            !self.native
+        );
+        self.seen.lock().unwrap().push(messages.to_vec());
+        let reply = self
+            .replies
+            .lock()
+            .unwrap()
+            .pop_front()
+            .expect("unexpected provider call");
+        on_delta(reply.text.clone());
+        Ok(reply)
+    }
+}
+
+fn tool_request(id: &str, name: &str, arguments: serde_json::Value) -> crate::models::ToolRequest {
+    crate::models::ToolRequest {
+        id: id.to_string(),
+        provider_id: Some(id.to_string()),
+        call: crate::models::ToolCall {
+            name: name.to_string(),
+            arguments,
+        },
+    }
+}
+
+#[tokio::test]
+async fn native_turn_records_batch_results_and_executes_approved_mutation_once() {
+    use crate::models::{AgentEvent, Completion};
+    use serde_json::json;
+    let directory = tempfile::tempdir().unwrap();
+    let mut agent = test_agent(ProviderKind::OpenAi);
+    agent.tools = ToolRuntime::new(directory.path().to_path_buf()).unwrap();
+    let seen = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+    agent.provider = Box::new(ScriptedProvider {
+        replies: std::sync::Mutex::new(std::collections::VecDeque::from([
+            Completion {
+                text: "Checking files".to_string(),
+                tool_calls: vec![
+                    tool_request(
+                        "write",
+                        "writeFile",
+                        json!({"path": "result.txt", "content": "once"}),
+                    ),
+                    tool_request("read", "readFile", json!({"path": "result.txt"})),
+                    tool_request("missing", "readFile", json!({"path": "absent.txt"})),
+                ],
+                ..Completion::default()
+            },
+            Completion::text("Done".to_string()),
+        ])),
+        seen: seen.clone(),
+        native: true,
+    });
+    let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
+    let (result, events) = tokio::join!(
+        agent.handle_user_message(ConversationMessage::user("write and read"), tx),
+        async {
+            let mut calls = Vec::new();
+            let mut approvals = 0;
+            while let Some(event) = rx.recv().await {
+                match event {
+                    AgentEvent::ApprovalRequired { response, .. } => {
+                        approvals += 1;
+                        response.send(true).unwrap();
+                    }
+                    AgentEvent::ToolCall { name, .. } => calls.push(name),
+                    AgentEvent::Error(error) => panic!("{error}"),
+                    _ => {}
+                }
+            }
+            (calls, approvals)
+        }
+    );
+    result.unwrap();
+    assert_eq!(
+        events,
+        (
+            vec![
+                "writeFile".to_string(),
+                "readFile".to_string(),
+                "readFile".to_string()
+            ],
+            1
+        )
+    );
+    assert_eq!(
+        std::fs::read_to_string(directory.path().join("result.txt")).unwrap(),
+        "once"
+    );
+    let snapshots = seen.lock().unwrap();
+    assert_eq!(snapshots.len(), 2);
+    let history = &snapshots[1];
+    assert_eq!(
+        history[1]
+            .tool_calls
+            .iter()
+            .map(|c| c.id.as_str())
+            .collect::<Vec<_>>(),
+        ["write", "read", "missing"]
+    );
+    let results = history[2..]
+        .iter()
+        .map(|m| m.tool_result.as_ref().unwrap())
+        .collect::<Vec<_>>();
+    assert_eq!(
+        results
+            .iter()
+            .map(|r| r.call_id.as_str())
+            .collect::<Vec<_>>(),
+        ["write", "read", "missing"]
+    );
+    assert_eq!(results[1].output["content"], "once");
+    assert!(results[2].is_error);
+}
+
+#[tokio::test]
+async fn denied_mutation_returns_matching_error_and_model_continues() {
+    use crate::models::{AgentEvent, Completion};
+    use serde_json::json;
+    let directory = tempfile::tempdir().unwrap();
+    let mut agent = test_agent(ProviderKind::OpenAi);
+    agent.tools = ToolRuntime::new(directory.path().to_path_buf()).unwrap();
+    let seen = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+    agent.provider = Box::new(ScriptedProvider {
+        replies: std::sync::Mutex::new(std::collections::VecDeque::from([
+            Completion {
+                tool_calls: vec![tool_request(
+                    "denied",
+                    "writeFile",
+                    json!({"path": "denied.txt", "content": "no"}),
+                )],
+                ..Completion::default()
+            },
+            Completion::text("No changes made".to_string()),
+        ])),
+        seen: seen.clone(),
+        native: true,
+    });
+    let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
+    let (result, ()) = tokio::join!(
+        agent.handle_user_message(ConversationMessage::user("write"), tx),
+        async {
+            while let Some(event) = rx.recv().await {
+                match event {
+                    AgentEvent::ApprovalRequired { response, .. } => response.send(false).unwrap(),
+                    AgentEvent::ToolCall { .. } => panic!("denied tool executed"),
+                    _ => {}
+                }
+            }
+        }
+    );
+    result.unwrap();
+    assert!(!directory.path().join("denied.txt").exists());
+    let snapshots = seen.lock().unwrap();
+    let result = snapshots[1][2].tool_result.as_ref().unwrap();
+    assert_eq!(result.call_id, "denied");
+    assert_eq!(result.output["error"], "denied by user");
+    assert!(result.is_error);
+}
+
+#[tokio::test]
+async fn duplicate_call_ids_reject_entire_batch_before_any_execution() {
+    use crate::models::{AgentEvent, Completion};
+    use serde_json::json;
+    let mut agent = test_agent(ProviderKind::OpenAi);
+    agent.provider = Box::new(ScriptedProvider {
+        replies: std::sync::Mutex::new(std::collections::VecDeque::from([Completion {
+            tool_calls: vec![
+                tool_request("same", "listDirectory", json!({})),
+                tool_request("same", "writeFile", json!({"path":"x", "content":"x"})),
+            ],
+            ..Completion::default()
+        }])),
+        seen: Default::default(),
+        native: true,
+    });
+    let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
+    assert!(
+        agent
+            .handle_user_message(ConversationMessage::user("inspect"), tx)
+            .await
+            .is_err()
+    );
+    while let Ok(event) = rx.try_recv() {
+        assert!(!matches!(
+            event,
+            AgentEvent::ApprovalRequired { .. } | AgentEvent::ToolCall { .. }
+        ));
+    }
+    assert_eq!(agent.history.len(), 1);
+}
+
+#[tokio::test]
+async fn legacy_turn_keeps_call_result_links_and_streams_plain_text() {
+    use crate::models::{AgentEvent, Completion};
+    let mut agent = test_agent(ProviderKind::Ollama);
+    let seen = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+    agent.provider = Box::new(ScriptedProvider {
+        replies: std::sync::Mutex::new(std::collections::VecDeque::from([
+            Completion::text(
+                r#"{"assistant":"Inspecting","tool_calls":[{"name":"unknown","arguments":{}}]}"#
+                    .to_string(),
+            ),
+            Completion::text(r#"{"assistant":"Finished","tool_calls":[]}"#.to_string()),
+        ])),
+        seen: seen.clone(),
+        native: false,
+    });
+    let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
+    agent
+        .handle_user_message(ConversationMessage::user("inspect"), tx)
+        .await
+        .unwrap();
+    let mut text = String::new();
+    while let Ok(event) = rx.try_recv() {
+        if let AgentEvent::AssistantDelta(delta) = event {
+            text.push_str(&delta);
+        }
+    }
+    assert_eq!(text, "InspectingFinished");
+    let history = seen.lock().unwrap();
+    assert_eq!(
+        history[1][1].tool_calls[0].id,
+        history[1][2].tool_result.as_ref().unwrap().call_id
+    );
+}
+
+#[test]
+fn trimming_drops_complete_tool_batches() {
+    use serde_json::json;
+    let mut agent = test_agent(ProviderKind::OpenAi);
+    let request = tool_request("old", "listDirectory", json!({}));
+    let mut message = ConversationMessage::assistant("");
+    message.tool_calls.push(request.clone());
+    agent.history.push(message);
+    agent.record_tool_result(&request, json!({}), false);
+    for _ in 0..99 {
+        agent.history.push(ConversationMessage::user("new"));
+    }
+    agent.trim_history();
+    assert_eq!(agent.history.len(), 99);
+    assert!(
+        agent
+            .history
+            .iter()
+            .all(|m| m.tool_result.is_none() && m.tool_calls.is_empty())
+    );
+}
+
+#[test]
+fn trimming_keeps_the_latest_batch_when_it_exceeds_the_message_limit() {
+    use serde_json::json;
+    let mut agent = test_agent(ProviderKind::OpenAi);
+    let mut assistant = ConversationMessage::assistant("");
+    assistant.tool_calls = (0..101)
+        .map(|index| tool_request(&format!("call_{index}"), "listDirectory", json!({})))
+        .collect();
+    let requests = assistant.tool_calls.clone();
+    agent.history.push(assistant);
+    for request in &requests {
+        agent.record_tool_result(request, json!({}), false);
+    }
+    agent.trim_history();
+    assert_eq!(agent.history.len(), 102);
+    assert_eq!(agent.history[0].tool_calls.len(), 101);
+}
+
+#[tokio::test]
+async fn native_audit_returns_correlated_denials_without_approval_or_execution() {
+    use crate::models::{AgentEvent, Completion};
+    use serde_json::json;
+    let directory = tempfile::tempdir().unwrap();
+    let mut agent = test_agent(ProviderKind::OpenAi);
+    agent.tools = ToolRuntime::new(directory.path().to_path_buf()).unwrap();
+    let seen = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+    agent.provider = Box::new(ScriptedProvider {
+        replies: std::sync::Mutex::new(std::collections::VecDeque::from([
+            Completion {
+                tool_calls: vec![
+                    tool_request("write", "writeFile", json!({"path":"x", "content":"no"})),
+                    tool_request("shell", "runCommand", json!({"command":"exit 0"})),
+                ],
+                ..Completion::default()
+            },
+            Completion::text("Audit only".to_string()),
+        ])),
+        seen: seen.clone(),
+        native: true,
+    });
+    let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
+    agent
+        .handle_audit(
+            "audit".to_string(),
+            directory.path().to_path_buf(),
+            false,
+            tx,
+        )
+        .await
+        .unwrap();
+    while let Ok(event) = rx.try_recv() {
+        assert!(!matches!(
+            event,
+            AgentEvent::ApprovalRequired { .. } | AgentEvent::ToolCall { .. }
+        ));
+    }
+    let history = seen.lock().unwrap();
+    for (index, id) in ["write", "shell"].iter().enumerate() {
+        let result = history[1][index + 2].tool_result.as_ref().unwrap();
+        assert_eq!(result.call_id, *id);
+        assert_eq!(result.output["error"], "unavailable in this audit mode");
+        assert!(result.is_error);
+    }
+    assert!(!directory.path().join("x").exists());
+}
