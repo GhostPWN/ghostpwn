@@ -27,7 +27,7 @@ use tokio::process::Command;
 use tokio::time::timeout;
 use walkdir::WalkDir;
 
-use crate::models::ToolCall;
+use crate::models::{ToolCall, TurnCancellation};
 use crate::skills::SkillRuntime;
 
 const DEFAULT_COMMAND_TIMEOUT_MS: u64 = 30_000;
@@ -47,6 +47,24 @@ const DEFAULT_READ_FILE_LINES: usize = 200;
 const MAX_DIFF_LINES: usize = 5_000;
 const MAX_DIFF_MATRIX_CELLS: usize = 1_000_000;
 const OSV_QUERY_BATCH_URL: &str = "https://api.osv.dev/v1/querybatch";
+
+pub fn tool_can_interrupt(name: &str) -> bool {
+    matches!(
+        canonical_tool_name(name),
+        "listSkills"
+            | "searchSkills"
+            | "readSkill"
+            | "readFile"
+            | "listDirectory"
+            | "searchFiles"
+            | "grep"
+            | "fileInfo"
+            | "auditDependencies"
+            | "generateDiff"
+            | "webFetch"
+            | "webSearch"
+    )
+}
 
 pub fn tool_requires_approval(name: &str) -> bool {
     matches!(
@@ -338,6 +356,18 @@ impl ToolRuntime {
     }
 
     pub async fn execute(&self, call: &ToolCall) -> Result<Value> {
+        self.execute_with_cancellation(call, &TurnCancellation::default())
+            .await
+    }
+
+    pub async fn execute_with_cancellation(
+        &self,
+        call: &ToolCall,
+        cancellation: &TurnCancellation,
+    ) -> Result<Value> {
+        if cancellation.is_cancelled() {
+            return Err(anyhow!("Tool cancelled before execution"));
+        }
         match canonical_tool_name(&call.name) {
             "listSkills" => self.skills.list_tool().await,
             "searchSkills" => self.skills.search_tool(&call.arguments).await,
@@ -346,7 +376,7 @@ impl ToolRuntime {
             "listDirectory" => self.list_directory(&call.arguments).await,
             "searchFiles" => self.search_files(&call.arguments).await,
             "grep" => self.grep(&call.arguments).await,
-            "runCommand" => self.run_command(&call.arguments).await,
+            "runCommand" => self.run_command(&call.arguments, cancellation).await,
             "auditDependencies" => self.audit_dependencies(&call.arguments).await,
             "fileInfo" => self.file_info(&call.arguments).await,
             "generateDiff" => self.generate_diff(&call.arguments).await,
@@ -896,7 +926,7 @@ impl ToolRuntime {
         }))
     }
 
-    async fn run_command(&self, args: &Value) -> Result<Value> {
+    async fn run_command(&self, args: &Value, cancellation: &TurnCancellation) -> Result<Value> {
         let command = required_str(args, "command")?;
         let cwd = args.get("cwd").and_then(Value::as_str).unwrap_or(".");
         let timeout_ms = args
@@ -929,16 +959,19 @@ impl ToolRuntime {
             .take()
             .ok_or_else(|| anyhow!("Failed to capture command stderr"))?;
 
-        let result = timeout(Duration::from_millis(timeout_ms), async {
-            tokio::join!(
-                read_capped(stdout, MAX_COMMAND_STDOUT_BYTES),
-                read_capped(stderr, MAX_COMMAND_STDERR_BYTES),
-                child.wait()
-            )
-        })
-        .await;
+        let result = tokio::select! {
+            biased;
+            _ = cancellation.cancelled() => None,
+            result = timeout(Duration::from_millis(timeout_ms), async {
+                tokio::join!(
+                    read_capped(stdout, MAX_COMMAND_STDOUT_BYTES),
+                    read_capped(stderr, MAX_COMMAND_STDERR_BYTES),
+                    child.wait()
+                )
+            }) => Some(result),
+        };
         let (stdout, stderr, status) = match result {
-            Ok((stdout, stderr, status)) => {
+            Some(Ok((stdout, stderr, status))) => {
                 let (stdout, stdout_truncated) = stdout?;
                 let (stderr, stderr_truncated) = stderr?;
                 (
@@ -947,11 +980,16 @@ impl ToolRuntime {
                     (status?, stdout_truncated || stderr_truncated),
                 )
             }
-            Err(_) => {
+            None | Some(Err(_)) => {
                 child
                     .kill()
                     .await
-                    .map_err(|err| anyhow!("Failed to terminate timed out command: {err}"))?;
+                    .map_err(|err| anyhow!("Failed to terminate command process group: {err}"))?;
+                if result.is_none() {
+                    return Err(anyhow!(
+                        "Command cancelled; its process group was terminated"
+                    ));
+                }
                 return Ok(json!({
                     "stdout": "",
                     "stderr": "Command timed out",

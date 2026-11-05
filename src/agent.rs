@@ -9,10 +9,11 @@ use crate::config::{ProviderKeys, ProviderKind};
 use crate::images::{MAX_RETAINED_IMAGE_BYTES, image_bytes, prepare_parts};
 use crate::models::{
     AgentEvent, ConversationMessage, ImageAttachment, ModelEnvelope, ToolRequest, ToolResult,
+    TurnCancellation,
 };
 use crate::providers::{Provider, build_provider_with_secret_store};
 use crate::secrets::{SETTING_MODEL, SETTING_PROVIDER, SecretMutationReport, SecretStore};
-use crate::tools::{ToolRuntime, audit_tool_allowed};
+use crate::tools::{ToolRuntime, audit_tool_allowed, tool_can_interrupt};
 
 const MAX_STEPS: usize = 15;
 const AUDIT_MAX_STEPS: usize = 30;
@@ -386,8 +387,9 @@ impl Agent {
         &mut self,
         message: ConversationMessage,
         events: UnboundedSender<AgentEvent>,
+        cancellation: &TurnCancellation,
     ) -> Result<()> {
-        self.handle_input(message, events, None, false, MAX_STEPS)
+        self.handle_input(message, events, None, false, cancellation)
             .await
     }
 
@@ -401,13 +403,14 @@ impl Agent {
         scope: PathBuf,
         allow_mutations: bool,
         events: UnboundedSender<AgentEvent>,
+        cancellation: &TurnCancellation,
     ) -> Result<()> {
         self.handle_input(
             ConversationMessage::user(prompt),
             events,
             Some(&scope),
             allow_mutations,
-            AUDIT_MAX_STEPS,
+            cancellation,
         )
         .await
     }
@@ -418,27 +421,51 @@ impl Agent {
         events: UnboundedSender<AgentEvent>,
         audit_scope: Option<&Path>,
         allow_audit_mutations: bool,
-        max_steps: usize,
+        cancellation: &TurnCancellation,
     ) -> Result<()> {
         self.history.push(user_message);
+        let max_steps = if audit_scope.is_some() {
+            AUDIT_MAX_STEPS
+        } else {
+            MAX_STEPS
+        };
 
         for _ in 0..max_steps {
+            if cancellation.is_cancelled() {
+                self.finish_cancelled(&events);
+                return Ok(());
+            }
             self.trim_history();
             let system_prompt = self.system_prompt().await;
             let native_tools = self.provider.uses_native_tools();
             let mut stream_extractor = AssistantStreamExtractor::default();
+            let mut partial_text = String::new();
             let mut on_delta = |chunk: String| {
+                if cancellation.is_cancelled() {
+                    return;
+                }
                 if native_tools {
+                    partial_text.push_str(&chunk);
                     let _ = events.send(AgentEvent::AssistantDelta(chunk));
                 } else if let Some(delta) = stream_extractor.ingest_chunk(&chunk) {
+                    partial_text.push_str(&delta);
                     let _ = events.send(AgentEvent::AssistantDelta(delta));
                 }
             };
 
-            let completion = self
-                .provider
-                .stream_complete(&system_prompt, &self.history, &mut on_delta)
-                .await?;
+            let completion = tokio::select! {
+                biased;
+                _ = cancellation.cancelled() => None,
+                result = self.provider.stream_complete(&system_prompt, &self.history, &mut on_delta) => Some(result?),
+            };
+            let Some(completion) = completion else {
+                if !partial_text.is_empty() {
+                    self.history
+                        .push(ConversationMessage::assistant(partial_text));
+                }
+                self.finish_cancelled(&events);
+                return Ok(());
+            };
 
             let raw = completion.text.clone();
             let (text, mut calls, parsed_structured) = if native_tools {
@@ -496,6 +523,10 @@ impl Agent {
                 self.history.push(assistant);
             }
             if !has_tool_calls {
+                if cancellation.is_cancelled() {
+                    self.finish_cancelled(&events);
+                    return Ok(());
+                }
                 if !parsed_structured && looks_like_structured_attempt(&raw) {
                     let _ = events.send(AgentEvent::Error(
                         "The model's structured JSON response could not be parsed; it was likely \
@@ -510,6 +541,14 @@ impl Agent {
 
             for request in calls {
                 let call = &request.call;
+                if cancellation.is_cancelled() {
+                    self.record_tool_result(
+                        &request,
+                        serde_json::json!({"error": "cancelled before execution"}),
+                        true,
+                    );
+                    continue;
+                }
                 if audit_scope.is_some() && !audit_tool_allowed(&call.name, allow_audit_mutations) {
                     self.record_tool_result(
                         &request,
@@ -535,7 +574,20 @@ impl Agent {
                         args_summary: summary.clone(),
                         response,
                     });
-                    if !approval.await.unwrap_or(false) {
+                    let approved = tokio::select! {
+                        biased;
+                        _ = cancellation.cancelled() => None,
+                        result = approval => Some(result.unwrap_or(false)),
+                    };
+                    if approved.is_none() {
+                        self.record_tool_result(
+                            &request,
+                            serde_json::json!({"error": "cancelled before execution"}),
+                            true,
+                        );
+                        continue;
+                    }
+                    if approved == Some(false) {
                         self.record_tool_result(
                             &request,
                             serde_json::json!({"error": "denied by user"}),
@@ -545,18 +597,43 @@ impl Agent {
                     }
                 }
 
+                if cancellation.is_cancelled() {
+                    self.record_tool_result(
+                        &request,
+                        serde_json::json!({"error": "cancelled before execution"}),
+                        true,
+                    );
+                    continue;
+                }
+
                 let _ = events.send(AgentEvent::ToolCall {
                     name: call.name.clone(),
                     args_summary: summary,
                 });
 
-                let result = match audit_scope {
-                    Some(scope) => {
-                        self.tools
-                            .execute_audit(call, scope, allow_audit_mutations)
-                            .await
+                let operation = async {
+                    match audit_scope {
+                        Some(scope) => {
+                            self.tools
+                                .execute_audit(call, scope, allow_audit_mutations)
+                                .await
+                        }
+                        None => {
+                            self.tools
+                                .execute_with_cancellation(call, cancellation)
+                                .await
+                        }
                     }
-                    None => self.tools.execute(call).await,
+                };
+                // File changes must finish or roll back. Commands handle process cleanup themselves.
+                let result = if tool_can_interrupt(&call.name) {
+                    tokio::select! {
+                        biased;
+                        _ = cancellation.cancelled() => Err(anyhow::anyhow!("Tool cancelled")),
+                        result = operation => result,
+                    }
+                } else {
+                    operation.await
                 };
                 match result {
                     Ok(result) => self.record_tool_result(&request, result, false),
@@ -566,6 +643,10 @@ impl Agent {
                         true,
                     ),
                 }
+            }
+            if cancellation.is_cancelled() {
+                self.finish_cancelled(&events);
+                return Ok(());
             }
         }
 
@@ -577,6 +658,11 @@ impl Agent {
         let _ = events.send(AgentEvent::Error(message.to_string()));
         let _ = events.send(AgentEvent::Done);
         Ok(())
+    }
+
+    fn finish_cancelled(&mut self, events: &UnboundedSender<AgentEvent>) {
+        self.history.push(ConversationMessage::assistant("The user cancelled this turn. Completed actions were kept. Do not resume it unless asked."));
+        let _ = events.send(AgentEvent::Cancelled);
     }
 
     fn record_tool_result(

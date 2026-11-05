@@ -2,6 +2,31 @@ use std::sync::Arc;
 
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
+use tokio::sync::watch;
+
+#[derive(Debug, Clone)]
+pub struct TurnCancellation(watch::Sender<bool>);
+
+impl Default for TurnCancellation {
+    fn default() -> Self {
+        Self(watch::channel(false).0)
+    }
+}
+
+impl TurnCancellation {
+    pub fn cancel(&self) {
+        self.0.send_replace(true);
+    }
+
+    pub fn is_cancelled(&self) -> bool {
+        *self.0.borrow()
+    }
+
+    pub async fn cancelled(&self) {
+        let mut receiver = self.0.subscribe();
+        let _ = receiver.wait_for(|cancelled| *cancelled).await;
+    }
+}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum MessageRole {
@@ -176,5 +201,6 @@ pub enum AgentEvent {
     },
     ProviderName(String),
     Error(String),
+    Cancelled,
     Done,
 }

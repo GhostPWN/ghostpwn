@@ -71,6 +71,21 @@ Approvals, workspace file controls, and command timeouts still apply. Shell
 commands do not run in an OS sandbox. `/clear` removes chat and tool history.
 Sessions stay in memory; closing the app removes them.
 
+## Stop a turn
+
+Press `Esc` to stop the active turn and keep the app open. This also closes a
+pending approval. `N` or Enter denies only that tool and lets the turn continue.
+The UI shows `Stopping turn...` until cleanup finishes. You can then submit a new
+message.
+
+Cancellation closes the model stream and stops shell command process groups.
+A file change already in progress finishes before the turn stops. Completed
+changes stay in place. History keeps completed results and marks unstarted tool
+calls as cancelled. Partial model tool requests never execute.
+
+Press `Ctrl+C` to exit. The app stops the active turn before it restores the
+terminal and exits.
+
 ## Image input
 
 Vision-capable models can analyze PNG, JPEG, and WebP files from the current
