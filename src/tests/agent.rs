@@ -1,5 +1,5 @@
 use crate::config::{ProviderKeys, ProviderKind};
-use crate::models::{ConversationMessage, ConversationPart};
+use crate::models::{ConversationMessage, ConversationPart, TurnCancellation};
 use crate::secrets::{SecretMutationReport, SecretStore};
 use crate::tools::ToolRuntime;
 
@@ -458,8 +458,13 @@ async fn native_turn_records_batch_results_and_executes_approved_mutation_once()
         native: true,
     });
     let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
+    let cancellation = TurnCancellation::default();
     let (result, events) = tokio::join!(
-        agent.handle_user_message(ConversationMessage::user("write and read"), tx),
+        agent.handle_user_message(
+            ConversationMessage::user("write and read"),
+            tx,
+            &cancellation
+        ),
         async {
             let mut calls = Vec::new();
             let mut approvals = 0;
@@ -543,8 +548,9 @@ async fn denied_mutation_returns_matching_error_and_model_continues() {
         native: true,
     });
     let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
+    let cancellation = TurnCancellation::default();
     let (result, ()) = tokio::join!(
-        agent.handle_user_message(ConversationMessage::user("write"), tx),
+        agent.handle_user_message(ConversationMessage::user("write"), tx, &cancellation),
         async {
             while let Some(event) = rx.recv().await {
                 match event {
@@ -583,7 +589,11 @@ async fn duplicate_call_ids_reject_entire_batch_before_any_execution() {
     let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
     assert!(
         agent
-            .handle_user_message(ConversationMessage::user("inspect"), tx)
+            .handle_user_message(
+                ConversationMessage::user("inspect"),
+                tx,
+                &TurnCancellation::default()
+            )
             .await
             .is_err()
     );
@@ -614,7 +624,11 @@ async fn legacy_turn_keeps_call_result_links_and_streams_plain_text() {
     });
     let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
     agent
-        .handle_user_message(ConversationMessage::user("inspect"), tx)
+        .handle_user_message(
+            ConversationMessage::user("inspect"),
+            tx,
+            &TurnCancellation::default(),
+        )
         .await
         .unwrap();
     let mut text = String::new();
@@ -700,6 +714,7 @@ async fn native_audit_returns_correlated_denials_without_approval_or_execution()
             directory.path().to_path_buf(),
             false,
             tx,
+            &TurnCancellation::default(),
         )
         .await
         .unwrap();
@@ -717,4 +732,200 @@ async fn native_audit_returns_correlated_denials_without_approval_or_execution()
         assert!(result.is_error);
     }
     assert!(!directory.path().join("x").exists());
+}
+
+struct PendingProvider {
+    started: std::sync::Arc<tokio::sync::Notify>,
+    dropped: std::sync::Arc<std::sync::atomic::AtomicBool>,
+    native: bool,
+}
+
+#[async_trait::async_trait]
+impl crate::providers::Provider for PendingProvider {
+    fn display_name(&self) -> String {
+        "pending".to_string()
+    }
+    fn uses_native_tools(&self) -> bool {
+        self.native
+    }
+    async fn stream_complete(
+        &self,
+        _system: &str,
+        _messages: &[ConversationMessage],
+        on_delta: &mut (dyn FnMut(String) + Send),
+    ) -> anyhow::Result<crate::models::Completion> {
+        struct Dropped(std::sync::Arc<std::sync::atomic::AtomicBool>);
+        impl Drop for Dropped {
+            fn drop(&mut self) {
+                self.0.store(true, std::sync::atomic::Ordering::SeqCst);
+            }
+        }
+        let _guard = Dropped(self.dropped.clone());
+        on_delta(
+            if self.native {
+                "Partial answer"
+            } else {
+                r#"{"assistant":"Partial answer"#
+            }
+            .to_string(),
+        );
+        self.started.notify_one();
+        std::future::pending().await
+    }
+}
+
+#[tokio::test]
+async fn cancellation_drops_native_and_legacy_provider_streams_and_allows_follow_up() {
+    use crate::models::{AgentEvent, Completion};
+    use std::sync::atomic::Ordering;
+    for native in [true, false] {
+        let mut agent = test_agent(ProviderKind::OpenAi);
+        let started = std::sync::Arc::new(tokio::sync::Notify::new());
+        let dropped = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+        agent.provider = Box::new(PendingProvider {
+            started: started.clone(),
+            dropped: dropped.clone(),
+            native,
+        });
+        let cancellation = TurnCancellation::default();
+        let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
+        tokio::time::timeout(std::time::Duration::from_secs(2), async {
+            let (result, ()) = tokio::join!(
+                agent.handle_user_message(ConversationMessage::user("answer"), tx, &cancellation),
+                async {
+                    started.notified().await;
+                    cancellation.cancel();
+                },
+            );
+            result.unwrap();
+        })
+        .await
+        .expect("stream cancellation timed out");
+        assert!(dropped.load(Ordering::SeqCst));
+        assert_eq!(
+            agent.history[1].content,
+            vec![ConversationPart::Text("Partial answer".to_string())]
+        );
+        let mut cancelled = 0;
+        while let Ok(event) = rx.try_recv() {
+            match event {
+                AgentEvent::Cancelled => cancelled += 1,
+                AgentEvent::AssistantDelta(_) => {}
+                _ => panic!("unexpected cancellation event: {event:?}"),
+            }
+        }
+        assert_eq!(cancelled, 1);
+        let seen = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+        agent.provider = Box::new(ScriptedProvider {
+            replies: std::sync::Mutex::new(std::collections::VecDeque::from([Completion::text(
+                "New answer".to_string(),
+            )])),
+            seen: seen.clone(),
+            native: true,
+        });
+        let (tx, _) = tokio::sync::mpsc::unbounded_channel();
+        agent
+            .handle_user_message(
+                ConversationMessage::user("new task"),
+                tx,
+                &TurnCancellation::default(),
+            )
+            .await
+            .unwrap();
+        let history = seen.lock().unwrap();
+        assert_eq!(
+            history[0].last().unwrap().content,
+            vec![ConversationPart::Text("new task".to_string())]
+        );
+        assert!(history[0].iter().any(|m| m.content.iter().any(
+            |part| matches!(part, ConversationPart::Text(text) if text.contains("user cancelled"))
+        )));
+    }
+}
+
+#[tokio::test]
+async fn cancelling_an_approval_keeps_completed_changes_and_closes_remaining_calls() {
+    use crate::models::{AgentEvent, Completion};
+    use serde_json::json;
+    let directory = tempfile::tempdir().unwrap();
+    let mut agent = test_agent(ProviderKind::OpenAi);
+    agent.tools = ToolRuntime::new(directory.path().to_path_buf()).unwrap();
+    agent.provider = Box::new(ScriptedProvider {
+        replies: std::sync::Mutex::new(std::collections::VecDeque::from([Completion {
+            tool_calls: vec![
+                tool_request(
+                    "completed",
+                    "writeFile",
+                    json!({"path":"kept.txt", "content":"keep"}),
+                ),
+                tool_request(
+                    "pending",
+                    "writeFile",
+                    json!({"path":"cancelled.txt", "content":"no"}),
+                ),
+                tool_request("unstarted", "readFile", json!({"path":"kept.txt"})),
+            ],
+            ..Completion::default()
+        }])),
+        seen: Default::default(),
+        native: true,
+    });
+    let cancellation = TurnCancellation::default();
+    let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
+    let (result, (calls, cancelled)) =
+        tokio::time::timeout(std::time::Duration::from_secs(2), async {
+            tokio::join!(
+                agent.handle_user_message(
+                    ConversationMessage::user("write files"),
+                    tx,
+                    &cancellation
+                ),
+                async {
+                    let mut approvals = 0;
+                    let mut calls = 0;
+                    let mut cancelled = 0;
+                    while let Some(event) = rx.recv().await {
+                        match event {
+                            AgentEvent::ApprovalRequired { response, .. } => {
+                                approvals += 1;
+                                if approvals == 2 {
+                                    cancellation.cancel();
+                                }
+                                // Cancellation wins even when approval is ready at the same time.
+                                response.send(true).unwrap();
+                            }
+                            AgentEvent::ToolCall { .. } => calls += 1,
+                            AgentEvent::Cancelled => cancelled += 1,
+                            AgentEvent::Done | AgentEvent::Error(_) => {
+                                panic!("unexpected terminal event")
+                            }
+                            _ => {}
+                        }
+                    }
+                    (calls, cancelled)
+                }
+            )
+        })
+        .await
+        .expect("approval cancellation timed out");
+    result.unwrap();
+    assert_eq!((calls, cancelled), (1, 1));
+    assert_eq!(
+        std::fs::read_to_string(directory.path().join("kept.txt")).unwrap(),
+        "keep"
+    );
+    assert!(!directory.path().join("cancelled.txt").exists());
+    let results = agent
+        .history
+        .iter()
+        .filter_map(|m| m.tool_result.as_ref())
+        .collect::<Vec<_>>();
+    assert_eq!(results.len(), 3);
+    assert_eq!(results[0].call_id, "completed");
+    assert!(!results[0].is_error);
+    for (result, id) in results[1..].iter().zip(["pending", "unstarted"]) {
+        assert_eq!(result.call_id, id);
+        assert_eq!(result.output["error"], "cancelled before execution");
+        assert!(result.is_error);
+    }
 }

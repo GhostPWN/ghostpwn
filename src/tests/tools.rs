@@ -1456,3 +1456,94 @@ fn format_rfc3339_renders_utc_timestamps() {
         "2024-02-29T12:14:56Z"
     );
 }
+
+#[tokio::test]
+async fn cancelled_commands_do_not_start() {
+    let root = tempdir().unwrap();
+    let tools = ToolRuntime::new(root.path().to_path_buf()).unwrap();
+    let cancellation = crate::models::TurnCancellation::default();
+    cancellation.cancel();
+    let command = if cfg!(windows) {
+        "New-Item forbidden"
+    } else {
+        "touch forbidden"
+    };
+    let call = ToolCall {
+        name: "runCommand".to_string(),
+        arguments: json!({"command":command}),
+    };
+    assert!(
+        tools
+            .execute_with_cancellation(&call, &cancellation)
+            .await
+            .is_err()
+    );
+    assert!(!root.path().join("forbidden").exists());
+}
+
+#[cfg(unix)]
+#[tokio::test]
+async fn command_cancellation_terminates_and_reaps_its_process_group() {
+    let root = tempdir().unwrap();
+    let tools = ToolRuntime::new(root.path().to_path_buf()).unwrap();
+    let cancellation = crate::models::TurnCancellation::default();
+    let call = ToolCall {
+        name: "Bash".to_string(),
+        arguments: json!({
+            "command":"sleep 30 & printf '%s' \"$!\" > child.pid; wait", "timeout":60000
+        }),
+    };
+    let (result, pid) = tokio::time::timeout(std::time::Duration::from_secs(5), async {
+        tokio::join!(
+            tools.execute_with_cancellation(&call, &cancellation),
+            async {
+                let pid = loop {
+                    if let Ok(text) = tokio::fs::read_to_string(root.path().join("child.pid")).await
+                        && let Ok(pid) = text.parse::<u32>()
+                    {
+                        break pid;
+                    }
+                    tokio::time::sleep(std::time::Duration::from_millis(5)).await;
+                };
+                cancellation.cancel();
+                pid
+            }
+        )
+    })
+    .await
+    .expect("command cancellation timed out");
+    assert!(result.unwrap_err().to_string().contains("cancelled"));
+    let status = std::process::Command::new("ps")
+        .args(["-o", "stat=", "-p", &pid.to_string()])
+        .output()
+        .unwrap();
+    let state = String::from_utf8_lossy(&status.stdout);
+    assert!(
+        state.trim().is_empty() || state.trim_start().starts_with('Z'),
+        "descendant remains live: {state}"
+    );
+}
+
+#[test]
+fn only_read_only_tools_can_be_interrupted_without_cleanup() {
+    for name in [
+        "webFetch",
+        "WebSearch",
+        "readFile",
+        "generateDiff",
+        "auditDependencies",
+    ] {
+        assert!(super::tool_can_interrupt(name), "{name}");
+    }
+    for name in [
+        "Bash",
+        "runCommand",
+        "writeFile",
+        "editFile",
+        "MultiEdit",
+        "apply_patch",
+        "unknown",
+    ] {
+        assert!(!super::tool_can_interrupt(name), "{name}");
+    }
+}

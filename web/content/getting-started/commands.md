@@ -19,11 +19,23 @@ description: GhostPWN slash commands: /help, /model provider and model switching
 - `/clear-images` removes queued clipboard images
 - `/clear` resets the in-memory conversation and removes queued clipboard images
 - `/quit` or `/exit` exits the TUI
-- `Ctrl`+`C` exits immediately
+- `Esc` stops the active turn and keeps the app open
+- `Ctrl`+`C` stops the active turn, then exits
 - `Ctrl`+`V` queues clipboard bitmap data as PNG, or pastes normalized text when no bitmap is available
 - Status bar shows streaming state and live/manual scroll position
 
 See [Image input](/docs/getting-started/image-input) for path syntax, limits, retention, and provider requirements.
+
+## Stop a turn
+
+Press `Esc` during a model response, a tool call, or a pending approval to stop
+the turn. The UI shows `Stopping turn...` until cleanup finishes. You can then
+submit a new message.
+
+Cancellation closes model streams and terminates shell command process groups.
+A file change already in progress finishes before the turn stops. Completed
+changes stay in place. Tool history records cancelled calls so a later message
+can continue with valid history.
 
 ## Scroll controls
 
@@ -35,7 +47,7 @@ Local tools available to the agent loop:
 
 `listSkills`, `searchSkills`, `readSkill`, `readFile`, `listDirectory`, `searchFiles`, `grep`, `runCommand`, `auditDependencies`, `fileInfo`, `generateDiff`, `writeFile`, `editFile`, `multiEdit`, `applyPatch`, `webFetch`, `webSearch`.
 
-Model-requested commands and file mutations pause until you approve them with `y` or deny them with `n`/`Enter`/`Esc`. Shell commands are clearly labeled as unsandboxed; the workspace controls their starting directory, not their operating-system access.
+Model-requested commands and file mutations pause until you approve them with `y` or deny that tool with `n` or `Enter`. `Esc` stops the entire turn. Shell commands are clearly labeled as unsandboxed; the workspace controls their starting directory, not their operating-system access.
 
 Claude Code, Codex, and OpenCode-compatible tool aliases are provided for common read/write/edit/shell/search operations.
 

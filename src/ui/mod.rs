@@ -29,7 +29,9 @@ use crate::images::{
     ClipboardContent, MAX_IMAGE_BYTES_PER_MESSAGE, MAX_IMAGES_PER_MESSAGE, normalize_pasted_text,
     read_clipboard, read_clipboard_image,
 };
-use crate::models::{AgentEvent, ConversationMessage, ConversationPart, ImageAttachment};
+use crate::models::{
+    AgentEvent, ConversationMessage, ConversationPart, ImageAttachment, TurnCancellation,
+};
 use crate::providers::{codex, copilot};
 
 pub(super) mod palette {
@@ -153,6 +155,11 @@ struct PendingApproval {
     response: oneshot::Sender<bool>,
 }
 
+struct ActiveTurn {
+    cancellation: TurnCancellation,
+    task: tokio::task::JoinHandle<()>,
+}
+
 struct UiState {
     provider_name: String,
     input: String,
@@ -161,6 +168,7 @@ struct UiState {
     streaming_content: String,
     tool_status: String,
     is_streaming: bool,
+    active_turn: Option<ActiveTurn>,
     should_quit: bool,
     scroll_offset: u16,
     auto_scroll: bool,
@@ -186,6 +194,7 @@ impl UiState {
             streaming_content: String::new(),
             tool_status: String::new(),
             is_streaming: false,
+            active_turn: None,
             should_quit: false,
             scroll_offset: 0,
             auto_scroll: true,
@@ -200,6 +209,22 @@ impl UiState {
             transcript_signature: 0,
             transcript_width: 0,
         }
+    }
+
+    fn is_cancelling(&self) -> bool {
+        self.active_turn
+            .as_ref()
+            .is_some_and(|turn| turn.cancellation.is_cancelled())
+    }
+
+    fn cancel_turn(&mut self) -> bool {
+        let Some(turn) = &self.active_turn else {
+            return false;
+        };
+        turn.cancellation.cancel();
+        self.pending_approval = None;
+        self.tool_status = "Stopping turn...".to_string();
+        true
     }
 
     /// Cheap fingerprint of the rendered transcript. Messages are append-only and never mutated in
@@ -368,6 +393,8 @@ pub async fn run_ui(agent: Arc<Mutex<Agent>>) -> Result<()> {
 
     let run_result = ui_loop(&mut terminal, &agent, &event_tx, &mut event_rx, &mut state).await;
 
+    let shutdown_result = shutdown_active_turn(&mut state).await;
+    let run_result = run_result.and(shutdown_result);
     let restore_result = session.restore();
     match (run_result, restore_result) {
         (Ok(()), Ok(())) => Ok(()),
@@ -376,6 +403,17 @@ pub async fn run_ui(agent: Arc<Mutex<Agent>>) -> Result<()> {
             Err(error.context(format!("terminal cleanup also failed: {cleanup_error}")))
         }
     }
+}
+
+async fn shutdown_active_turn(state: &mut UiState) -> Result<()> {
+    if let Some(turn) = state.active_turn.take() {
+        turn.cancellation.cancel();
+        state.pending_approval = None;
+        turn.task
+            .await
+            .map_err(|error| anyhow::anyhow!("Agent shutdown failed: {error}"))?;
+    }
+    Ok(())
 }
 
 struct TerminalSession {
@@ -495,6 +533,10 @@ where
 
                     if state.selector.is_some() {
                         handle_selector_key(key.code, state, agent, event_tx).await;
+                        continue;
+                    }
+
+                    if key.code == KeyCode::Esc && state.cancel_turn() {
                         continue;
                     }
 
@@ -683,7 +725,12 @@ async fn handle_submit(
             .map(|cmd| format!("{} - {}", cmd.name, cmd.description))
             .collect::<Vec<String>>()
             .join("\n");
-        state.push_message(UiRole::Assistant, format!("Commands:\n{}", help));
+        state.push_message(
+            UiRole::Assistant,
+            format!(
+                "Commands:\n{help}\n\nKeys:\nEsc - Stop the active turn\nCtrl+C - Exit the app"
+            ),
+        );
         state.input.clear();
         state.refresh_completions();
         return;
@@ -745,11 +792,19 @@ async fn handle_submit(
 
         let tx = event_tx.clone();
         let handle = Arc::clone(agent);
-        tokio::spawn(async move {
+        let cancellation = TurnCancellation::default();
+        let task_cancellation = cancellation.clone();
+        let task = tokio::spawn(async move {
             let mut guard = StreamGuard::new(tx.clone());
             let mut locked = handle.lock().await;
             if let Err(err) = locked
-                .handle_audit(prompt, scope_root, apply_fixes, tx.clone())
+                .handle_audit(
+                    prompt,
+                    scope_root,
+                    apply_fixes,
+                    tx.clone(),
+                    &task_cancellation,
+                )
                 .await
             {
                 let _ = tx.send(AgentEvent::Error(err.to_string()));
@@ -757,6 +812,7 @@ async fn handle_submit(
             }
             guard.disarm();
         });
+        state.active_turn = Some(ActiveTurn { cancellation, task });
         return;
     }
 
@@ -791,15 +847,21 @@ async fn handle_submit(
     let tx = event_tx.clone();
     let handle = Arc::clone(agent);
 
-    tokio::spawn(async move {
+    let cancellation = TurnCancellation::default();
+    let task_cancellation = cancellation.clone();
+    let task = tokio::spawn(async move {
         let mut guard = StreamGuard::new(tx.clone());
         let mut locked = handle.lock().await;
-        if let Err(err) = locked.handle_user_message(message, tx.clone()).await {
+        if let Err(err) = locked
+            .handle_user_message(message, tx.clone(), &task_cancellation)
+            .await
+        {
             let _ = tx.send(AgentEvent::Error(err.to_string()));
             let _ = tx.send(AgentEvent::Done);
         }
         guard.disarm();
     });
+    state.active_turn = Some(ActiveTurn { cancellation, task });
 }
 
 async fn paste_clipboard_content(state: &mut UiState) {
@@ -1349,7 +1411,10 @@ fn apply_agent_event(state: &mut UiState, event: AgentEvent) {
             args_summary,
             response,
         } => {
-            let prompt = format!("Approve {name}({args_summary})? [y/N]");
+            if state.is_cancelling() {
+                return;
+            }
+            let prompt = format!("Approve {name}({args_summary})? [y/N] (Esc stops turn)");
             state.tool_status = prompt.clone();
             state.push_message(UiRole::Tool, prompt);
             state.pending_approval = Some(PendingApproval { response });
@@ -1398,7 +1463,15 @@ fn apply_agent_event(state: &mut UiState, event: AgentEvent) {
             state.flush_streaming_to_messages();
             state.push_message(UiRole::Error, err);
         }
+        AgentEvent::Cancelled => {
+            apply_agent_event(state, AgentEvent::Done);
+            state.push_message(
+                UiRole::Assistant,
+                "Turn cancelled. Completed changes were kept.".to_string(),
+            );
+        }
         AgentEvent::Done => {
+            state.active_turn = None;
             state.pending_approval = None;
             state.flush_streaming_to_messages();
             state.tool_status.clear();
@@ -1727,7 +1800,9 @@ fn render_status(frame: &mut Frame, area: Rect, state: &UiState) {
     let frame_idx = (state.tick / 2) as usize % SPINNER.len();
     let mut left_spans = vec![Span::raw(" ")];
     if state.is_streaming {
-        let text = if state.tool_status.is_empty() {
+        let text = if state.is_cancelling() {
+            "Stopping turn...".to_string()
+        } else if state.tool_status.is_empty() {
             "streaming response".to_string()
         } else {
             state.tool_status.clone()
@@ -1770,20 +1845,28 @@ fn render_status(frame: &mut Frame, area: Rect, state: &UiState) {
 
     let left = Line::from(left_spans);
 
-    let right = Line::from(vec![
-        Span::styled("tab", Style::default().fg(palette::PHOSPHOR).bold()),
-        Span::styled(" complete ", Style::default().fg(palette::ASH).dim()),
-        Span::styled("·", Style::default().fg(palette::STEEL).dim()),
-        Span::styled(" ^v", Style::default().fg(palette::PHOSPHOR).bold()),
-        Span::styled(" paste ", Style::default().fg(palette::ASH).dim()),
-        Span::styled("·", Style::default().fg(palette::STEEL).dim()),
-        Span::styled(" ↵", Style::default().fg(palette::PHOSPHOR).bold()),
-        Span::styled(" send ", Style::default().fg(palette::ASH).dim()),
-        Span::styled("·", Style::default().fg(palette::STEEL).dim()),
-        Span::styled(" ^c", Style::default().fg(palette::PHOSPHOR).bold()),
-        Span::styled(" quit ", Style::default().fg(palette::ASH).dim()),
-    ]);
-
+    let right = if state.is_streaming {
+        Line::from(vec![
+            Span::styled("esc", Style::default().fg(palette::PHOSPHOR).bold()),
+            Span::styled(" stop · ", Style::default().fg(palette::ASH).dim()),
+            Span::styled("^c", Style::default().fg(palette::PHOSPHOR).bold()),
+            Span::styled(" quit ", Style::default().fg(palette::ASH).dim()),
+        ])
+    } else {
+        Line::from(vec![
+            Span::styled("tab", Style::default().fg(palette::PHOSPHOR).bold()),
+            Span::styled(" complete ", Style::default().fg(palette::ASH).dim()),
+            Span::styled("·", Style::default().fg(palette::STEEL).dim()),
+            Span::styled(" ^v", Style::default().fg(palette::PHOSPHOR).bold()),
+            Span::styled(" paste ", Style::default().fg(palette::ASH).dim()),
+            Span::styled("·", Style::default().fg(palette::STEEL).dim()),
+            Span::styled(" ↵", Style::default().fg(palette::PHOSPHOR).bold()),
+            Span::styled(" send ", Style::default().fg(palette::ASH).dim()),
+            Span::styled("·", Style::default().fg(palette::STEEL).dim()),
+            Span::styled(" ^c", Style::default().fg(palette::PHOSPHOR).bold()),
+            Span::styled(" quit ", Style::default().fg(palette::ASH).dim()),
+        ])
+    };
     let cols =
         Layout::horizontal([Constraint::Percentage(50), Constraint::Percentage(50)]).split(area);
     frame.render_widget(Paragraph::new(left), cols[0]);
@@ -1810,7 +1893,9 @@ fn render_input(frame: &mut Frame, area: Rect, state: &UiState) {
         .padding(Padding::horizontal(1));
 
     let line = if state.is_streaming {
-        if state.pending_approval.is_some() {
+        if state.is_cancelling() {
+            Line::from("Stopping turn...")
+        } else if state.pending_approval.is_some() {
             Line::from(vec![
                 Span::styled("Approve tool? ", Style::default().fg(palette::EMBER).bold()),
                 Span::styled("y", Style::default().fg(palette::PHOSPHOR).bold()),
@@ -1825,7 +1910,7 @@ fn render_input(frame: &mut Frame, area: Rect, state: &UiState) {
                     Style::default().fg(palette::EMBER).bold(),
                 ),
                 Span::styled(
-                    "channel open · awaiting model",
+                    "channel open · esc stops turn",
                     Style::default().fg(palette::ASH).dim().italic(),
                 ),
             ])

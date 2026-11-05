@@ -345,3 +345,154 @@ fn stale_selector_events_do_not_update_reopened_selector() {
 
     assert!(state.selector.as_ref().unwrap().status.is_none());
 }
+
+#[tokio::test]
+async fn cancellation_waits_for_acknowledgement_and_ignores_late_approval() {
+    use super::ActiveTurn;
+    use crate::models::TurnCancellation;
+    let mut state = UiState::new("test".to_string());
+    assert!(!state.cancel_turn());
+    let cancellation = TurnCancellation::default();
+    let task_cancellation = cancellation.clone();
+    let (events, mut received) = tokio::sync::mpsc::unbounded_channel();
+    let task = tokio::spawn(async move {
+        task_cancellation.cancelled().await;
+        events.send(AgentEvent::Cancelled).unwrap();
+    });
+    state.active_turn = Some(ActiveTurn {
+        cancellation: cancellation.clone(),
+        task,
+    });
+    state.is_streaming = true;
+    state.streaming_content = "Partial response".to_string();
+    let (response, approval) = tokio::sync::oneshot::channel();
+    apply_agent_event(
+        &mut state,
+        AgentEvent::ApprovalRequired {
+            name: "writeFile".to_string(),
+            args_summary: "x".to_string(),
+            response,
+        },
+    );
+    assert!(state.cancel_turn());
+    assert!(cancellation.is_cancelled());
+    assert!(
+        state.is_streaming,
+        "input reopened before cleanup acknowledgement"
+    );
+    assert!(state.pending_approval.is_none());
+    assert!(approval.await.is_err());
+    let (response, approval) = tokio::sync::oneshot::channel();
+    apply_agent_event(
+        &mut state,
+        AgentEvent::ApprovalRequired {
+            name: "writeFile".to_string(),
+            args_summary: "late".to_string(),
+            response,
+        },
+    );
+    assert!(state.pending_approval.is_none());
+    assert!(approval.await.is_err());
+    let event = tokio::time::timeout(std::time::Duration::from_secs(2), received.recv())
+        .await
+        .unwrap()
+        .unwrap();
+    apply_agent_event(&mut state, event);
+    assert!(!state.is_streaming);
+    assert!(state.active_turn.is_none());
+    assert!(!state.should_quit);
+    assert!(
+        state
+            .messages
+            .iter()
+            .any(|m| m.content == "Partial response")
+    );
+    assert!(
+        state
+            .messages
+            .last()
+            .unwrap()
+            .content
+            .contains("Turn cancelled")
+    );
+    assert!(state.streaming_content.is_empty());
+}
+
+#[tokio::test]
+async fn shutdown_waits_for_active_turn_cleanup() {
+    use super::{ActiveTurn, shutdown_active_turn};
+    use crate::models::TurnCancellation;
+    let cancellation = TurnCancellation::default();
+    let task_cancellation = cancellation.clone();
+    let started = Arc::new(tokio::sync::Notify::new());
+    let task_started = started.clone();
+    let release = Arc::new(tokio::sync::Notify::new());
+    let task_release = release.clone();
+    let cleaned = Arc::new(std::sync::atomic::AtomicBool::new(false));
+    let task_cleaned = cleaned.clone();
+    let task = tokio::spawn(async move {
+        task_cancellation.cancelled().await;
+        task_started.notify_one();
+        task_release.notified().await;
+        task_cleaned.store(true, std::sync::atomic::Ordering::SeqCst);
+    });
+    let mut state = UiState::new("test".to_string());
+    state.active_turn = Some(ActiveTurn { cancellation, task });
+    tokio::time::timeout(std::time::Duration::from_secs(2), async {
+        let (result, ()) = tokio::join!(shutdown_active_turn(&mut state), async {
+            started.notified().await;
+            assert!(!cleaned.load(std::sync::atomic::Ordering::SeqCst));
+            release.notify_one();
+        });
+        result.unwrap();
+    })
+    .await
+    .expect("shutdown did not finish cleanup");
+    assert!(cleaned.load(std::sync::atomic::Ordering::SeqCst));
+    assert!(state.active_turn.is_none());
+}
+
+#[tokio::test]
+async fn a_cancelled_audit_can_be_followed_by_another_turn() {
+    let workspace = tempfile::tempdir().unwrap();
+    let agent = Arc::new(tokio::sync::Mutex::new(Agent::new(
+        ProviderKind::OpenAi,
+        "test".to_string(),
+        ProviderKeys::default(),
+        SecretStore::file_only(workspace.path().join("state.json")),
+        ToolRuntime::new(workspace.path().to_path_buf()).unwrap(),
+    )));
+    let (events, mut received) = tokio::sync::mpsc::unbounded_channel();
+    let mut state = UiState::new("test".to_string());
+    handle_submit("/audit".to_string(), &mut state, &agent, &events).await;
+    assert!(state.cancel_turn());
+    loop {
+        let event = tokio::time::timeout(std::time::Duration::from_secs(2), received.recv())
+            .await
+            .unwrap()
+            .unwrap();
+        let finished = matches!(event, AgentEvent::Cancelled);
+        apply_agent_event(&mut state, event);
+        if finished {
+            break;
+        }
+    }
+    assert!(!state.is_streaming);
+    handle_submit("follow-up".to_string(), &mut state, &agent, &events).await;
+    assert!(state.is_streaming);
+    // The disconnected provider returns an error, then Done. No network request is sent.
+    loop {
+        let event = tokio::time::timeout(std::time::Duration::from_secs(2), received.recv())
+            .await
+            .unwrap()
+            .unwrap();
+        let finished = matches!(event, AgentEvent::Done);
+        apply_agent_event(&mut state, event);
+        if finished {
+            break;
+        }
+    }
+    assert!(!state.is_streaming);
+    assert!(state.active_turn.is_none());
+    assert!(agent.try_lock().is_ok());
+}
