@@ -4,9 +4,8 @@ use serde_json::json;
 
 use super::{
     BrowserAuth, BrowserCode, CodexCredentials, credentials_from_device_response,
-    extract_account_id, extract_response_text_from_body, extract_stream_delta, map_messages,
-    parse_codex_models, parse_credentials, persist_credentials, pkce_challenge,
-    serialize_credentials,
+    extract_account_id, map_messages, parse_codex_models, parse_credentials, persist_credentials,
+    pkce_challenge, serialize_credentials,
 };
 use crate::models::{ConversationMessage, ConversationPart, ImageAttachment, ImageMediaType};
 use crate::secrets::SecretStore;
@@ -150,64 +149,6 @@ fn extracts_account_id_from_jwt_payload() {
     let token = format!("header.{payload}.sig");
 
     assert_eq!(extract_account_id(&token).as_deref(), Some("acct_123"));
-}
-
-#[test]
-fn parses_stream_text_delta_events() {
-    let event = json!({
-        "type": "response.output_text.delta",
-        "delta": "hello"
-    });
-
-    assert_eq!(extract_stream_delta(&event).as_deref(), Some("hello"));
-}
-
-#[test]
-fn parses_non_stream_response_text() {
-    let body = json!({
-        "output": [{
-            "content": [
-                { "text": "hello " },
-                { "text": "world" }
-            ]
-        }]
-    });
-
-    assert_eq!(
-        extract_response_text_from_body(&body.to_string()).unwrap(),
-        "hello world"
-    );
-}
-
-#[test]
-fn parses_buffered_sse_response_text() {
-    let body = concat!(
-        "event: response.output_text.delta\n",
-        "data: {\"type\":\"response.output_text.delta\",\"delta\":\"hello\"}\n\n",
-        "event: response.output_text.delta\n",
-        "data: {\"type\":\"response.output_text.delta\",\"delta\":\" world\"}\n\n",
-        "data: [DONE]\n\n",
-    );
-
-    assert_eq!(
-        extract_response_text_from_body(body).unwrap(),
-        "hello world".to_string()
-    );
-}
-
-#[test]
-fn parses_buffered_sse_final_response_text() {
-    let body = concat!(
-        "event: response.created\n",
-        "data: {\"type\":\"response.created\",\"response\":{\"status\":\"in_progress\"}}\n\n",
-        "event: response.completed\n",
-        "data: {\"type\":\"response.completed\",\"output_text\":\"done\"}\n\n",
-    );
-
-    assert_eq!(
-        extract_response_text_from_body(body).unwrap(),
-        "done".to_string()
-    );
 }
 
 #[test]

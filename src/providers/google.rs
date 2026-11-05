@@ -3,8 +3,11 @@ use async_trait::async_trait;
 use reqwest::Client;
 use serde_json::{Value, json};
 
-use crate::models::{ConversationMessage, ConversationPart, MessageRole};
-use crate::providers::sse::{consume_sse, extract_error_message, is_event_stream};
+use crate::models::{
+    Completion, ConversationMessage, ConversationPart, MessageRole, NativeContent,
+};
+use crate::providers::native::GoogleStream;
+use crate::providers::sse::{consume_sse, is_event_stream};
 use crate::providers::{
     MAX_OUTPUT_TOKENS, Provider, dedup_preserve_order, image_base64, message_text,
     provider_http_client, request_error,
@@ -79,13 +82,14 @@ impl Provider for GoogleProvider {
         system: &str,
         messages: &[ConversationMessage],
         on_delta: &mut (dyn FnMut(String) + Send),
-    ) -> Result<String> {
+    ) -> Result<Completion> {
         let payload = json!({
             "systemInstruction": {
                 "role": "system",
                 "parts": [{ "text": system }]
             },
             "contents": map_messages(messages),
+            "tools": [{"functionDeclarations": tool_declarations()}],
             "generationConfig": {
                 "temperature": 0.2,
                 "maxOutputTokens": MAX_OUTPUT_TOKENS
@@ -111,73 +115,75 @@ impl Provider for GoogleProvider {
             return Err(request_error("Google API", status, &body, messages));
         }
 
+        let mut stream = GoogleStream::default();
         if !is_event_stream(response.headers()) {
-            let body: Value = response.json().await?;
-            let text = body
-                .get("candidates")
-                .and_then(|v| v.as_array())
-                .and_then(|arr| arr.first())
-                .and_then(|cand| cand.get("content"))
-                .and_then(|content| content.get("parts"))
-                .and_then(|parts| parts.as_array())
-                .map(|parts| {
-                    parts
-                        .iter()
-                        .filter_map(|part| part.get("text").and_then(|v| v.as_str()))
-                        .collect::<Vec<&str>>()
-                        .join("")
-                })
-                .unwrap_or_default();
-
-            if !text.is_empty() {
-                on_delta(text.clone());
-            }
-            return Ok(text);
+            stream.ingest(&response.json::<Value>().await?, on_delta)?;
+        } else {
+            consume_sse(response, |data| {
+                stream.ingest(&serde_json::from_str::<Value>(data)?, on_delta)?;
+                Ok(true)
+            })
+            .await?;
         }
+        stream.finish()
+    }
+}
 
-        let mut full = String::new();
-        consume_sse(response, |data| {
-            let chunk: Value = match serde_json::from_str(data) {
-                Ok(v) => v,
-                Err(_) => return Ok(true),
-            };
-
-            if let Some(error) = extract_error_message(&chunk) {
-                return Err(anyhow!("Google stream error: {}", error));
-            }
-
-            if let Some(text) = chunk
-                .get("candidates")
-                .and_then(|v| v.as_array())
-                .and_then(|arr| arr.first())
-                .and_then(|cand| cand.get("content"))
-                .and_then(|content| content.get("parts"))
-                .and_then(|parts| parts.as_array())
-                .map(|parts| {
-                    parts
-                        .iter()
-                        .filter_map(|part| part.get("text").and_then(|v| v.as_str()))
-                        .collect::<Vec<&str>>()
-                        .join("")
-                })
-                && !text.is_empty()
+fn tool_declarations() -> Vec<Value> {
+    crate::tools::schema::definitions()
+        .into_iter()
+        .map(|tool| {
+            let mut declaration = json!({"name": tool.name, "description": tool.description});
+            if tool.parameters["properties"]
+                .as_object()
+                .is_some_and(|properties| !properties.is_empty())
             {
-                full.push_str(&text);
-                on_delta(text);
+                let mut parameters = tool.parameters;
+                remove_additional_properties(&mut parameters);
+                declaration["parameters"] = parameters;
             }
-
-            Ok(true)
+            declaration
         })
-        .await?;
+        .collect()
+}
 
-        Ok(full)
+fn remove_additional_properties(value: &mut Value) {
+    match value {
+        Value::Object(map) => {
+            map.remove("additionalProperties");
+            for value in map.values_mut() {
+                remove_additional_properties(value);
+            }
+        }
+        Value::Array(values) => {
+            for value in values {
+                remove_additional_properties(value);
+            }
+        }
+        _ => {}
     }
 }
 
 fn map_messages(history: &[ConversationMessage]) -> Vec<Value> {
-    history
+    let messages: Vec<Value> = history
         .iter()
-        .map(|m| match m.role {
+        .map(|m| {
+            if let Some(NativeContent::Google(parts)) = &m.native_content {
+                return json!({"role": "model", "parts": parts});
+            }
+            if let Some(result) = &m.tool_result {
+                let mut response = json!({"name": result.name, "response": result.output});
+                if let Some(id) = &result.provider_id { response["id"] = json!(id); }
+                return json!({"role": "user", "parts": [{"functionResponse": response}]});
+            }
+            if !m.tool_calls.is_empty() {
+                let mut parts = Vec::new();
+                let text = message_text(m);
+                if !text.is_empty() { parts.push(json!({"text": text})); }
+                parts.extend(m.tool_calls.iter().map(|c| json!({"functionCall": {"id": c.id, "name": c.call.name, "args": c.call.arguments}})));
+                return json!({"role": "model", "parts": parts});
+            }
+            match m.role {
             MessageRole::User => json!({
                 "role": "user",
                 "parts": m.content.iter().map(|part| match part {
@@ -198,8 +204,24 @@ fn map_messages(history: &[ConversationMessage]) -> Vec<Value> {
                 "role": "user",
                 "parts": [{ "text": format!("[tool] {}", message_text(m)) }],
             }),
-        })
-        .collect()
+        }})
+        .collect();
+    let mut out: Vec<Value> = Vec::new();
+    for message in messages {
+        if message["parts"].as_array().is_some_and(|parts| {
+            parts
+                .first()
+                .is_some_and(|part| part.get("functionResponse").is_some())
+        }) && let Some(last) = out.last_mut()
+            && last["role"] == "user"
+            && let Some(parts) = last["parts"].as_array_mut()
+        {
+            parts.extend(message["parts"].as_array().into_iter().flatten().cloned());
+        } else {
+            out.push(message);
+        }
+    }
+    out
 }
 
 fn ensure_inline_request_size(payload: &Value) -> Result<()> {

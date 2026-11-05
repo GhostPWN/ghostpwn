@@ -18,12 +18,9 @@ use tokio::sync::Mutex;
 use url::Url;
 
 use crate::config::ProviderKind;
-use crate::models::{ConversationMessage, ConversationPart, MessageRole};
-use crate::providers::sse::{consume_sse, extract_error_message, is_event_stream};
-use crate::providers::{
-    Provider, dedup_preserve_order, extract_response_text, image_data_url, message_text,
-    provider_http_client, request_error,
-};
+use crate::models::{Completion, ConversationMessage};
+use crate::providers::native::{read_responses, response_messages};
+use crate::providers::{Provider, dedup_preserve_order, provider_http_client, request_error};
 use crate::secrets::SecretStore;
 
 const CLIENT_ID: &str = "app_EMoamEEZ73f0CkXaXp7hrann";
@@ -240,12 +237,14 @@ impl Provider for CodexProvider {
         system: &str,
         messages: &[ConversationMessage],
         on_delta: &mut (dyn FnMut(String) + Send),
-    ) -> Result<String> {
+    ) -> Result<Completion> {
         let credentials = self.ensure_credentials().await?;
         let payload = json!({
             "model": self.model,
             "instructions": system,
             "input": map_messages(messages),
+            "tools": crate::tools::schema::response_tools(),
+            "include": ["reasoning.encrypted_content"],
             "stream": true,
             "store": false,
         });
@@ -264,42 +263,7 @@ impl Provider for CodexProvider {
             return Err(request_error("Codex API", status, &body, messages));
         }
 
-        if !is_event_stream(response.headers()) {
-            let body = response.text().await?;
-            let out = extract_response_text_from_body(&body)?;
-            if !out.is_empty() {
-                on_delta(out.clone());
-            }
-            return Ok(out);
-        }
-
-        let mut full = String::new();
-        consume_sse(response, |data| {
-            if data.trim() == "[DONE]" {
-                return Ok(false);
-            }
-
-            let chunk: Value = match serde_json::from_str(data) {
-                Ok(v) => v,
-                Err(_) => return Ok(true),
-            };
-
-            if let Some(error) = extract_error_message(&chunk) {
-                return Err(anyhow!("Codex stream error: {}", error));
-            }
-
-            if let Some(delta) = extract_stream_delta(&chunk)
-                && !delta.is_empty()
-            {
-                full.push_str(&delta);
-                on_delta(delta);
-            }
-
-            Ok(true)
-        })
-        .await?;
-
-        Ok(full)
+        read_responses(response, on_delta).await
     }
 }
 
@@ -640,114 +604,7 @@ fn codex_fallback_models() -> Vec<String> {
 }
 
 fn map_messages(history: &[ConversationMessage]) -> Vec<Value> {
-    history
-        .iter()
-        .map(|message| {
-            let role = match message.role {
-                MessageRole::User | MessageRole::Tool => "user",
-                MessageRole::Assistant => "assistant",
-            };
-            let content = if message.role == MessageRole::Tool {
-                vec![json!({
-                    "type": "input_text",
-                    "text": format!("[tool] {}", message_text(message)),
-                })]
-            } else {
-                message.content.iter().map(|part| match part {
-                    ConversationPart::Text(text) => json!({
-                        "type": if message.role == MessageRole::Assistant { "output_text" } else { "input_text" },
-                        "text": text,
-                    }),
-                    ConversationPart::Image(image) => json!({
-                        "type": "input_image",
-                        "image_url": image_data_url(image),
-                    }),
-                }).collect::<Vec<_>>()
-            };
-            json!({
-                "type": "message",
-                "role": role,
-                "content": content,
-            })
-        })
-        .collect()
-}
-
-fn extract_stream_delta(chunk: &Value) -> Option<String> {
-    let event_type = chunk
-        .get("type")
-        .and_then(|v| v.as_str())
-        .unwrap_or_default();
-    if matches!(
-        event_type,
-        "response.output_text.delta" | "response.text.delta"
-    ) {
-        return chunk
-            .get("delta")
-            .and_then(|v| v.as_str())
-            .map(ToString::to_string);
-    }
-
-    chunk
-        .get("choices")
-        .and_then(|v| v.as_array())
-        .and_then(|arr| arr.first())
-        .and_then(|v| v.get("delta"))
-        .and_then(|v| v.get("content"))
-        .and_then(|v| v.as_str())
-        .map(ToString::to_string)
-}
-
-fn extract_response_text_from_body(body: &str) -> Result<String> {
-    let trimmed = body.trim();
-    if trimmed.is_empty() {
-        return Ok(String::new());
-    }
-
-    if trimmed.starts_with("event:") || trimmed.starts_with("data:") || trimmed.contains("\ndata:")
-    {
-        return Ok(extract_text_from_sse_body(trimmed));
-    }
-
-    let value: Value = serde_json::from_str(trimmed).with_context(|| {
-        format!(
-            "failed to decode Codex response body: {}",
-            preview_body(body)
-        )
-    })?;
-    Ok(extract_response_text(&value).unwrap_or_default())
-}
-
-fn extract_text_from_sse_body(body: &str) -> String {
-    let mut out = String::new();
-    let mut final_text = String::new();
-    for line in body.lines() {
-        let Some(data) = line.strip_prefix("data:") else {
-            continue;
-        };
-        let data = data.trim();
-        if data.is_empty() || data == "[DONE]" {
-            continue;
-        }
-        let Ok(value) = serde_json::from_str::<Value>(data) else {
-            continue;
-        };
-        if let Some(delta) = extract_stream_delta(&value) {
-            out.push_str(&delta);
-        } else if let Some(text) = extract_response_text(&value) {
-            final_text.push_str(&text);
-        }
-    }
-    if out.is_empty() { final_text } else { out }
-}
-
-fn preview_body(body: &str) -> String {
-    const MAX_PREVIEW: usize = 500;
-    let mut preview = body.trim().chars().take(MAX_PREVIEW).collect::<String>();
-    if body.trim().chars().count() > MAX_PREVIEW {
-        preview.push_str("...");
-    }
-    preview
+    response_messages(history)
 }
 
 fn unix_now() -> Result<u64> {

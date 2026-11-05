@@ -76,7 +76,7 @@ const COMMANDS: &[CommandSpec] = &[
     },
     CommandSpec {
         name: "/clear",
-        description: "Clear current chat",
+        description: "Clear chat, tool history, and queued images",
     },
     CommandSpec {
         name: "/paste-image",

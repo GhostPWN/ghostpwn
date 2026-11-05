@@ -64,6 +64,7 @@ fn maps_image_inputs_for_responses_api() {
     assert_eq!(
         map_messages(&messages),
         vec![json!({
+            "type": "message",
             "role": "user",
             "content": [
                 { "type": "input_text", "text": "inspect" },

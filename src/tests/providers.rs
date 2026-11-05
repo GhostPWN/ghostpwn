@@ -2,10 +2,7 @@ use std::sync::Arc;
 
 use serde_json::json;
 
-use super::{
-    build_provider_with_secret_store, dedup_preserve_order, extract_response_text,
-    map_chat_messages,
-};
+use super::{build_provider_with_secret_store, dedup_preserve_order, map_chat_messages};
 use crate::config::{ProviderKeys, ProviderKind};
 use crate::models::{ConversationMessage, ConversationPart, ImageAttachment, ImageMediaType};
 use crate::secrets::SecretStore;
@@ -44,36 +41,6 @@ fn chat_messages_preserve_roles_text_and_image_order() {
             ] }),
         ]
     );
-}
-
-#[test]
-fn responses_text_prefers_top_level_and_handles_missing_content() {
-    for text in ["preferred", ""] {
-        assert_eq!(
-            extract_response_text(&json!({
-                "output_text": text,
-                "output": [{ "content": [{ "text": "fallback" }] }],
-            })),
-            Some(text.to_string())
-        );
-    }
-    assert_eq!(
-        extract_response_text(&json!({ "output": [
-            {},
-            { "content": [{ "text": "first" }, { "text": null }] },
-            { "content": [{ "text": " second" }, { "image": "ignored" }] },
-        ] })),
-        Some("first second".to_string())
-    );
-    for body in [
-        json!({}),
-        json!({ "output": [] }),
-        json!({ "output": [
-        { "content": [{ "text": "" }, { "text": 42 }] },
-    ] }),
-    ] {
-        assert_eq!(extract_response_text(&body), None);
-    }
 }
 
 #[test]
@@ -121,4 +88,46 @@ async fn builder_preserves_connected_and_disconnected_providers() {
             build_provider_with_secret_store(kind, "model".to_string(), &keys, store.clone());
         assert_eq!(provider.display_name(), name);
     }
+}
+
+#[test]
+fn chat_and_legacy_mappings_keep_call_result_pairs() {
+    use crate::models::{ToolCall, ToolRequest, ToolResult};
+    let mut assistant = ConversationMessage::assistant("Checking");
+    assistant.tool_calls.push(ToolRequest {
+        id: "a".to_string(),
+        provider_id: Some("a".to_string()),
+        call: ToolCall {
+            name: "readFile".to_string(),
+            arguments: json!({"path":"a.rs"}),
+        },
+    });
+    let mut result = ConversationMessage::tool("");
+    result.tool_result = Some(ToolResult {
+        call_id: "a".to_string(),
+        provider_id: Some("a".to_string()),
+        name: "readFile".to_string(),
+        output: json!({"content":"code"}),
+        is_error: false,
+    });
+    let history = [assistant, result];
+    let mapped = map_chat_messages("system", &history);
+    assert_eq!(mapped[1]["tool_calls"][0]["id"], "a");
+    assert_eq!(
+        mapped[1]["tool_calls"][0]["function"]["arguments"],
+        "{\"path\":\"a.rs\"}"
+    );
+    assert_eq!(mapped[2]["role"], "tool");
+    assert_eq!(mapped[2]["tool_call_id"], "a");
+    let legacy = super::map_legacy_chat_messages("system", &history);
+    assert!(legacy[1].get("tool_calls").is_none());
+    let envelope: serde_json::Value =
+        serde_json::from_str(legacy[1]["content"].as_str().unwrap()).unwrap();
+    assert_eq!(envelope["tool_calls"][0]["name"], "readFile");
+    assert!(
+        legacy[2]["content"]
+            .as_str()
+            .unwrap()
+            .starts_with("[tool] tool_result readFile:")
+    );
 }
