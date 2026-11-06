@@ -4,10 +4,12 @@ use std::sync::Arc;
 
 use super::{
     ModelSelector, ModelSelectorMode, UiRole, UiState, apply_agent_event, approval_panel_height,
-    build_audit_prompt, display_user_message, handle_submit, message_visible_lines, oauth_deadline,
-    parse_audit_command, paste_terminal_text, queue_image, resolve_approval, transcript_line_count,
+    build_audit_prompt, build_transcript_lines, display_user_message, handle_submit,
+    message_visible_lines, oauth_deadline, parse_audit_command, paste_terminal_text, queue_image,
+    resolve_approval, transcript_line_count,
 };
 use ratatui::layout::Size;
+use ratatui::style::Color;
 
 use crate::agent::Agent;
 use crate::config::{ProviderKeys, ProviderKind};
@@ -553,4 +555,60 @@ async fn a_cancelled_audit_can_be_followed_by_another_turn() {
     assert!(!state.is_streaming);
     assert!(state.active_turn.is_none());
     assert!(agent.try_lock().is_ok());
+}
+
+#[test]
+fn transcript_keeps_diff_line_colors() {
+    let mut state = UiState::new("test".to_string());
+    state.push_message(UiRole::Assistant, "```diff\n-old\n+new\n```".to_string());
+
+    let lines = build_transcript_lines(&state);
+    let color_of = |text: &str| {
+        lines
+            .iter()
+            .flat_map(|line| &line.spans)
+            .find(|span| span.content == text)
+            .and_then(|span| span.style.fg)
+    };
+    assert_eq!(color_of("-old"), Some(Color::Red));
+    assert_eq!(color_of("+new"), Some(Color::Green));
+}
+
+#[test]
+fn streamed_text_is_kept_before_tool_events() {
+    let mut state = UiState::new("test".to_string());
+    state.streaming_content = "Checking the login query.".to_string();
+    let (response, _approval) = tokio::sync::oneshot::channel();
+    apply_agent_event(
+        &mut state,
+        AgentEvent::ApprovalRequired {
+            name: "runCommand".to_string(),
+            args_summary: "id".to_string(),
+            reason: "Shell commands run without an OS sandbox",
+            response,
+        },
+    );
+    resolve_approval(&mut state, false);
+    apply_agent_event(
+        &mut state,
+        AgentEvent::AssistantDelta("Next reply.".to_string()),
+    );
+
+    assert_eq!(state.messages[0].content, "Checking the login query.");
+    assert_eq!(state.streaming_content, "Next reply.");
+
+    state.streaming_content = "Reading the file.".to_string();
+    apply_agent_event(
+        &mut state,
+        AgentEvent::ToolCall {
+            name: "readFile".to_string(),
+            args_summary: "a.py".to_string(),
+        },
+    );
+    assert!(
+        state
+            .messages
+            .iter()
+            .any(|m| m.content == "Reading the file.")
+    );
 }

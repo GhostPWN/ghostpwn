@@ -1422,6 +1422,8 @@ fn apply_agent_event(state: &mut UiState, event: AgentEvent) {
             if state.is_cancelling() {
                 return;
             }
+            // Text streamed before the request belongs above it, not glued to the next reply.
+            state.flush_streaming_to_messages();
             // The approval panel shows the full request, so the transcript only records the answer.
             state.tool_status = "waiting for you".to_string();
             state.pending_approval = Some(PendingApproval {
@@ -1432,7 +1434,7 @@ fn apply_agent_event(state: &mut UiState, event: AgentEvent) {
             });
         }
         AgentEvent::ToolCall { name, args_summary } => {
-            state.streaming_content.clear();
+            state.flush_streaming_to_messages();
             let tool_line = format!("{}({})", name, args_summary);
             state.tool_status = tool_line.clone();
             state.push_message(UiRole::Tool, tool_line);
@@ -2085,7 +2087,7 @@ fn push_message_lines(
     let mut iter = body.into_iter();
     if let Some(first) = iter.next() {
         let mut spans = vec![bullet_span];
-        spans.extend(first.spans);
+        spans.extend(line_spans(first));
         lines.push(Line::from(spans));
     } else {
         lines.push(Line::from(vec![bullet_span]));
@@ -2093,7 +2095,7 @@ fn push_message_lines(
 
     for cl in iter {
         let mut spans = vec![Span::raw("  ")];
-        spans.extend(cl.spans);
+        spans.extend(line_spans(cl));
         lines.push(Line::from(spans));
     }
 
@@ -2103,6 +2105,15 @@ fn push_message_lines(
             Span::styled("…", Style::default().fg(palette::TEXT).dim().italic()),
         ]));
     }
+}
+
+/// Moves a line's own style onto its spans, so the style survives when the spans join a new line.
+fn line_spans(line: Line<'static>) -> impl Iterator<Item = Span<'static>> {
+    let base = line.style;
+    line.spans.into_iter().map(move |mut span| {
+        span.style = base.patch(span.style);
+        span
+    })
 }
 
 fn styled_content_lines(content: &str, role: UiRole) -> Vec<Line<'static>> {
