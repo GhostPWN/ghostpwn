@@ -565,11 +565,11 @@ impl Agent {
                     .tools
                     .arg_summary(&prepared.call().name, &prepared.call().arguments);
                 if let PolicyDecision::RequireApproval(reason) = prepared.decision() {
-                    let approval_summary = format!("{summary}; {reason}");
                     let (response, approval) = tokio::sync::oneshot::channel();
                     let _ = events.send(AgentEvent::ApprovalRequired {
                         name: call.name.clone(),
-                        args_summary: approval_summary,
+                        args_summary: summary.clone(),
+                        reason,
                         response,
                     });
                     let approved = tokio::select! {

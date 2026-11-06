@@ -183,6 +183,8 @@ pub enum AgentEvent {
     ApprovalRequired {
         name: String,
         args_summary: String,
+        /// Why the execution policy asks for approval, shown apart from the arguments.
+        reason: &'static str,
         response: tokio::sync::oneshot::Sender<bool>,
     },
     ToolCall {

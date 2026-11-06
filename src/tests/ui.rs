@@ -3,10 +3,14 @@ use std::path::Path;
 use std::sync::Arc;
 
 use super::{
-    ModelSelector, ModelSelectorMode, UiRole, UiState, apply_agent_event, build_audit_prompt,
-    display_user_message, handle_submit, oauth_deadline, parse_audit_command, paste_terminal_text,
-    queue_image, resolve_approval, transcript_line_count,
+    ModelSelector, ModelSelectorMode, UiRole, UiState, apply_agent_event, approval_panel_height,
+    build_audit_prompt, build_transcript_lines, display_user_message, handle_submit,
+    message_visible_lines, oauth_deadline, parse_audit_command, paste_terminal_text, queue_image,
+    resolve_approval, transcript_line_count,
 };
+use ratatui::layout::Size;
+use ratatui::style::Color;
+
 use crate::agent::Agent;
 use crate::config::{ProviderKeys, ProviderKind};
 use crate::models::{
@@ -33,6 +37,7 @@ fn approval_event_waits_for_user_response() {
         AgentEvent::ApprovalRequired {
             name: "runCommand".to_string(),
             args_summary: "cargo test".to_string(),
+            reason: "File changes require approval",
             response,
         },
     );
@@ -40,6 +45,59 @@ fn approval_event_waits_for_user_response() {
 
     resolve_approval(&mut state, true);
     assert!(approval.try_recv().expect("approval response"));
+}
+
+#[test]
+fn approval_panel_holds_request_and_transcript_records_answer() {
+    let mut state = UiState::new("test".to_string());
+    let (response, mut approval) = tokio::sync::oneshot::channel();
+
+    apply_agent_event(
+        &mut state,
+        AgentEvent::ApprovalRequired {
+            name: "runCommand".to_string(),
+            args_summary: "UNSANDBOXED shell command in .: id".to_string(),
+            reason: "Shell commands run without an OS sandbox",
+            response,
+        },
+    );
+    assert!(state.messages.is_empty(), "request belongs in the panel");
+    let pending = state.pending_approval.as_ref().expect("pending approval");
+    assert_eq!(pending.args_summary, "UNSANDBOXED shell command in .: id");
+    assert_eq!(pending.reason, "Shell commands run without an OS sandbox");
+
+    resolve_approval(&mut state, false);
+    assert!(!approval.try_recv().expect("approval response"));
+    let last = state.messages.last().expect("denial message");
+    assert_eq!(last.role, UiRole::Error);
+    assert_eq!(
+        last.content,
+        "Denied runCommand(UNSANDBOXED shell command in .: id)."
+    );
+}
+
+#[test]
+fn approval_panel_shrinks_transcript_but_keeps_minimum_rows() {
+    let mut state = UiState::new("test".to_string());
+    let size = Size::new(100, 30);
+    let idle = message_visible_lines(&state, size);
+    let (response, _approval) = tokio::sync::oneshot::channel();
+    apply_agent_event(
+        &mut state,
+        AgentEvent::ApprovalRequired {
+            name: "runCommand".to_string(),
+            args_summary: "x".repeat(400),
+            reason: "Shell commands run without an OS sandbox",
+            response,
+        },
+    );
+
+    let panel = approval_panel_height(&state, size.width, size.height);
+    assert!(panel > 7, "long command wraps instead of being cut");
+    assert_eq!(message_visible_lines(&state, size), idle - panel);
+
+    let small = Size::new(40, 12);
+    assert_eq!(message_visible_lines(&state, small), 3);
 }
 
 #[test]
@@ -371,6 +429,7 @@ async fn cancellation_waits_for_acknowledgement_and_ignores_late_approval() {
         AgentEvent::ApprovalRequired {
             name: "writeFile".to_string(),
             args_summary: "x".to_string(),
+            reason: "File changes require approval",
             response,
         },
     );
@@ -388,6 +447,7 @@ async fn cancellation_waits_for_acknowledgement_and_ignores_late_approval() {
         AgentEvent::ApprovalRequired {
             name: "writeFile".to_string(),
             args_summary: "late".to_string(),
+            reason: "File changes require approval",
             response,
         },
     );
@@ -495,4 +555,60 @@ async fn a_cancelled_audit_can_be_followed_by_another_turn() {
     assert!(!state.is_streaming);
     assert!(state.active_turn.is_none());
     assert!(agent.try_lock().is_ok());
+}
+
+#[test]
+fn transcript_keeps_diff_line_colors() {
+    let mut state = UiState::new("test".to_string());
+    state.push_message(UiRole::Assistant, "```diff\n-old\n+new\n```".to_string());
+
+    let lines = build_transcript_lines(&state);
+    let color_of = |text: &str| {
+        lines
+            .iter()
+            .flat_map(|line| &line.spans)
+            .find(|span| span.content == text)
+            .and_then(|span| span.style.fg)
+    };
+    assert_eq!(color_of("-old"), Some(Color::Red));
+    assert_eq!(color_of("+new"), Some(Color::Green));
+}
+
+#[test]
+fn streamed_text_is_kept_before_tool_events() {
+    let mut state = UiState::new("test".to_string());
+    state.streaming_content = "Checking the login query.".to_string();
+    let (response, _approval) = tokio::sync::oneshot::channel();
+    apply_agent_event(
+        &mut state,
+        AgentEvent::ApprovalRequired {
+            name: "runCommand".to_string(),
+            args_summary: "id".to_string(),
+            reason: "Shell commands run without an OS sandbox",
+            response,
+        },
+    );
+    resolve_approval(&mut state, false);
+    apply_agent_event(
+        &mut state,
+        AgentEvent::AssistantDelta("Next reply.".to_string()),
+    );
+
+    assert_eq!(state.messages[0].content, "Checking the login query.");
+    assert_eq!(state.streaming_content, "Next reply.");
+
+    state.streaming_content = "Reading the file.".to_string();
+    apply_agent_event(
+        &mut state,
+        AgentEvent::ToolCall {
+            name: "readFile".to_string(),
+            args_summary: "a.py".to_string(),
+        },
+    );
+    assert!(
+        state
+            .messages
+            .iter()
+            .any(|m| m.content == "Reading the file.")
+    );
 }

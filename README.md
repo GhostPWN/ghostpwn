@@ -78,7 +78,8 @@ them again. If a target changes while approval is pending, the call fails and
 must be submitted again. File changes reject symlink paths. Patch checks cover
 all source and destination paths.
 
-Shell commands require approval and show their resolved working directory. The
+Shell commands require approval and show their resolved working directory. A
+panel above the input shows the full request and the policy reason. The
 policy does not restrict paths or network targets inside shell command text.
 Commands do not run in an OS sandbox. File access controls, public URL checks,
 DNS checks, and timeouts still apply.
