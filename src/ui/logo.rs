@@ -62,7 +62,7 @@ pub fn render(frame: &mut Frame, area: Rect) {
             Line::from(Span::styled(
                 *line,
                 Style::new()
-                    .fg(palette::PHOSPHOR)
+                    .fg(palette::ACCENT)
                     .add_modifier(Modifier::BOLD),
             ))
         })
@@ -76,17 +76,23 @@ pub fn render(frame: &mut Frame, area: Rect) {
         Span::styled("◂ ", Style::new().add_modifier(Modifier::DIM)),
         Span::styled(
             "autonomous",
-            Style::new().fg(palette::ION).add_modifier(Modifier::BOLD),
+            Style::new()
+                .fg(palette::ACCENT)
+                .add_modifier(Modifier::BOLD),
         ),
         Span::styled("  ·  ", Style::new().add_modifier(Modifier::DIM)),
         Span::styled(
             "web penetration",
-            Style::new().fg(palette::ION).add_modifier(Modifier::BOLD),
+            Style::new()
+                .fg(palette::ACCENT)
+                .add_modifier(Modifier::BOLD),
         ),
         Span::styled("  ·  ", Style::new().add_modifier(Modifier::DIM)),
         Span::styled(
             "research lab",
-            Style::new().fg(palette::ION).add_modifier(Modifier::BOLD),
+            Style::new()
+                .fg(palette::ACCENT)
+                .add_modifier(Modifier::BOLD),
         ),
         Span::styled(" ▸", Style::new().add_modifier(Modifier::DIM)),
     ]);
@@ -101,7 +107,7 @@ pub fn render(frame: &mut Frame, area: Rect) {
 fn render_ghost(frame: &mut Frame, area: Rect) {
     let ghost_lines: Vec<Line<'_>> = GHOST
         .iter()
-        .map(|line| Line::from(Span::styled(*line, Style::new().fg(palette::PLASMA))))
+        .map(|line| Line::from(Span::styled(*line, Style::new().fg(palette::ACCENT))))
         .collect();
     frame.render_widget(
         Paragraph::new(ghost_lines).alignment(Alignment::Center),
@@ -128,7 +134,7 @@ fn render_chips(frame: &mut Frame, area: Rect) {
         spans.push(Span::styled(
             *cmd,
             Style::new()
-                .fg(palette::PHOSPHOR)
+                .fg(palette::ACCENT)
                 .add_modifier(Modifier::BOLD),
         ));
         spans.push(Span::styled("  ", Style::new()));

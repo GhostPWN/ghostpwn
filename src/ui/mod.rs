@@ -36,18 +36,22 @@ use crate::providers::{codex, copilot};
 
 pub(super) mod palette {
     use ratatui::style::Color;
-    pub const PHOSPHOR: Color = Color::Rgb(140, 90, 210);
-    pub const BONE: Color = Color::Reset;
-    pub const ASH: Color = Color::Reset;
-    pub const ION: Color = Color::Rgb(140, 90, 210);
-    pub const PLASMA: Color = Color::Rgb(140, 90, 210);
-    pub const EMBER: Color = Color::Rgb(140, 90, 210);
-    pub const BLOOD: Color = Color::Red;
-    pub const STEEL: Color = Color::Reset;
-    pub const FOG: Color = Color::Reset;
+    // Each color has one job. Text uses the terminal default and named ANSI colors follow the
+    // terminal theme, so the UI stays readable on light and dark backgrounds.
+    /// Brand and focus: logo, prompt, selection, command names, inline code.
+    pub const ACCENT: Color = Color::Rgb(140, 90, 210);
+    /// The agent waits for the user, or a tool is running.
+    pub const ATTENTION: Color = Color::Yellow;
+    /// Completed work and added diff lines.
+    pub const SUCCESS: Color = Color::Green;
+    /// Errors, denials, and removed diff lines.
+    pub const DANGER: Color = Color::Red;
+    pub const TEXT: Color = Color::Reset;
 }
 
 const SPINNER: &[&str] = &["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"];
+/// Rows the transcript keeps while the approval panel is open.
+const MIN_TRANSCRIPT_ROWS: u16 = 3;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum UiRole {
@@ -152,6 +156,9 @@ struct ModelSelectorStatus {
 }
 
 struct PendingApproval {
+    name: String,
+    args_summary: String,
+    reason: &'static str,
     response: oneshot::Sender<bool>,
 }
 
@@ -500,7 +507,7 @@ where
 
         if dirty || needs_redraw {
             let size = terminal.size()?;
-            let visible_lines = message_visible_lines(size.height);
+            let visible_lines = message_visible_lines(state, size);
             state.refresh_transcript_cache(transcript_content_width(size.width));
             state.sync_scroll(state.transcript_line_count, visible_lines);
             terminal.draw(|frame| render(frame, state))?;
@@ -559,7 +566,7 @@ where
                     let size = terminal.size()?;
                     state.refresh_transcript_cache(transcript_content_width(size.width));
                     let line_count = state.transcript_line_count;
-                    let visible_lines = message_visible_lines(size.height);
+                    let visible_lines = message_visible_lines(state, size);
 
                     match key.code {
                         KeyCode::Enter => {
@@ -614,7 +621,7 @@ where
                     let size = terminal.size()?;
                     state.refresh_transcript_cache(transcript_content_width(size.width));
                     let line_count = state.transcript_line_count;
-                    let visible_lines = message_visible_lines(size.height);
+                    let visible_lines = message_visible_lines(state, size);
 
                     match mouse.kind {
                         MouseEventKind::ScrollUp => {
@@ -1409,15 +1416,20 @@ fn apply_agent_event(state: &mut UiState, event: AgentEvent) {
         AgentEvent::ApprovalRequired {
             name,
             args_summary,
+            reason,
             response,
         } => {
             if state.is_cancelling() {
                 return;
             }
-            let prompt = format!("Approve {name}({args_summary})? [y/N] (Esc stops turn)");
-            state.tool_status = prompt.clone();
-            state.push_message(UiRole::Tool, prompt);
-            state.pending_approval = Some(PendingApproval { response });
+            // The approval panel shows the full request, so the transcript only records the answer.
+            state.tool_status = "waiting for you".to_string();
+            state.pending_approval = Some(PendingApproval {
+                name,
+                args_summary,
+                reason,
+                response,
+            });
         }
         AgentEvent::ToolCall { name, args_summary } => {
             state.streaming_content.clear();
@@ -1483,14 +1495,14 @@ fn apply_agent_event(state: &mut UiState, event: AgentEvent) {
 fn resolve_approval(state: &mut UiState, approved: bool) {
     if let Some(pending) = state.pending_approval.take() {
         let _ = pending.response.send(approved);
-        state.push_message(
-            UiRole::Tool,
-            if approved {
-                "Approved.".to_string()
-            } else {
-                "Denied.".to_string()
-            },
-        );
+        let PendingApproval {
+            name, args_summary, ..
+        } = pending;
+        if approved {
+            state.push_message(UiRole::Tool, format!("Approved {name}."));
+        } else {
+            state.push_message(UiRole::Error, format!("Denied {name}({args_summary})."));
+        }
         state.tool_status = if approved {
             "running approved tool".to_string()
         } else {
@@ -1500,19 +1512,84 @@ fn resolve_approval(state: &mut UiState, approved: bool) {
 }
 
 fn render(frame: &mut Frame, state: &UiState) {
+    let area = frame.area();
     let root = Layout::default()
         .direction(Direction::Vertical)
         .constraints([
             Constraint::Min(1),
+            Constraint::Length(approval_panel_height(state, area.width, area.height)),
             Constraint::Length(1),
             Constraint::Length(3),
         ])
-        .split(frame.area());
+        .split(area);
 
     render_transcript(frame, root[0], state);
-    render_status(frame, root[1], state);
-    render_input(frame, root[2], state);
+    if let Some(pending) = state.pending_approval.as_ref() {
+        render_approval(frame, root[1], pending);
+    }
+    render_status(frame, root[2], state);
+    render_input(frame, root[3], state);
     render_selector(frame, state);
+}
+
+fn approval_lines(pending: &PendingApproval) -> Vec<Line<'static>> {
+    let key = |label: &'static str| {
+        Span::styled(
+            format!(" {label} "),
+            Style::default().add_modifier(Modifier::REVERSED | Modifier::BOLD),
+        )
+    };
+    vec![
+        Line::from(Span::styled(
+            pending.args_summary.clone(),
+            Style::default().fg(palette::TEXT),
+        )),
+        Line::from(""),
+        Line::from(vec![
+            Span::styled("why  ", Style::default().fg(palette::TEXT).dim()),
+            Span::styled(pending.reason, Style::default().fg(palette::TEXT)),
+        ]),
+        Line::from(""),
+        Line::from(vec![
+            key("y"),
+            Span::raw(" run once    "),
+            key("n"),
+            Span::raw(" deny    "),
+            key("esc"),
+            Span::raw(" stop turn"),
+        ]),
+    ]
+}
+
+/// Height of the approval panel, borders included. Long commands wrap instead of being cut,
+/// but the panel never takes rows the transcript, status line, and input need to stay usable.
+fn approval_panel_height(state: &UiState, width: u16, height: u16) -> u16 {
+    let Some(pending) = state.pending_approval.as_ref() else {
+        return 0;
+    };
+    let content = wrapped_line_count(&approval_lines(pending), width.saturating_sub(4).max(1));
+    let max = height.saturating_sub(1 + 3 + MIN_TRANSCRIPT_ROWS).max(3);
+    content.saturating_add(2).min(max)
+}
+
+fn render_approval(frame: &mut Frame, area: Rect, pending: &PendingApproval) {
+    let block = Block::default()
+        .borders(Borders::ALL)
+        .border_type(BorderType::Rounded)
+        .border_style(Style::default().fg(palette::ATTENTION))
+        .padding(Padding::horizontal(1))
+        .title(Line::from(vec![
+            Span::styled(" Approve ", Style::default().fg(palette::ATTENTION).bold()),
+            Span::styled(
+                format!("{} ", pending.name),
+                Style::default().fg(palette::TEXT).bold(),
+            ),
+        ]));
+    let para = Paragraph::new(approval_lines(pending))
+        .block(block)
+        .wrap(Wrap { trim: false });
+    frame.render_widget(Clear, area);
+    frame.render_widget(para, area);
 }
 
 fn render_selector(frame: &mut Frame, state: &UiState) {
@@ -1526,12 +1603,12 @@ fn render_selector(frame: &mut Frame, state: &UiState) {
     let block = Block::default()
         .borders(Borders::ALL)
         .border_type(BorderType::Rounded)
-        .border_style(Style::default().fg(palette::PHOSPHOR))
+        .border_style(Style::default().fg(palette::ACCENT))
         .title(Line::from(vec![
             Span::styled("  ", Style::default()),
-            Span::styled("▸ ", Style::default().fg(palette::PLASMA)),
-            Span::styled("model selector", Style::default().fg(palette::BONE).bold()),
-            Span::styled(" ─", Style::default().fg(palette::STEEL).dim()),
+            Span::styled("▸ ", Style::default().fg(palette::ACCENT)),
+            Span::styled("model selector", Style::default().fg(palette::TEXT).bold()),
+            Span::styled(" ─", Style::default().fg(palette::TEXT).dim()),
         ]))
         .padding(Padding::new(2, 2, 1, 1));
 
@@ -1552,9 +1629,9 @@ fn render_selector(frame: &mut Frame, state: &UiState) {
         .flat_map(|(idx, provider)| {
             let selected = idx == selector.provider_index;
             let style = if selected {
-                Style::default().fg(palette::PHOSPHOR).bold()
+                Style::default().fg(palette::ACCENT).bold()
             } else {
-                Style::default().fg(palette::ASH).dim()
+                Style::default().fg(palette::TEXT).dim()
             };
             vec![
                 Span::styled(
@@ -1579,23 +1656,23 @@ fn render_selector(frame: &mut Frame, state: &UiState) {
         vec![
             Line::from(vec![Span::styled(
                 format!("Paste {} API key", provider.as_str()),
-                Style::default().fg(palette::BONE).bold(),
+                Style::default().fg(palette::TEXT).bold(),
             )]),
             Line::from(""),
             Line::from(vec![
-                Span::styled("key  ", Style::default().fg(palette::ASH).dim()),
-                Span::styled(masked, Style::default().fg(palette::PHOSPHOR)),
+                Span::styled("key  ", Style::default().fg(palette::TEXT).dim()),
+                Span::styled(masked, Style::default().fg(palette::ACCENT)),
             ]),
             Line::from(""),
             Line::from(vec![Span::styled(
                 "enter saves · esc cancels",
-                Style::default().fg(palette::ASH).dim(),
+                Style::default().fg(palette::TEXT).dim(),
             )]),
         ]
     } else if selected_state.is_some_and(|provider_state| provider_state.loading) {
         vec![Line::from(vec![Span::styled(
             "fetching models...",
-            Style::default().fg(palette::EMBER),
+            Style::default().fg(palette::TEXT).dim(),
         )])]
     } else if let Some(error) =
         selected_state.and_then(|provider_state| provider_state.error.as_ref())
@@ -1609,18 +1686,18 @@ fn render_selector(frame: &mut Frame, state: &UiState) {
         vec![
             Line::from(vec![Span::styled(
                 error.clone(),
-                Style::default().fg(palette::BLOOD),
+                Style::default().fg(palette::DANGER),
             )]),
             Line::from(""),
             Line::from(vec![Span::styled(
                 hint,
-                Style::default().fg(palette::ASH).dim(),
+                Style::default().fg(palette::TEXT).dim(),
             )]),
         ]
     } else if selected_state.is_none_or(|provider_state| provider_state.models.is_empty()) {
         vec![Line::from(vec![Span::styled(
             "no models returned",
-            Style::default().fg(palette::ASH).dim(),
+            Style::default().fg(palette::TEXT).dim(),
         )])]
     } else {
         let selected_state = selected_state.expect("selected provider state must exist");
@@ -1641,14 +1718,14 @@ fn render_selector(frame: &mut Frame, state: &UiState) {
                 Line::from(vec![
                     Span::styled(
                         if selected { "❯ " } else { "  " },
-                        Style::default().fg(palette::PHOSPHOR),
+                        Style::default().fg(palette::ACCENT),
                     ),
                     Span::styled(
                         model.clone(),
                         if selected {
-                            Style::default().fg(palette::BONE).bold()
+                            Style::default().fg(palette::TEXT).bold()
                         } else {
-                            Style::default().fg(palette::ASH).dim()
+                            Style::default().fg(palette::TEXT).dim()
                         },
                     ),
                 ])
@@ -1665,22 +1742,22 @@ fn render_selector(frame: &mut Frame, state: &UiState) {
     );
 
     let footer = Line::from(vec![
-        Span::styled("←/→", Style::default().fg(palette::PHOSPHOR).bold()),
-        Span::styled(" provider  ", Style::default().fg(palette::ASH).dim()),
-        Span::styled("↑/↓", Style::default().fg(palette::PHOSPHOR).bold()),
-        Span::styled(" model  ", Style::default().fg(palette::ASH).dim()),
-        Span::styled("pgup/pgdn", Style::default().fg(palette::PHOSPHOR).bold()),
-        Span::styled(" jump  ", Style::default().fg(palette::ASH).dim()),
-        Span::styled("c", Style::default().fg(palette::PHOSPHOR).bold()),
-        Span::styled(" connect  ", Style::default().fg(palette::ASH).dim()),
-        Span::styled("d", Style::default().fg(palette::PHOSPHOR).bold()),
-        Span::styled(" disconnect  ", Style::default().fg(palette::ASH).dim()),
-        Span::styled("r", Style::default().fg(palette::PHOSPHOR).bold()),
-        Span::styled(" refresh  ", Style::default().fg(palette::ASH).dim()),
-        Span::styled("enter", Style::default().fg(palette::PHOSPHOR).bold()),
-        Span::styled(" switch  ", Style::default().fg(palette::ASH).dim()),
-        Span::styled("esc", Style::default().fg(palette::PHOSPHOR).bold()),
-        Span::styled(" close", Style::default().fg(palette::ASH).dim()),
+        Span::styled("←/→", Style::default().fg(palette::ACCENT).bold()),
+        Span::styled(" provider  ", Style::default().fg(palette::TEXT).dim()),
+        Span::styled("↑/↓", Style::default().fg(palette::ACCENT).bold()),
+        Span::styled(" model  ", Style::default().fg(palette::TEXT).dim()),
+        Span::styled("pgup/pgdn", Style::default().fg(palette::ACCENT).bold()),
+        Span::styled(" jump  ", Style::default().fg(palette::TEXT).dim()),
+        Span::styled("c", Style::default().fg(palette::ACCENT).bold()),
+        Span::styled(" connect  ", Style::default().fg(palette::TEXT).dim()),
+        Span::styled("d", Style::default().fg(palette::ACCENT).bold()),
+        Span::styled(" disconnect  ", Style::default().fg(palette::TEXT).dim()),
+        Span::styled("r", Style::default().fg(palette::ACCENT).bold()),
+        Span::styled(" refresh  ", Style::default().fg(palette::TEXT).dim()),
+        Span::styled("enter", Style::default().fg(palette::ACCENT).bold()),
+        Span::styled(" switch  ", Style::default().fg(palette::TEXT).dim()),
+        Span::styled("esc", Style::default().fg(palette::ACCENT).bold()),
+        Span::styled(" close", Style::default().fg(palette::TEXT).dim()),
     ]);
     frame.render_widget(Paragraph::new(footer), rows[2]);
 }
@@ -1698,9 +1775,9 @@ fn selector_status_lines(
     };
 
     let color = if status.error {
-        palette::BLOOD
+        palette::DANGER
     } else {
-        palette::ASH
+        palette::TEXT
     };
     let style = if status.error {
         Style::default().fg(color).bold()
@@ -1787,12 +1864,12 @@ fn render_scrollbar(frame: &mut Frame, area: Rect, offset: u16, total: u16, visi
     for y in track_y..track_y + track_h {
         let cell = &mut buf[(track_x, y)];
         cell.set_char('▏')
-            .set_style(Style::default().fg(palette::STEEL).dim());
+            .set_style(Style::default().fg(palette::TEXT).dim());
     }
     for y in thumb_y..thumb_y + thumb_h {
         let cell = &mut buf[(track_x, y)];
         cell.set_char('▐')
-            .set_style(Style::default().fg(palette::PLASMA));
+            .set_style(Style::default().fg(palette::ACCENT));
     }
 }
 
@@ -1807,20 +1884,26 @@ fn render_status(frame: &mut Frame, area: Rect, state: &UiState) {
         } else {
             state.tool_status.clone()
         };
-        left_spans.push(Span::styled(
-            format!("{} ", SPINNER[frame_idx]),
-            Style::default().fg(palette::EMBER).bold(),
-        ));
-        left_spans.push(Span::styled(text, Style::default().fg(palette::BONE)));
+        // No spinner while the agent waits for the user: nothing is running.
+        let text_color = if state.pending_approval.is_some() {
+            palette::ATTENTION
+        } else {
+            left_spans.push(Span::styled(
+                format!("{} ", SPINNER[frame_idx]),
+                Style::default().fg(palette::ATTENTION).bold(),
+            ));
+            palette::TEXT
+        };
+        left_spans.push(Span::styled(text, Style::default().fg(text_color)));
         left_spans.push(Span::raw("   "));
     }
     left_spans.push(Span::styled(
         "◆ ",
-        Style::default().fg(palette::PHOSPHOR).bold(),
+        Style::default().fg(palette::ACCENT).bold(),
     ));
     left_spans.push(Span::styled(
         state.provider_name.clone(),
-        Style::default().fg(palette::ION).bold(),
+        Style::default().fg(palette::TEXT).bold(),
     ));
     if !state.pending_images.is_empty() {
         let bytes = state
@@ -1839,32 +1922,41 @@ fn render_status(frame: &mut Frame, area: Rect, state: &UiState) {
                 },
                 bytes as f64 / (1024.0 * 1024.0)
             ),
-            Style::default().fg(palette::ASH).dim(),
+            Style::default().fg(palette::TEXT).dim(),
         ));
     }
 
     let left = Line::from(left_spans);
 
-    let right = if state.is_streaming {
+    let right = if state.pending_approval.is_some() {
         Line::from(vec![
-            Span::styled("esc", Style::default().fg(palette::PHOSPHOR).bold()),
-            Span::styled(" stop · ", Style::default().fg(palette::ASH).dim()),
-            Span::styled("^c", Style::default().fg(palette::PHOSPHOR).bold()),
-            Span::styled(" quit ", Style::default().fg(palette::ASH).dim()),
+            Span::styled("y", Style::default().fg(palette::ACCENT).bold()),
+            Span::styled(" run · ", Style::default().fg(palette::TEXT).dim()),
+            Span::styled("n", Style::default().fg(palette::ACCENT).bold()),
+            Span::styled(" deny · ", Style::default().fg(palette::TEXT).dim()),
+            Span::styled("esc", Style::default().fg(palette::ACCENT).bold()),
+            Span::styled(" stop ", Style::default().fg(palette::TEXT).dim()),
+        ])
+    } else if state.is_streaming {
+        Line::from(vec![
+            Span::styled("esc", Style::default().fg(palette::ACCENT).bold()),
+            Span::styled(" stop · ", Style::default().fg(palette::TEXT).dim()),
+            Span::styled("^c", Style::default().fg(palette::ACCENT).bold()),
+            Span::styled(" quit ", Style::default().fg(palette::TEXT).dim()),
         ])
     } else {
         Line::from(vec![
-            Span::styled("tab", Style::default().fg(palette::PHOSPHOR).bold()),
-            Span::styled(" complete ", Style::default().fg(palette::ASH).dim()),
-            Span::styled("·", Style::default().fg(palette::STEEL).dim()),
-            Span::styled(" ^v", Style::default().fg(palette::PHOSPHOR).bold()),
-            Span::styled(" paste ", Style::default().fg(palette::ASH).dim()),
-            Span::styled("·", Style::default().fg(palette::STEEL).dim()),
-            Span::styled(" ↵", Style::default().fg(palette::PHOSPHOR).bold()),
-            Span::styled(" send ", Style::default().fg(palette::ASH).dim()),
-            Span::styled("·", Style::default().fg(palette::STEEL).dim()),
-            Span::styled(" ^c", Style::default().fg(palette::PHOSPHOR).bold()),
-            Span::styled(" quit ", Style::default().fg(palette::ASH).dim()),
+            Span::styled("tab", Style::default().fg(palette::ACCENT).bold()),
+            Span::styled(" complete ", Style::default().fg(palette::TEXT).dim()),
+            Span::styled("·", Style::default().fg(palette::TEXT).dim()),
+            Span::styled(" ^v", Style::default().fg(palette::ACCENT).bold()),
+            Span::styled(" paste ", Style::default().fg(palette::TEXT).dim()),
+            Span::styled("·", Style::default().fg(palette::TEXT).dim()),
+            Span::styled(" ↵", Style::default().fg(palette::ACCENT).bold()),
+            Span::styled(" send ", Style::default().fg(palette::TEXT).dim()),
+            Span::styled("·", Style::default().fg(palette::TEXT).dim()),
+            Span::styled(" ^c", Style::default().fg(palette::ACCENT).bold()),
+            Span::styled(" quit ", Style::default().fg(palette::TEXT).dim()),
         ])
     };
     let cols =
@@ -1874,44 +1966,30 @@ fn render_status(frame: &mut Frame, area: Rect, state: &UiState) {
 }
 
 fn render_input(frame: &mut Frame, area: Rect, state: &UiState) {
-    let border_color = if state.is_streaming {
-        palette::STEEL
-    } else {
-        palette::PHOSPHOR
-    };
-
-    let border_style = if state.is_streaming {
-        Style::default().fg(border_color).dim()
-    } else {
-        Style::default().fg(border_color)
-    };
-
     let block = Block::default()
         .borders(Borders::ALL)
         .border_type(BorderType::Rounded)
-        .border_style(border_style)
+        .border_style(Style::default().fg(palette::TEXT).dim())
         .padding(Padding::horizontal(1));
 
     let line = if state.is_streaming {
         if state.is_cancelling() {
             Line::from("Stopping turn...")
         } else if state.pending_approval.is_some() {
-            Line::from(vec![
-                Span::styled("Approve tool? ", Style::default().fg(palette::EMBER).bold()),
-                Span::styled("y", Style::default().fg(palette::PHOSPHOR).bold()),
-                Span::raw(" / "),
-                Span::styled("N", Style::default().fg(palette::BLOOD).bold()),
-            ])
+            Line::from(Span::styled(
+                "input paused until you answer",
+                Style::default().fg(palette::TEXT).dim().italic(),
+            ))
         } else {
             let idx = (state.tick / 2) as usize % SPINNER.len();
             Line::from(vec![
                 Span::styled(
                     format!("{} ", SPINNER[idx]),
-                    Style::default().fg(palette::EMBER).bold(),
+                    Style::default().fg(palette::ATTENTION).bold(),
                 ),
                 Span::styled(
                     "channel open · esc stops turn",
-                    Style::default().fg(palette::ASH).dim().italic(),
+                    Style::default().fg(palette::TEXT).dim().italic(),
                 ),
             ])
         }
@@ -1920,9 +1998,9 @@ fn render_input(frame: &mut Frame, area: Rect, state: &UiState) {
         // on every tick even when nothing changed.
         let caret = "▌";
         let mut spans = vec![
-            Span::styled("❯ ", Style::default().fg(palette::PHOSPHOR).bold()),
-            Span::styled(state.input.clone(), Style::default().fg(palette::BONE)),
-            Span::styled(caret.to_string(), Style::default().fg(palette::PHOSPHOR)),
+            Span::styled("❯ ", Style::default().fg(palette::ACCENT).bold()),
+            Span::styled(state.input.clone(), Style::default().fg(palette::TEXT)),
+            Span::styled(caret.to_string(), Style::default().fg(palette::ACCENT)),
         ];
 
         if let Some((suffix, description)) = completion_hint(state)
@@ -1930,25 +2008,25 @@ fn render_input(frame: &mut Frame, area: Rect, state: &UiState) {
         {
             spans.push(Span::styled(
                 suffix.to_string(),
-                Style::default().fg(palette::STEEL).dim(),
+                Style::default().fg(palette::TEXT).dim(),
             ));
             spans.push(Span::raw("    "));
             spans.push(Span::styled(
                 format!("↹ {description}"),
-                Style::default().fg(palette::ASH).dim().italic(),
+                Style::default().fg(palette::TEXT).dim().italic(),
             ));
         } else if state.input.is_empty() {
             spans.push(Span::styled(
                 "  try  ",
-                Style::default().fg(palette::STEEL).dim(),
+                Style::default().fg(palette::TEXT).dim(),
             ));
             spans.push(Span::styled(
                 "/help",
-                Style::default().fg(palette::ASH).dim(),
+                Style::default().fg(palette::TEXT).dim(),
             ));
             spans.push(Span::styled(
                 "  or describe a target…",
-                Style::default().fg(palette::STEEL).dim().italic(),
+                Style::default().fg(palette::TEXT).dim().italic(),
             ));
         }
 
@@ -1986,10 +2064,10 @@ fn push_message_lines(
     streaming: bool,
 ) {
     let (bullet, bullet_color) = match role {
-        UiRole::User => ("›", palette::ASH),
-        UiRole::Assistant => ("●", palette::PHOSPHOR),
-        UiRole::Tool => ("●", palette::FOG),
-        UiRole::Error => ("●", palette::BLOOD),
+        UiRole::User => ("›", palette::TEXT),
+        UiRole::Assistant => ("●", palette::ACCENT),
+        UiRole::Tool => ("●", palette::TEXT),
+        UiRole::Error => ("●", palette::DANGER),
     };
 
     let body = match role {
@@ -2022,17 +2100,17 @@ fn push_message_lines(
     if streaming {
         lines.push(Line::from(vec![
             Span::raw("  "),
-            Span::styled("…", Style::default().fg(palette::ASH).dim().italic()),
+            Span::styled("…", Style::default().fg(palette::TEXT).dim().italic()),
         ]));
     }
 }
 
 fn styled_content_lines(content: &str, role: UiRole) -> Vec<Line<'static>> {
     let color = match role {
-        UiRole::User => palette::BONE,
-        UiRole::Assistant => palette::BONE,
-        UiRole::Tool => palette::FOG,
-        UiRole::Error => palette::BLOOD,
+        UiRole::User => palette::TEXT,
+        UiRole::Assistant => palette::TEXT,
+        UiRole::Tool => palette::TEXT,
+        UiRole::Error => palette::DANGER,
     };
 
     let style = match role {
@@ -2073,7 +2151,7 @@ fn styled_assistant_lines(content: &str) -> Vec<Line<'static>> {
             }
             out.push(Line::styled(
                 line.to_string(),
-                Style::default().fg(palette::STEEL).dim(),
+                Style::default().fg(palette::TEXT).dim(),
             ));
             continue;
         }
@@ -2081,14 +2159,14 @@ fn styled_assistant_lines(content: &str) -> Vec<Line<'static>> {
         if in_diff_block && trimmed.starts_with('+') && !trimmed.starts_with("+++") {
             out.push(Line::styled(
                 line.to_string(),
-                Style::default().fg(palette::PHOSPHOR),
+                Style::default().fg(palette::SUCCESS),
             ));
             continue;
         }
         if in_diff_block && trimmed.starts_with('-') && !trimmed.starts_with("---") {
             out.push(Line::styled(
                 line.to_string(),
-                Style::default().fg(palette::BLOOD),
+                Style::default().fg(palette::DANGER),
             ));
             continue;
         }
@@ -2099,14 +2177,14 @@ fn styled_assistant_lines(content: &str) -> Vec<Line<'static>> {
         {
             out.push(Line::styled(
                 line.to_string(),
-                Style::default().fg(palette::EMBER).bold(),
+                Style::default().fg(palette::TEXT).dim(),
             ));
             continue;
         }
         if in_code_block {
             out.push(Line::styled(
                 line.to_string(),
-                Style::default().fg(palette::PHOSPHOR),
+                Style::default().fg(palette::TEXT),
             ));
             continue;
         }
@@ -2115,7 +2193,7 @@ fn styled_assistant_lines(content: &str) -> Vec<Line<'static>> {
             let mut spans = vec![Span::raw(leading.clone())];
             spans.extend(render_inline(
                 rest,
-                Style::default().fg(palette::ION).bold(),
+                Style::default().fg(palette::TEXT).bold(),
             ));
             out.push(Line::from(spans));
             continue;
@@ -2124,7 +2202,7 @@ fn styled_assistant_lines(content: &str) -> Vec<Line<'static>> {
             let mut spans = vec![Span::raw(leading.clone())];
             spans.extend(render_inline(
                 rest,
-                Style::default().fg(palette::ION).bold(),
+                Style::default().fg(palette::TEXT).bold(),
             ));
             out.push(Line::from(spans));
             continue;
@@ -2133,7 +2211,7 @@ fn styled_assistant_lines(content: &str) -> Vec<Line<'static>> {
             let mut spans = vec![Span::raw(leading.clone())];
             spans.extend(render_inline(
                 rest,
-                Style::default().fg(palette::PLASMA).bold(),
+                Style::default().fg(palette::TEXT).bold(),
             ));
             out.push(Line::from(spans));
             continue;
@@ -2145,9 +2223,9 @@ fn styled_assistant_lines(content: &str) -> Vec<Line<'static>> {
         {
             let mut spans = vec![
                 Span::raw(leading.clone()),
-                Span::styled("• ", Style::default().fg(palette::PLASMA)),
+                Span::styled("• ", Style::default().fg(palette::TEXT).dim()),
             ];
-            spans.extend(render_inline(rest, Style::default().fg(palette::BONE)));
+            spans.extend(render_inline(rest, Style::default().fg(palette::TEXT)));
             out.push(Line::from(spans));
             continue;
         }
@@ -2155,18 +2233,18 @@ fn styled_assistant_lines(content: &str) -> Vec<Line<'static>> {
         if let Some(rest) = trimmed.strip_prefix("> ") {
             let mut spans = vec![
                 Span::raw(leading.clone()),
-                Span::styled("│ ", Style::default().fg(palette::STEEL).dim()),
+                Span::styled("│ ", Style::default().fg(palette::TEXT).dim()),
             ];
             spans.extend(render_inline(
                 rest,
-                Style::default().fg(palette::ASH).dim().italic(),
+                Style::default().fg(palette::TEXT).dim().italic(),
             ));
             out.push(Line::from(spans));
             continue;
         }
 
         let mut spans = vec![Span::raw(leading.clone())];
-        spans.extend(render_inline(trimmed, Style::default().fg(palette::BONE)));
+        spans.extend(render_inline(trimmed, Style::default().fg(palette::TEXT)));
         out.push(Line::from(spans));
     }
 
@@ -2205,7 +2283,7 @@ fn render_inline(text: &str, base: Style) -> Vec<Span<'static>> {
             flush(&mut spans, &mut buf);
             spans.push(Span::styled(
                 text[i + 1..end].to_string(),
-                Style::default().fg(palette::PLASMA),
+                Style::default().fg(palette::ACCENT),
             ));
             i = end + 1;
             continue;
@@ -2245,8 +2323,10 @@ fn transcript_line_count(state: &UiState, width: u16) -> u16 {
     wrapped_line_count(&build_transcript_lines(state), width)
 }
 
-fn message_visible_lines(total_height: u16) -> u16 {
-    total_height.saturating_sub(1 + 3)
+fn message_visible_lines(state: &UiState, size: Size) -> u16 {
+    size.height
+        .saturating_sub(1 + 3)
+        .saturating_sub(approval_panel_height(state, size.width, size.height))
 }
 
 fn transcript_content_width(total_width: u16) -> u16 {

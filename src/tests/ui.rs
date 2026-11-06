@@ -3,10 +3,12 @@ use std::path::Path;
 use std::sync::Arc;
 
 use super::{
-    ModelSelector, ModelSelectorMode, UiRole, UiState, apply_agent_event, build_audit_prompt,
-    display_user_message, handle_submit, oauth_deadline, parse_audit_command, paste_terminal_text,
-    queue_image, resolve_approval, transcript_line_count,
+    ModelSelector, ModelSelectorMode, UiRole, UiState, apply_agent_event, approval_panel_height,
+    build_audit_prompt, display_user_message, handle_submit, message_visible_lines, oauth_deadline,
+    parse_audit_command, paste_terminal_text, queue_image, resolve_approval, transcript_line_count,
 };
+use ratatui::layout::Size;
+
 use crate::agent::Agent;
 use crate::config::{ProviderKeys, ProviderKind};
 use crate::models::{
@@ -33,6 +35,7 @@ fn approval_event_waits_for_user_response() {
         AgentEvent::ApprovalRequired {
             name: "runCommand".to_string(),
             args_summary: "cargo test".to_string(),
+            reason: "File changes require approval",
             response,
         },
     );
@@ -40,6 +43,59 @@ fn approval_event_waits_for_user_response() {
 
     resolve_approval(&mut state, true);
     assert!(approval.try_recv().expect("approval response"));
+}
+
+#[test]
+fn approval_panel_holds_request_and_transcript_records_answer() {
+    let mut state = UiState::new("test".to_string());
+    let (response, mut approval) = tokio::sync::oneshot::channel();
+
+    apply_agent_event(
+        &mut state,
+        AgentEvent::ApprovalRequired {
+            name: "runCommand".to_string(),
+            args_summary: "UNSANDBOXED shell command in .: id".to_string(),
+            reason: "Shell commands run without an OS sandbox",
+            response,
+        },
+    );
+    assert!(state.messages.is_empty(), "request belongs in the panel");
+    let pending = state.pending_approval.as_ref().expect("pending approval");
+    assert_eq!(pending.args_summary, "UNSANDBOXED shell command in .: id");
+    assert_eq!(pending.reason, "Shell commands run without an OS sandbox");
+
+    resolve_approval(&mut state, false);
+    assert!(!approval.try_recv().expect("approval response"));
+    let last = state.messages.last().expect("denial message");
+    assert_eq!(last.role, UiRole::Error);
+    assert_eq!(
+        last.content,
+        "Denied runCommand(UNSANDBOXED shell command in .: id)."
+    );
+}
+
+#[test]
+fn approval_panel_shrinks_transcript_but_keeps_minimum_rows() {
+    let mut state = UiState::new("test".to_string());
+    let size = Size::new(100, 30);
+    let idle = message_visible_lines(&state, size);
+    let (response, _approval) = tokio::sync::oneshot::channel();
+    apply_agent_event(
+        &mut state,
+        AgentEvent::ApprovalRequired {
+            name: "runCommand".to_string(),
+            args_summary: "x".repeat(400),
+            reason: "Shell commands run without an OS sandbox",
+            response,
+        },
+    );
+
+    let panel = approval_panel_height(&state, size.width, size.height);
+    assert!(panel > 7, "long command wraps instead of being cut");
+    assert_eq!(message_visible_lines(&state, size), idle - panel);
+
+    let small = Size::new(40, 12);
+    assert_eq!(message_visible_lines(&state, small), 3);
 }
 
 #[test]
@@ -371,6 +427,7 @@ async fn cancellation_waits_for_acknowledgement_and_ignores_late_approval() {
         AgentEvent::ApprovalRequired {
             name: "writeFile".to_string(),
             args_summary: "x".to_string(),
+            reason: "File changes require approval",
             response,
         },
     );
@@ -388,6 +445,7 @@ async fn cancellation_waits_for_acknowledgement_and_ignores_late_approval() {
         AgentEvent::ApprovalRequired {
             name: "writeFile".to_string(),
             args_summary: "late".to_string(),
+            reason: "File changes require approval",
             response,
         },
     );

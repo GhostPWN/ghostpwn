@@ -47,7 +47,7 @@ Local tools available to the agent loop:
 
 `listSkills`, `searchSkills`, `readSkill`, `readFile`, `listDirectory`, `searchFiles`, `grep`, `runCommand`, `auditDependencies`, `fileInfo`, `generateDiff`, `writeFile`, `editFile`, `multiEdit`, `applyPatch`, `webFetch`, `webSearch`.
 
-Model-requested commands and file mutations pause until you approve them with `y` or deny that tool with `n` or `Enter`. `Esc` stops the entire turn. Shell commands are clearly labeled as unsandboxed; the workspace controls their starting directory, not their operating-system access.
+Model-requested commands and file mutations pause until you approve them with `y` or deny that tool with `n` or `Enter`. A panel above the input shows the full request and the reason it needs approval. `Esc` stops the entire turn. Shell commands are clearly labeled as unsandboxed; the workspace controls their starting directory, not their operating-system access.
 
 Each tool call receives an allow, deny, or approval decision before execution.
 The same policy applies to normal turns, audits, and the Ollama JSON fallback.
