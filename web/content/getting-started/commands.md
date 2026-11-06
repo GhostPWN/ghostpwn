@@ -5,15 +5,15 @@ description: GhostPWN slash commands: /help, /model provider and model switching
 # Commands
 
 - `/help` shows all commands
-- `/model` opens the keyboard model selector (`←`/`→` provider, `↑`/`↓` model, `Enter` switch, `c` connect, `d` disconnect, `Esc` close)
+- `/model` opens the keyboard model selector (`←`/`→` provider, `↑`/`↓` model, `Enter` switch, `c` connect, `d` disconnect, `Esc` close). Each provider shows its state from the last model check: ready, error, or not checked
 - `/audit` runs a read-only security audit of the workspace; use `/audit <path or focus>` to narrow it
 - `/audit --fix [path or focus]` additionally applies scoped file fixes after individual approval
 - Audit mode blocks shell commands and general web access; Rust dependency checks query OSV.dev only after approval
 - Type a slash-command prefix and press `Tab` to autocomplete it
 - Connecting a provider from `/model` makes it active immediately and remembers the provider/model for the next launch
-- GitHub Copilot uses device authorization from the Copilot tab and fetches its model list after successful authorization
-- Codex uses ChatGPT/Codex OAuth from the Codex tab, opening a browser first and falling back to device authorization when browser login is unavailable
-- Non-Copilot cloud providers accept pasted API keys from their `/model` tab
+- GitHub Copilot uses device authorization from the Copilot entry and fetches its model list after successful authorization
+- Codex uses ChatGPT/Codex OAuth from the Codex entry, opening a browser first and falling back to device authorization when browser login is unavailable
+- Non-Copilot cloud providers accept pasted API keys from their `/model` entry
 - Disconnecting a provider from `/model` removes its key from the OS keychain when available
 - `/paste-image` queues an image from the system clipboard
 - `/clear-images` removes queued clipboard images
@@ -22,7 +22,8 @@ description: GhostPWN slash commands: /help, /model provider and model switching
 - `Esc` stops the active turn and keeps the app open
 - `Ctrl`+`C` stops the active turn, then exits
 - `Ctrl`+`V` queues clipboard bitmap data as PNG, or pastes normalized text when no bitmap is available
-- Status bar shows streaming state and live/manual scroll position
+- The status line shows the state (`ready`, the running tool and its time, or `waiting for you`), the model, and the workspace
+- Each tool call shows as one line with its result, such as `12 entries` or `exit 1`. Paths are relative to the workspace
 
 See [Image input](/docs/getting-started/image-input) for path syntax, limits, retention, and provider requirements.
 

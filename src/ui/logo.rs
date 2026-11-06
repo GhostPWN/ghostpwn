@@ -1,6 +1,6 @@
 use ratatui::{
     Frame,
-    layout::{Alignment, Constraint, Layout, Rect},
+    layout::Rect,
     style::{Modifier, Style},
     text::{Line, Span},
     widgets::Paragraph,
@@ -8,145 +8,123 @@ use ratatui::{
 
 use super::palette;
 
+/// Five rows tall so the home screen fits a 24-row terminal with the status line and input.
 const GHOST: &[&str] = &[
-    "            ██████████████████            ",
-    "          ██░░░░░░░░░░░░░░░░░░██          ",
-    "        ██░░░░░░░░░░░░░░░░░░░░░░██        ",
-    "      ██░░░░░░░░░░░░░░░░░░░░░░░░░░██      ",
-    "      ██░░░░░░░░░░░░░░░░░░░░░░░░░░██      ",
-    "      ██░░░░░░████░░░░░░████░░░░░░██      ",
-    "      ██░░░░░░█▓▓█░░░░░░█▓▓█░░░░░░██      ",
-    "      ██░░░░░░████░░░░░░████░░░░░░██      ",
-    "      ██░░░░░░░░░░░░░░░░░░░░░░░░░░██      ",
-    "      ██░░░░░░░░░░░░░░░░░░░░░░░░░░██      ",
-    "      ██░░░░░░░░▒▒░░░░░░▒▒░░░░░░░░██      ",
-    "      ██░░░░░░░░░░▒▒▒▒▒▒░░░░░░░░░░██      ",
-    "      ██░░░░░░░░░░░░░░░░░░░░░░░░░░██      ",
-    "      ██░░██  ██░░██  ██░░██  ██░░██      ",
-    "      ██  ██  ██  ██  ██  ██  ██  ██      ",
+    "  ▄▄▄▄▄▄▄  ",
+    " █░░░░░░░█ ",
+    " █░█▀░█▀░█ ",
+    " █░░░░░░░█ ",
+    " █▄▀▄▀▄▀▄█ ",
 ];
 
-const TITLE: &[&str] = &[
-    "  ▄████  ██░ ██  ▒█████    ██████ ▄▄▄█████▓ ██▓██   █     █░ ███▄    █ ",
-    " ██▒ ▀█▒▓██░ ██▒▒██▒  ██▒▒██    ▒ ▓  ██▒ ▓▒▓██▒▓█░ █ ░█░ ██ ▀█   █ ",
-    "▒██░▄▄▄░▒██▀▀██░▒██░  ██▒░ ▓██▄   ▒ ▓██░ ▒░▒██▒▒█░ █ ░█ ▓██  ▀█ ██▒",
-    "░▓█  ██▓░▓█ ░██ ▒██   ██░  ▒   ██▒░ ▓██▓ ░ ░██░░█░ █ ░█ ▓██▒  ▐▌██▒",
-    "░▒▓███▀▒░▓█▒░██▓░ ████▓▒░▒██████▒▒  ▒██▒ ░ ░██░░░██▒██▓ ▒██░   ▓██░",
-    " ░▒   ▒  ▒ ░░▒░▒░ ▒░▒░▒░ ▒ ▒▓▒ ▒ ░  ▒ ░░   ░▓  ░ ▓░▒ ▒  ░ ▒░   ▒ ▒ ",
-    "  ░   ░  ▒ ░▒░ ░  ░ ▒ ▒░ ░ ░▒  ░ ░    ░     ▒ ░  ▒ ░ ░  ░ ░░   ░ ▒░",
-    "░ ░   ░  ░  ░░ ░░ ░ ░ ▒  ░  ░  ░    ░       ▒ ░  ░   ░     ░   ░ ░ ",
-    "      ░  ░  ░  ░    ░ ░        ░            ░      ░             ░ ",
-];
+const GAP: &str = "    ";
+const COMMAND_COLUMN: usize = 14;
 
-const LOGO_ROWS: u16 = GHOST.len() as u16;
-
-pub fn render(frame: &mut Frame, area: Rect) {
-    let vertical = Layout::vertical([
-        Constraint::Fill(1),
-        Constraint::Length(LOGO_ROWS),
-        Constraint::Length(1),
-        Constraint::Length(TITLE.len() as u16),
-        Constraint::Length(1),
-        Constraint::Length(1),
-        Constraint::Length(2),
-        Constraint::Length(1),
-        Constraint::Fill(1),
-    ])
-    .split(area);
-
-    render_ghost(frame, vertical[1]);
-
-    let title_lines: Vec<Line<'_>> = TITLE
-        .iter()
-        .map(|line| {
-            Line::from(Span::styled(
-                *line,
-                Style::new()
-                    .fg(palette::ACCENT)
-                    .add_modifier(Modifier::BOLD),
-            ))
-        })
-        .collect();
-    frame.render_widget(
-        Paragraph::new(title_lines).alignment(Alignment::Center),
-        vertical[3],
-    );
-
-    let tagline = Line::from(vec![
-        Span::styled("◂ ", Style::new().add_modifier(Modifier::DIM)),
-        Span::styled(
-            "autonomous",
-            Style::new()
-                .fg(palette::ACCENT)
-                .add_modifier(Modifier::BOLD),
-        ),
-        Span::styled("  ·  ", Style::new().add_modifier(Modifier::DIM)),
-        Span::styled(
-            "web penetration",
-            Style::new()
-                .fg(palette::ACCENT)
-                .add_modifier(Modifier::BOLD),
-        ),
-        Span::styled("  ·  ", Style::new().add_modifier(Modifier::DIM)),
-        Span::styled(
-            "research lab",
-            Style::new()
-                .fg(palette::ACCENT)
-                .add_modifier(Modifier::BOLD),
-        ),
-        Span::styled(" ▸", Style::new().add_modifier(Modifier::DIM)),
-    ]);
-    frame.render_widget(
-        Paragraph::new(tagline).alignment(Alignment::Center),
-        vertical[5],
-    );
-
-    render_chips(frame, vertical[7]);
+/// What the home screen shows before the first message.
+pub struct HomeInfo<'a> {
+    pub model: &'a str,
+    pub workspace: &'a str,
+    /// Slash commands to suggest, as `(name, description)`.
+    pub commands: &'a [(&'a str, &'a str)],
 }
 
-fn render_ghost(frame: &mut Frame, area: Rect) {
-    let ghost_lines: Vec<Line<'_>> = GHOST
-        .iter()
-        .map(|line| Line::from(Span::styled(*line, Style::new().fg(palette::ACCENT))))
-        .collect();
-    frame.render_widget(
-        Paragraph::new(ghost_lines).alignment(Alignment::Center),
-        area,
-    );
+pub fn render(frame: &mut Frame, area: Rect, info: &HomeInfo<'_>) {
+    let lines = home_lines(info);
+    let block_width = lines.iter().map(Line::width).max().unwrap_or(0) as u16;
+    let block_height = lines.len() as u16;
+    // Center the block as a whole and keep its lines left-aligned, so the columns stay straight.
+    let x = area.x + area.width.saturating_sub(block_width) / 2;
+    let y = area.y + area.height.saturating_sub(block_height) / 2;
+    let target = Rect {
+        x,
+        y,
+        width: area.width.saturating_sub(x - area.x),
+        height: area.height.saturating_sub(y - area.y),
+    };
+    frame.render_widget(Paragraph::new(lines), target);
 }
 
-fn render_chips(frame: &mut Frame, area: Rect) {
-    let chips: [(&str, &str); 3] = [
-        ("/model", "models"),
-        ("/audit", "security review"),
-        ("/help", "commands"),
+fn home_lines(info: &HomeInfo<'_>) -> Vec<Line<'static>> {
+    let dim = Style::new().add_modifier(Modifier::DIM);
+    let ghost = Style::new().fg(palette::ACCENT);
+    let side: [Vec<Span<'static>>; 5] = [
+        vec![
+            Span::styled("GhostPWN", Style::new().add_modifier(Modifier::BOLD)),
+            Span::styled(format!("  {}", env!("CARGO_PKG_VERSION")), dim),
+        ],
+        vec![Span::styled("Autonomous penetration testing agent", dim)],
+        Vec::new(),
+        vec![
+            Span::styled("model      ", dim),
+            Span::raw(info.model.to_string()),
+        ],
+        vec![
+            Span::styled("workspace  ", dim),
+            Span::raw(info.workspace.to_string()),
+        ],
     ];
 
-    let mut spans: Vec<Span<'_>> = Vec::new();
-    for (i, (cmd, desc)) in chips.iter().enumerate() {
-        if i > 0 {
-            spans.push(Span::styled(
-                "   ",
-                Style::new().add_modifier(Modifier::DIM),
-            ));
-        }
-        spans.push(Span::styled("[ ", Style::new().add_modifier(Modifier::DIM)));
-        spans.push(Span::styled(
-            *cmd,
-            Style::new()
-                .fg(palette::ACCENT)
-                .add_modifier(Modifier::BOLD),
-        ));
-        spans.push(Span::styled("  ", Style::new()));
-        spans.push(Span::styled(
-            *desc,
-            Style::new().add_modifier(Modifier::DIM),
-        ));
-        spans.push(Span::styled(" ]", Style::new().add_modifier(Modifier::DIM)));
-    }
+    let mut lines: Vec<Line<'static>> = GHOST
+        .iter()
+        .zip(side)
+        .enumerate()
+        .map(|(row, (art, text))| {
+            let mut spans = if row == 2 {
+                // The eyes use the terminal text color so they stand out from the violet body.
+                let eyes = Style::new().add_modifier(Modifier::BOLD);
+                vec![
+                    Span::styled(" █░", ghost),
+                    Span::styled("█▀", eyes),
+                    Span::styled("░", ghost),
+                    Span::styled("█▀", eyes),
+                    Span::styled("░█ ", ghost),
+                ]
+            } else {
+                vec![Span::styled(*art, ghost)]
+            };
+            if !text.is_empty() {
+                spans.push(Span::raw(GAP));
+                spans.extend(text);
+            }
+            Line::from(spans)
+        })
+        .collect();
 
-    frame.render_widget(
-        Paragraph::new(Line::from(spans)).alignment(Alignment::Center),
-        area,
-    );
+    lines.push(Line::from(""));
+    lines.push(Line::from(""));
+    lines.push(Line::from(Span::styled(
+        "Start",
+        Style::new().add_modifier(Modifier::BOLD),
+    )));
+    lines.push(Line::from(""));
+    for (name, description) in info.commands {
+        let pad = COMMAND_COLUMN.saturating_sub(name.chars().count()).max(2);
+        lines.push(Line::from(vec![
+            Span::styled(name.to_string(), Style::new().fg(palette::ACCENT)),
+            Span::raw(" ".repeat(pad)),
+            Span::raw(description.to_string()),
+        ]));
+    }
+    lines.push(Line::from(""));
+    lines.push(Line::from(vec![
+        Span::styled("Or type a target and a goal, for example: ", dim),
+        Span::styled(
+            "test the login form on :8080",
+            dim.add_modifier(Modifier::ITALIC),
+        ),
+    ]));
+    lines
+}
+
+#[cfg(test)]
+pub(super) fn home_text(info: &HomeInfo<'_>) -> Vec<String> {
+    home_lines(info)
+        .iter()
+        .map(|line| {
+            line.spans
+                .iter()
+                .map(|span| span.content.as_ref())
+                .collect()
+        })
+        .collect()
 }

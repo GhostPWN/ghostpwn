@@ -191,6 +191,11 @@ pub enum AgentEvent {
         name: String,
         args_summary: String,
     },
+    /// The last `ToolCall` finished. `summary` is a short result for the transcript row.
+    ToolFinished {
+        ok: bool,
+        summary: String,
+    },
     ModelList {
         provider: crate::config::ProviderKind,
         models: Vec<String>,
