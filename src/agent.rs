@@ -13,7 +13,9 @@ use crate::models::{
 };
 use crate::providers::{Provider, build_provider_with_secret_store};
 use crate::secrets::{SETTING_MODEL, SETTING_PROVIDER, SecretMutationReport, SecretStore};
-use crate::tools::{ExecutionMode, PolicyDecision, ToolRuntime, tool_can_interrupt};
+use crate::tools::{
+    ExecutionMode, PolicyDecision, ToolRuntime, tool_can_interrupt, tool_result_summary,
+};
 
 const MAX_STEPS: usize = 15;
 const AUDIT_MAX_STEPS: usize = 30;
@@ -135,6 +137,10 @@ impl Agent {
 
     pub fn provider_name(&self) -> String {
         self.provider.display_name()
+    }
+
+    pub fn workspace_root(&self) -> &std::path::Path {
+        self.tools.workspace_root()
     }
 
     pub fn current_provider(&self) -> ProviderKind {
@@ -621,14 +627,13 @@ impl Agent {
                 } else {
                     operation.await
                 };
-                match result {
-                    Ok(result) => self.record_tool_result(&request, result, false),
-                    Err(err) => self.record_tool_result(
-                        &request,
-                        serde_json::json!({"error": err.to_string()}),
-                        true,
-                    ),
-                }
+                let (output, is_error) = match result {
+                    Ok(result) => (result, false),
+                    Err(err) => (serde_json::json!({"error": err.to_string()}), true),
+                };
+                let (ok, summary) = tool_result_summary(&request.call.name, &output, is_error);
+                let _ = events.send(AgentEvent::ToolFinished { ok, summary });
+                self.record_tool_result(&request, output, is_error);
             }
             if cancellation.is_cancelled() {
                 self.finish_cancelled(&events);

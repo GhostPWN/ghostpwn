@@ -53,6 +53,68 @@ const MAX_DIFF_LINES: usize = 5_000;
 const MAX_DIFF_MATRIX_CELLS: usize = 1_000_000;
 const OSV_QUERY_BATCH_URL: &str = "https://api.osv.dev/v1/querybatch";
 
+/// Starts every `runCommand` argument summary, so approvals always warn about the missing sandbox.
+pub const UNSANDBOXED_COMMAND_PREFIX: &str = "UNSANDBOXED shell command in ";
+
+/// One-line outcome of a finished tool call for the transcript: whether it succeeded and a short
+/// result such as "12 entries" or "exit 1". A command with a non-zero exit code counts as failed.
+pub fn tool_result_summary(name: &str, output: &Value, is_error: bool) -> (bool, String) {
+    if is_error {
+        let message = output
+            .get("error")
+            .and_then(Value::as_str)
+            .unwrap_or("failed");
+        let first_line = message.lines().next().unwrap_or_default();
+        return (false, first_line.chars().take(60).collect());
+    }
+    let count = |key: &str| output.get(key).and_then(Value::as_array).map(Vec::len);
+    let number = |key: &str| output.get(key).and_then(Value::as_i64);
+    // Irregular plurals are spelled out; every other word takes an "s".
+    let plural = |n: usize, word: &str| {
+        let many = match word {
+            "entry" => "entries".to_string(),
+            "match" => "matches".to_string(),
+            _ => format!("{word}s"),
+        };
+        format!("{n} {}", if n == 1 { word } else { many.as_str() })
+    };
+    match canonical_tool_name(name) {
+        "readFile" => (
+            true,
+            plural(number("totalLines").unwrap_or(0) as usize, "line"),
+        ),
+        "listDirectory" => (true, plural(count("entries").unwrap_or(0), "entry")),
+        "searchFiles" => (true, plural(count("matches").unwrap_or(0), "file")),
+        "grep" => {
+            let total = number("totalMatches").unwrap_or(0) as usize;
+            let more = output.get("truncated").and_then(Value::as_bool) == Some(true);
+            (
+                true,
+                format!("{}{}", plural(total, "match"), if more { "+" } else { "" }),
+            )
+        }
+        "runCommand" => {
+            let code = number("exitCode").unwrap_or(-1);
+            (code == 0, format!("exit {code}"))
+        }
+        "auditDependencies" => (true, plural(count("findings").unwrap_or(0), "finding")),
+        "fileInfo" => match output.get("exists").and_then(Value::as_bool) {
+            Some(true) => (true, plural(number("size").unwrap_or(0) as usize, "byte")),
+            _ => (true, "missing".to_string()),
+        },
+        "writeFile" => (true, plural(number("bytes").unwrap_or(0) as usize, "byte")),
+        "editFile" => (
+            true,
+            plural(number("replacements").unwrap_or(0) as usize, "replacement"),
+        ),
+        "multiEdit" => (true, plural(number("edits").unwrap_or(0) as usize, "edit")),
+        "applyPatch" => (true, plural(count("changed").unwrap_or(0), "file")),
+        "webFetch" => (true, format!("HTTP {}", number("status").unwrap_or(0))),
+        "webSearch" => (true, plural(count("results").unwrap_or(0), "result")),
+        _ => (true, String::new()),
+    }
+}
+
 pub fn tool_can_interrupt(name: &str) -> bool {
     matches!(
         canonical_tool_name(name),
@@ -202,6 +264,10 @@ impl ToolRuntime {
         })
     }
 
+    pub fn workspace_root(&self) -> &Path {
+        &self.workspace_root
+    }
+
     pub async fn prompt_skill_section(&self) -> String {
         self.skills.prompt_section().await
     }
@@ -223,7 +289,7 @@ impl ToolRuntime {
         let canonical = canonical_tool_name(name);
         let detailed = match canonical {
             "runCommand" => Some(format!(
-                "UNSANDBOXED shell command in {}: {}",
+                "{UNSANDBOXED_COMMAND_PREFIX}{}: {}",
                 args.get("cwd").and_then(Value::as_str).unwrap_or("."),
                 args.get("command")
                     .and_then(Value::as_str)

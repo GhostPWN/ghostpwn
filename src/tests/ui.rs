@@ -3,10 +3,11 @@ use std::path::Path;
 use std::sync::Arc;
 
 use super::{
-    ModelSelector, ModelSelectorMode, UiRole, UiState, apply_agent_event, approval_panel_height,
-    build_audit_prompt, build_transcript_lines, display_user_message, handle_submit,
-    message_visible_lines, oauth_deadline, parse_audit_command, paste_terminal_text, queue_image,
-    resolve_approval, transcript_line_count,
+    ModelSelector, ModelSelectorMode, ToolOutcome, ToolRow, UiRole, UiState, apply_agent_event,
+    approval_panel_height, build_audit_prompt, build_transcript_lines, compact_tool_args,
+    display_user_message, handle_submit, home_commands, message_visible_lines, oauth_deadline,
+    parse_audit_command, paste_terminal_text, queue_image, resolve_approval, tool_row_line,
+    transcript_line_count, truncate_start,
 };
 use ratatui::layout::Size;
 use ratatui::style::Color;
@@ -68,12 +69,17 @@ fn approval_panel_holds_request_and_transcript_records_answer() {
 
     resolve_approval(&mut state, false);
     assert!(!approval.try_recv().expect("approval response"));
-    let last = state.messages.last().expect("denial message");
-    assert_eq!(last.role, UiRole::Error);
+    let row = state
+        .messages
+        .last()
+        .and_then(|message| message.tool.as_ref())
+        .expect("denied tool row");
+    assert_eq!(row.name, "runCommand");
     assert_eq!(
-        last.content,
-        "Denied runCommand(UNSANDBOXED shell command in .: id)."
+        row.args, "id",
+        "the panel already showed the sandbox warning"
     );
+    assert_eq!(row.outcome, ToolOutcome::Failed("denied".to_string()));
 }
 
 #[test]
@@ -562,7 +568,7 @@ fn transcript_keeps_diff_line_colors() {
     let mut state = UiState::new("test".to_string());
     state.push_message(UiRole::Assistant, "```diff\n-old\n+new\n```".to_string());
 
-    let lines = build_transcript_lines(&state);
+    let lines = build_transcript_lines(&state, 80);
     let color_of = |text: &str| {
         lines
             .iter()
@@ -611,4 +617,117 @@ fn streamed_text_is_kept_before_tool_events() {
             .iter()
             .any(|m| m.content == "Reading the file.")
     );
+}
+
+fn tool_call(state: &mut UiState, name: &str, args: &str) {
+    apply_agent_event(
+        state,
+        AgentEvent::ToolCall {
+            name: name.to_string(),
+            args_summary: args.to_string(),
+        },
+    );
+}
+
+fn line_text(line: &ratatui::text::Line<'_>) -> String {
+    line.spans
+        .iter()
+        .map(|span| span.content.as_ref())
+        .collect()
+}
+
+#[test]
+fn tool_rows_finish_in_place_and_group_without_blank_lines() {
+    let mut state = UiState::new("test".to_string());
+    state.workspace_root = "/work/site".to_string();
+    tool_call(&mut state, "listDirectory", "/work/site/app");
+    let before = state.transcript_signature();
+    apply_agent_event(
+        &mut state,
+        AgentEvent::ToolFinished {
+            ok: true,
+            summary: "12 entries".to_string(),
+        },
+    );
+    assert_ne!(state.transcript_signature(), before, "finished row redraws");
+    tool_call(&mut state, "grep", "execute\\(");
+
+    assert_eq!(state.messages.len(), 2);
+    let first = state.messages[0].tool.as_ref().expect("tool row");
+    assert_eq!(first.args, "app");
+    assert_eq!(first.outcome, ToolOutcome::Done("12 entries".to_string()));
+    let second = state.messages[1].tool.as_ref().expect("tool row");
+    assert_eq!(second.outcome, ToolOutcome::Running);
+
+    let lines = build_transcript_lines(&state, 60);
+    assert!(line_text(&lines[0]).contains("✓ listDirectory app"));
+    assert!(
+        line_text(&lines[1]).contains("grep"),
+        "no blank line between rows"
+    );
+
+    apply_agent_event(&mut state, AgentEvent::Done);
+    let second = state.messages[1].tool.as_ref().expect("tool row");
+    assert_eq!(second.outcome, ToolOutcome::Failed("stopped".to_string()));
+}
+
+#[test]
+fn workspace_paths_become_relative() {
+    let mut state = UiState::new("test".to_string());
+    state.workspace_root = "/work/site".to_string();
+    assert_eq!(
+        state.relative_paths("shell command in /work/site: ls /work/site/app /work/site2"),
+        "shell command in .: ls app /work/site2"
+    );
+}
+
+#[test]
+fn tool_row_fits_one_line_and_keeps_the_result() {
+    let row = ToolRow {
+        name: "runCommand".to_string(),
+        args: "curl -s http://127.0.0.1:8080/login ".repeat(5),
+        outcome: ToolOutcome::Failed("exit 7".to_string()),
+    };
+    let line = tool_row_line(&row, 60);
+    let text = line_text(&line);
+    assert_eq!(text.chars().count(), 60);
+    assert!(text.contains('…'));
+    assert!(text.ends_with("exit 7"));
+}
+
+#[test]
+fn home_screen_shows_model_workspace_and_commands() {
+    let commands = home_commands();
+    let lines = super::logo::home_text(&super::logo::HomeInfo {
+        model: "ollama / llama3",
+        workspace: "~/lab/target",
+        commands: &commands,
+    });
+    let text = lines.join("\n");
+    assert!(text.contains("model      ollama / llama3"));
+    assert!(text.contains("workspace  ~/lab/target"));
+    assert_eq!(
+        commands.iter().map(|(name, _)| *name).collect::<Vec<_>>(),
+        ["/audit", "/model", "/paste-image", "/help"]
+    );
+    assert!(lines.len() <= 20, "home fits a 24-row terminal");
+}
+
+#[test]
+fn command_rows_drop_the_sandbox_warning() {
+    assert_eq!(
+        compact_tool_args("UNSANDBOXED shell command in .: curl -s x"),
+        "curl -s x"
+    );
+    assert_eq!(
+        compact_tool_args("UNSANDBOXED shell command in sub: make test"),
+        "make test (in sub)"
+    );
+    assert_eq!(compact_tool_args("app/auth/login.py"), "app/auth/login.py");
+}
+
+#[test]
+fn long_paths_keep_their_end() {
+    assert_eq!(truncate_start("/home/me/lab/target", 11), "…lab/target");
+    assert_eq!(truncate_start("~/lab", 11), "~/lab");
 }

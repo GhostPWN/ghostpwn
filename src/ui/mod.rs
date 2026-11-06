@@ -4,7 +4,7 @@ use std::collections::HashMap;
 use std::io;
 use std::path::Path;
 use std::sync::Arc;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use anyhow::Result;
 use crossterm::cursor::Show;
@@ -33,6 +33,7 @@ use crate::models::{
     AgentEvent, ConversationMessage, ConversationPart, ImageAttachment, TurnCancellation,
 };
 use crate::providers::{codex, copilot};
+use crate::tools::UNSANDBOXED_COMMAND_PREFIX;
 
 pub(super) mod palette {
     use ratatui::style::Color;
@@ -102,10 +103,37 @@ const COMMANDS: &[CommandSpec] = &[
     },
 ];
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum ToolOutcome {
+    Running,
+    Done(String),
+    Failed(String),
+}
+
+/// One tool call, drawn as a single transcript line that updates in place when the call ends.
+#[derive(Debug, Clone)]
+struct ToolRow {
+    name: String,
+    args: String,
+    outcome: ToolOutcome,
+}
+
+/// Commands suggested on the home screen, in display order. Descriptions come from `COMMANDS`.
+const HOME_COMMANDS: &[&str] = &["/audit", "/model", "/paste-image", "/help"];
+
+fn home_commands() -> Vec<(&'static str, &'static str)> {
+    HOME_COMMANDS
+        .iter()
+        .filter_map(|name| COMMANDS.iter().find(|spec| spec.name == *name))
+        .map(|spec| (spec.name, spec.description))
+        .collect()
+}
+
 #[derive(Debug, Clone)]
 struct UiMessage {
     role: UiRole,
     content: String,
+    tool: Option<ToolRow>,
 }
 
 struct ModelSelector {
@@ -174,6 +202,9 @@ struct UiState {
     messages: Vec<UiMessage>,
     streaming_content: String,
     tool_status: String,
+    tool_started: Option<Instant>,
+    /// Absolute workspace root. Tool rows and approvals show paths relative to it.
+    workspace_root: String,
     is_streaming: bool,
     active_turn: Option<ActiveTurn>,
     should_quit: bool,
@@ -189,6 +220,8 @@ struct UiState {
     transcript_line_count: u16,
     transcript_signature: u64,
     transcript_width: u16,
+    /// Bumped when a message changes in place, such as a tool row that finishes.
+    transcript_revision: u64,
 }
 
 impl UiState {
@@ -200,6 +233,8 @@ impl UiState {
             messages: Vec::new(),
             streaming_content: String::new(),
             tool_status: String::new(),
+            tool_started: None,
+            workspace_root: String::new(),
             is_streaming: false,
             active_turn: None,
             should_quit: false,
@@ -215,6 +250,87 @@ impl UiState {
             transcript_line_count: 0,
             transcript_signature: 0,
             transcript_width: 0,
+            transcript_revision: 0,
+        }
+    }
+
+    /// Replaces the workspace root in `text` with a relative form: `root/app` becomes `app` and
+    /// the bare root becomes `.`. A longer sibling path such as `root2` is left unchanged.
+    fn relative_paths(&self, text: &str) -> String {
+        let root = self.workspace_root.as_str();
+        if root.is_empty() {
+            return text.to_string();
+        }
+        let mut out = String::with_capacity(text.len());
+        let mut rest = text;
+        while let Some(index) = rest.find(root) {
+            out.push_str(&rest[..index]);
+            let after = &rest[index + root.len()..];
+            match after.chars().next() {
+                Some(separator) if std::path::is_separator(separator) => {
+                    rest = &after[separator.len_utf8()..];
+                }
+                Some(next) if next.is_alphanumeric() || matches!(next, '-' | '_' | '.') => {
+                    out.push_str(root);
+                    rest = after;
+                }
+                _ => {
+                    out.push('.');
+                    rest = after;
+                }
+            }
+        }
+        out.push_str(rest);
+        out
+    }
+
+    /// The workspace for display, with the home directory shortened to `~`.
+    fn workspace_label(&self) -> String {
+        let root = self.workspace_root.as_str();
+        let home = std::env::var("HOME").unwrap_or_default();
+        match root.strip_prefix(home.as_str()) {
+            Some(rest) if !home.is_empty() && (rest.is_empty() || rest.starts_with('/')) => {
+                format!("~{rest}")
+            }
+            _ => root.to_string(),
+        }
+    }
+
+    fn push_tool_row(&mut self, name: String, args: String, outcome: ToolOutcome) {
+        self.messages.push(UiMessage {
+            role: UiRole::Tool,
+            content: String::new(),
+            tool: Some(ToolRow {
+                name,
+                args,
+                outcome,
+            }),
+        });
+        if self.auto_scroll {
+            self.scroll_offset = u16::MAX;
+        }
+    }
+
+    /// Ends the most recent running tool row. With `None`, every running row is marked stopped.
+    fn finish_tool_rows(&mut self, outcome: Option<ToolOutcome>) {
+        let mut changed = false;
+        for message in self.messages.iter_mut().rev() {
+            let Some(row) = message.tool.as_mut() else {
+                continue;
+            };
+            if row.outcome != ToolOutcome::Running {
+                continue;
+            }
+            row.outcome = outcome
+                .clone()
+                .unwrap_or_else(|| ToolOutcome::Failed("stopped".to_string()));
+            changed = true;
+            if outcome.is_some() {
+                break;
+            }
+        }
+        if changed {
+            self.transcript_revision = self.transcript_revision.wrapping_add(1);
         }
     }
 
@@ -234,34 +350,38 @@ impl UiState {
         true
     }
 
-    /// Cheap fingerprint of the rendered transcript. Messages are append-only and never mutated in
-    /// place, so `(message count, streaming buffer)` uniquely identifies the current transcript.
+    /// Cheap fingerprint of the rendered transcript. Messages are appended, and the only in-place
+    /// change (a tool row finishing) bumps `transcript_revision`, so this triple identifies it.
     fn transcript_signature(&self) -> u64 {
         use std::hash::{Hash, Hasher};
 
         let mut hasher = std::collections::hash_map::DefaultHasher::new();
         self.messages.len().hash(&mut hasher);
+        self.transcript_revision.hash(&mut hasher);
         self.streaming_content.hash(&mut hasher);
         hasher.finish()
     }
 
     /// Rebuild the cached transcript lines and wrapped line count only when the transcript content
     /// or the available width actually changed, so typing and spinner ticks do not re-style history.
+    /// Tool rows fit their text to the width, so a width change rebuilds the lines too.
     fn refresh_transcript_cache(&mut self, width: u16) {
         let signature = self.transcript_signature();
-        if signature != self.transcript_signature {
-            self.transcript_lines = build_transcript_lines(self);
-            self.transcript_signature = signature;
-            self.transcript_width = u16::MAX;
+        if signature == self.transcript_signature && width == self.transcript_width {
+            return;
         }
-        if width != self.transcript_width {
-            self.transcript_line_count = wrapped_line_count(&self.transcript_lines, width);
-            self.transcript_width = width;
-        }
+        self.transcript_lines = build_transcript_lines(self, width);
+        self.transcript_line_count = wrapped_line_count(&self.transcript_lines, width);
+        self.transcript_signature = signature;
+        self.transcript_width = width;
     }
 
     fn push_message(&mut self, role: UiRole, content: String) {
-        self.messages.push(UiMessage { role, content });
+        self.messages.push(UiMessage {
+            role,
+            content,
+            tool: None,
+        });
         if self.auto_scroll {
             self.scroll_offset = u16::MAX;
         }
@@ -397,6 +517,7 @@ pub async fn run_ui(agent: Arc<Mutex<Agent>>) -> Result<()> {
 
     let (event_tx, mut event_rx) = unbounded_channel::<AgentEvent>();
     let mut state = UiState::new(provider_name);
+    state.workspace_root = agent.lock().await.workspace_root().display().to_string();
 
     let run_result = ui_loop(&mut terminal, &agent, &event_tx, &mut event_rx, &mut state).await;
 
@@ -1426,6 +1547,7 @@ fn apply_agent_event(state: &mut UiState, event: AgentEvent) {
             state.flush_streaming_to_messages();
             // The approval panel shows the full request, so the transcript only records the answer.
             state.tool_status = "waiting for you".to_string();
+            let args_summary = state.relative_paths(&args_summary);
             state.pending_approval = Some(PendingApproval {
                 name,
                 args_summary,
@@ -1435,9 +1557,19 @@ fn apply_agent_event(state: &mut UiState, event: AgentEvent) {
         }
         AgentEvent::ToolCall { name, args_summary } => {
             state.flush_streaming_to_messages();
-            let tool_line = format!("{}({})", name, args_summary);
-            state.tool_status = tool_line.clone();
-            state.push_message(UiRole::Tool, tool_line);
+            let args = compact_tool_args(&state.relative_paths(&args_summary));
+            state.tool_status = name.clone();
+            state.tool_started = Some(Instant::now());
+            state.push_tool_row(name, args, ToolOutcome::Running);
+        }
+        AgentEvent::ToolFinished { ok, summary } => {
+            state.finish_tool_rows(Some(if ok {
+                ToolOutcome::Done(summary)
+            } else {
+                ToolOutcome::Failed(summary)
+            }));
+            state.tool_status.clear();
+            state.tool_started = None;
         }
         AgentEvent::ModelList {
             provider,
@@ -1488,7 +1620,9 @@ fn apply_agent_event(state: &mut UiState, event: AgentEvent) {
             state.active_turn = None;
             state.pending_approval = None;
             state.flush_streaming_to_messages();
+            state.finish_tool_rows(None);
             state.tool_status.clear();
+            state.tool_started = None;
             state.is_streaming = false;
         }
     }
@@ -1500,16 +1634,17 @@ fn resolve_approval(state: &mut UiState, approved: bool) {
         let PendingApproval {
             name, args_summary, ..
         } = pending;
+        // An approved call gets its row from the ToolCall event that follows.
         if approved {
-            state.push_message(UiRole::Tool, format!("Approved {name}."));
+            state.tool_status = name;
         } else {
-            state.push_message(UiRole::Error, format!("Denied {name}({args_summary})."));
+            state.push_tool_row(
+                name,
+                compact_tool_args(&args_summary),
+                ToolOutcome::Failed("denied".to_string()),
+            );
+            state.tool_status = "tool denied".to_string();
         }
-        state.tool_status = if approved {
-            "running approved tool".to_string()
-        } else {
-            "tool denied".to_string()
-        };
     }
 }
 
@@ -1606,49 +1741,39 @@ fn render_selector(frame: &mut Frame, state: &UiState) {
         .borders(Borders::ALL)
         .border_type(BorderType::Rounded)
         .border_style(Style::default().fg(palette::ACCENT))
-        .title(Line::from(vec![
-            Span::styled("  ", Style::default()),
-            Span::styled("▸ ", Style::default().fg(palette::ACCENT)),
-            Span::styled("model selector", Style::default().fg(palette::TEXT).bold()),
-            Span::styled(" ─", Style::default().fg(palette::TEXT).dim()),
-        ]))
+        .title(Span::styled(
+            " Model ",
+            Style::default().fg(palette::TEXT).bold(),
+        ))
         .padding(Padding::new(2, 2, 1, 1));
 
     let inner = block.inner(area);
     frame.render_widget(block, area);
 
-    let rows = Layout::vertical([
-        Constraint::Length(3),
+    let sections = Layout::vertical([Constraint::Min(1), Constraint::Length(1)]).split(inner);
+    let columns = Layout::horizontal([
+        Constraint::Length(SELECTOR_PROVIDER_COLUMN),
+        Constraint::Length(2),
         Constraint::Min(1),
-        Constraint::Length(1),
     ])
-    .split(inner);
-
-    let provider_spans = selector
-        .providers
-        .iter()
-        .enumerate()
-        .flat_map(|(idx, provider)| {
-            let selected = idx == selector.provider_index;
-            let style = if selected {
-                Style::default().fg(palette::ACCENT).bold()
-            } else {
-                Style::default().fg(palette::TEXT).dim()
-            };
-            vec![
-                Span::styled(
-                    if selected {
-                        format!("‹ {} ›", provider.as_str())
-                    } else {
-                        provider.as_str().to_string()
-                    },
-                    style,
-                ),
-                Span::raw("   "),
-            ]
-        })
-        .collect::<Vec<Span>>();
-    frame.render_widget(Paragraph::new(Line::from(provider_spans)), rows[0]);
+    .split(sections[0]);
+    let mut column = |title: &'static str, area: Rect| {
+        let rows = Layout::vertical([Constraint::Length(2), Constraint::Min(1)]).split(area);
+        frame.render_widget(
+            Paragraph::new(Span::styled(
+                title,
+                Style::default().fg(palette::TEXT).dim(),
+            )),
+            rows[0],
+        );
+        rows[1]
+    };
+    let provider_area = column("PROVIDER", columns[0]);
+    let model_area = column("MODEL", columns[2]);
+    frame.render_widget(
+        Paragraph::new(selector_provider_lines(selector)),
+        provider_area,
+    );
 
     let selected_provider = selector.providers[selector.provider_index];
     let selected_state = selector.provider_states.get(&selected_provider);
@@ -1703,7 +1828,7 @@ fn render_selector(frame: &mut Frame, state: &UiState) {
         )])]
     } else {
         let selected_state = selected_state.expect("selected provider state must exist");
-        let visible = rows[1].height.max(1) as usize;
+        let visible = model_area.height.max(1) as usize;
         let start = selected_state
             .model_index
             .saturating_add(1)
@@ -1740,7 +1865,7 @@ fn render_selector(frame: &mut Frame, state: &UiState) {
         .collect::<Vec<_>>();
     frame.render_widget(
         Paragraph::new(list_lines).wrap(Wrap { trim: false }),
-        rows[1],
+        model_area,
     );
 
     let footer = Line::from(vec![
@@ -1761,7 +1886,53 @@ fn render_selector(frame: &mut Frame, state: &UiState) {
         Span::styled("esc", Style::default().fg(palette::ACCENT).bold()),
         Span::styled(" close", Style::default().fg(palette::TEXT).dim()),
     ]);
-    frame.render_widget(Paragraph::new(footer), rows[2]);
+    frame.render_widget(Paragraph::new(footer), sections[1]);
+}
+
+/// Width of the provider column: marker, state mark, the longest provider name, and its note.
+const SELECTOR_PROVIDER_COLUMN: u16 = 24;
+
+/// One line per provider with its state from the last model fetch: green when models loaded,
+/// red on an error, and a hollow mark when it was not checked yet.
+fn selector_provider_lines(selector: &ModelSelector) -> Vec<Line<'static>> {
+    selector
+        .providers
+        .iter()
+        .enumerate()
+        .map(|(index, provider)| {
+            let selected = index == selector.provider_index;
+            let provider_state = selector.provider_states.get(provider);
+            let (mark, mark_style, note) = match provider_state {
+                Some(state) if state.loading => {
+                    ("◌", Style::default().fg(palette::TEXT).dim(), "checking")
+                }
+                Some(state) if state.error.is_some() => {
+                    ("●", Style::default().fg(palette::DANGER), "error")
+                }
+                Some(state) if !state.models.is_empty() => {
+                    ("●", Style::default().fg(palette::SUCCESS), "ready")
+                }
+                _ => ("○", Style::default().fg(palette::TEXT).dim(), ""),
+            };
+            let name = provider.as_str();
+            Line::from(vec![
+                Span::styled(
+                    if selected { "❯ " } else { "  " },
+                    Style::default().fg(palette::ACCENT).bold(),
+                ),
+                Span::styled(format!("{mark} "), mark_style),
+                Span::styled(
+                    format!("{name:<11}"),
+                    if selected {
+                        Style::default().fg(palette::TEXT).bold()
+                    } else {
+                        Style::default().fg(palette::TEXT)
+                    },
+                ),
+                Span::styled(note, Style::default().fg(palette::TEXT).dim()),
+            ])
+        })
+        .collect()
 }
 
 fn selector_status_lines(
@@ -1820,7 +1991,21 @@ fn render_transcript(frame: &mut Frame, area: Rect, state: &UiState) {
     if is_home {
         let inner = block.inner(area);
         frame.render_widget(block, area);
-        logo::render(frame, inner);
+        // Ghost, gap, and the "workspace" label take 26 columns before the path starts.
+        let workspace = truncate_start(
+            &state.workspace_label(),
+            (inner.width as usize).saturating_sub(26),
+        );
+        let commands = home_commands();
+        logo::render(
+            frame,
+            inner,
+            &logo::HomeInfo {
+                model: &state.provider_name,
+                workspace: &workspace,
+                commands: &commands,
+            },
+        );
         return;
     }
 
@@ -1877,36 +2062,38 @@ fn render_scrollbar(frame: &mut Frame, area: Rect, offset: u16, total: u16, visi
 
 fn render_status(frame: &mut Frame, area: Rect, state: &UiState) {
     let frame_idx = (state.tick / 2) as usize % SPINNER.len();
+    let separator = || Span::styled("  ·  ", Style::default().fg(palette::TEXT).dim());
     let mut left_spans = vec![Span::raw(" ")];
-    if state.is_streaming {
+    if state.pending_approval.is_some() {
+        // No spinner while the agent waits for the user: nothing is running.
+        left_spans.push(Span::styled(
+            "waiting for you",
+            Style::default().fg(palette::ATTENTION),
+        ));
+    } else if state.is_streaming {
         let text = if state.is_cancelling() {
             "Stopping turn...".to_string()
+        } else if let Some(started) = state.tool_started {
+            format!("{} · {}s", state.tool_status, started.elapsed().as_secs())
         } else if state.tool_status.is_empty() {
             "streaming response".to_string()
         } else {
             state.tool_status.clone()
         };
-        // No spinner while the agent waits for the user: nothing is running.
-        let text_color = if state.pending_approval.is_some() {
-            palette::ATTENTION
-        } else {
-            left_spans.push(Span::styled(
-                format!("{} ", SPINNER[frame_idx]),
-                Style::default().fg(palette::ATTENTION).bold(),
-            ));
-            palette::TEXT
-        };
-        left_spans.push(Span::styled(text, Style::default().fg(text_color)));
-        left_spans.push(Span::raw("   "));
+        left_spans.push(Span::styled(
+            format!("{} ", SPINNER[frame_idx]),
+            Style::default().fg(palette::ATTENTION).bold(),
+        ));
+        left_spans.push(Span::styled(text, Style::default().fg(palette::ATTENTION)));
+    } else {
+        left_spans.push(Span::styled("ready", Style::default().fg(palette::SUCCESS)));
     }
-    left_spans.push(Span::styled(
-        "◆ ",
-        Style::default().fg(palette::ACCENT).bold(),
-    ));
+    left_spans.push(separator());
     left_spans.push(Span::styled(
         state.provider_name.clone(),
-        Style::default().fg(palette::TEXT).bold(),
+        Style::default().fg(palette::TEXT),
     ));
+    let workspace = state.workspace_label();
     if !state.pending_images.is_empty() {
         let bytes = state
             .pending_images
@@ -1927,8 +2114,6 @@ fn render_status(frame: &mut Frame, area: Rect, state: &UiState) {
             Style::default().fg(palette::TEXT).dim(),
         ));
     }
-
-    let left = Line::from(left_spans);
 
     let right = if state.pending_approval.is_some() {
         Line::from(vec![
@@ -1961,8 +2146,24 @@ fn render_status(frame: &mut Frame, area: Rect, state: &UiState) {
             Span::styled(" quit ", Style::default().fg(palette::TEXT).dim()),
         ])
     };
-    let cols =
-        Layout::horizontal([Constraint::Percentage(50), Constraint::Percentage(50)]).split(area);
+    // The key hints keep their full width. The workspace goes last and is shortened from the
+    // start to fit, with a gap before the hints; it is left out when almost no room is left.
+    let room = (area.width as usize).saturating_sub(right.width() + 2);
+    let used = Line::from(left_spans.clone()).width();
+    let separator_width = separator().width();
+    if !workspace.is_empty() && room >= used + separator_width + 8 {
+        left_spans.push(separator());
+        left_spans.push(Span::styled(
+            truncate_start(&workspace, room - used - separator_width),
+            Style::default().fg(palette::TEXT).dim(),
+        ));
+    }
+    let left = Line::from(left_spans);
+    let cols = Layout::horizontal([
+        Constraint::Fill(1),
+        Constraint::Length(right.width() as u16),
+    ])
+    .split(area);
     frame.render_widget(Paragraph::new(left), cols[0]);
     frame.render_widget(Paragraph::new(right).alignment(Alignment::Right), cols[1]);
 }
@@ -2039,10 +2240,22 @@ fn render_input(frame: &mut Frame, area: Rect, state: &UiState) {
     frame.render_widget(para, area);
 }
 
-fn build_transcript_lines(state: &UiState) -> Vec<Line<'static>> {
+fn build_transcript_lines(state: &UiState, width: u16) -> Vec<Line<'static>> {
     let mut lines = Vec::<Line<'static>>::new();
 
-    for msg in &state.messages {
+    for (index, msg) in state.messages.iter().enumerate() {
+        if let Some(row) = &msg.tool {
+            lines.push(tool_row_line(row, width));
+            // Consecutive tool calls form one block with no blank lines between them.
+            let next_is_tool = state
+                .messages
+                .get(index + 1)
+                .is_some_and(|next| next.tool.is_some());
+            if !next_is_tool {
+                lines.push(Line::from(""));
+            }
+            continue;
+        }
         push_message_lines(&mut lines, msg.role, &msg.content, false);
         lines.push(Line::from(""));
     }
@@ -2057,6 +2270,92 @@ fn build_transcript_lines(state: &UiState) -> Vec<Line<'static>> {
     }
 
     lines
+}
+
+/// `  ✓ name args        result`, cut to one line of `width` columns. The result keeps its place
+/// on the right and the arguments are shortened first.
+fn tool_row_line(row: &ToolRow, width: u16) -> Line<'static> {
+    let (mark, mark_color, result, result_style) = match &row.outcome {
+        ToolOutcome::Running => (
+            "◌",
+            palette::ATTENTION,
+            "running",
+            Style::default().fg(palette::ATTENTION),
+        ),
+        ToolOutcome::Done(summary) => (
+            "✓",
+            palette::SUCCESS,
+            summary.as_str(),
+            Style::default().fg(palette::TEXT).dim(),
+        ),
+        ToolOutcome::Failed(summary) => (
+            "✗",
+            palette::DANGER,
+            summary.as_str(),
+            Style::default().fg(palette::DANGER),
+        ),
+    };
+    let width = width as usize;
+    let fixed = 2 + 2 + row.name.chars().count() + 1;
+    let result_width = result.chars().count();
+    let gap = if result.is_empty() { 0 } else { 2 };
+    let room = width.saturating_sub(fixed + gap + result_width);
+    let args = truncate_chars(&row.args.replace(['\n', '\r'], " "), room);
+    let pad = width.saturating_sub(fixed + args.chars().count() + result_width);
+
+    let mut spans = vec![
+        Span::raw("  "),
+        Span::styled(format!("{mark} "), Style::default().fg(mark_color).bold()),
+        Span::styled(row.name.clone(), Style::default().fg(palette::TEXT)),
+        Span::raw(" "),
+        Span::styled(args, Style::default().fg(palette::TEXT).dim()),
+    ];
+    if !result.is_empty() {
+        spans.push(Span::raw(" ".repeat(pad.max(gap))));
+        spans.push(Span::styled(result.to_string(), result_style));
+    }
+    Line::from(spans)
+}
+
+/// A tool row has one line, so a shell command drops the sandbox warning the approval panel
+/// already showed: `curl …` in the workspace root, or `make test (in sub)` elsewhere.
+fn compact_tool_args(args: &str) -> String {
+    let Some((cwd, command)) = args
+        .strip_prefix(UNSANDBOXED_COMMAND_PREFIX)
+        .and_then(|rest| rest.split_once(": "))
+    else {
+        return args.to_string();
+    };
+    if cwd == "." {
+        command.to_string()
+    } else {
+        format!("{command} (in {cwd})")
+    }
+}
+
+/// Keeps the end of `text`, which is the useful part of a path: `…/lab/target`.
+fn truncate_start(text: &str, max: usize) -> String {
+    let count = text.chars().count();
+    if count <= max {
+        return text.to_string();
+    }
+    if max == 0 {
+        return String::new();
+    }
+    let tail: String = text.chars().skip(count - (max - 1)).collect();
+    format!("…{tail}")
+}
+
+fn truncate_chars(text: &str, max: usize) -> String {
+    if text.chars().count() <= max {
+        return text.to_string();
+    }
+    if max == 0 {
+        return String::new();
+    }
+    let mut out: String = text.chars().take(max - 1).collect();
+    out.push('…');
+    out
 }
 
 fn push_message_lines(
@@ -2331,7 +2630,7 @@ fn wrapped_line_count(lines: &[Line<'static>], width: u16) -> u16 {
 
 #[cfg(test)]
 fn transcript_line_count(state: &UiState, width: u16) -> u16 {
-    wrapped_line_count(&build_transcript_lines(state), width)
+    wrapped_line_count(&build_transcript_lines(state, width), width)
 }
 
 fn message_visible_lines(state: &UiState, size: Size) -> u16 {

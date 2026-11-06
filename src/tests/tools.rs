@@ -15,6 +15,7 @@ use super::parse_cargo_lock;
 use super::parse_duckduckgo_results;
 use super::resolve_public_host;
 use super::tool_requires_approval;
+use super::tool_result_summary;
 use super::unified_diff;
 use super::url_encode_query;
 use crate::models::ToolCall;
@@ -1548,4 +1549,32 @@ fn only_read_only_tools_can_be_interrupted_without_cleanup() {
     ] {
         assert!(!super::tool_can_interrupt(name), "{name}");
     }
+}
+
+#[test]
+fn tool_result_summary_reports_counts_and_failures() {
+    assert_eq!(
+        tool_result_summary(
+            "grep",
+            &json!({"totalMatches": 1, "truncated": true}),
+            false
+        ),
+        (true, "1 match+".to_string())
+    );
+    assert_eq!(
+        tool_result_summary("listDirectory", &json!({"entries": [{}, {}]}), false),
+        (true, "2 entries".to_string())
+    );
+    assert_eq!(
+        tool_result_summary("grep", &json!({"totalMatches": 3}), false),
+        (true, "3 matches".to_string())
+    );
+    assert_eq!(
+        tool_result_summary("runCommand", &json!({"exitCode": 2}), false),
+        (false, "exit 2".to_string())
+    );
+    assert_eq!(
+        tool_result_summary("readFile", &json!({"error": "not found\nmore"}), true),
+        (false, "not found".to_string())
+    );
 }
