@@ -1,4 +1,5 @@
 /target
+/gui/target
 .env*
 /test
 .DS_Store

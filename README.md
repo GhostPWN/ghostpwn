@@ -127,6 +127,26 @@ them with the rest of the chat. Image data is sent to the selected provider, so
 only attach files you intend to share. Provider and model limits still apply,
 and non-vision models return an error.
 
+## GUI preview
+
+`gui/` holds an experimental graphical front end built with
+[Rune](https://github.com/anomalyco/rune). It renders the home screen in a native
+window. It is a separate crate, so it does not change the TUI build or its
+dependencies. The terminal app stays the primary interface.
+
+Rune is pre-release. The crate pins a `dev` revision and repeats Rune's vendored
+`[patch.crates-io]` forks, which an app that builds Rune must carry.
+
+```sh
+cd gui
+cargo run                     # open the window
+cargo run -- --snap home.png  # render the home screen headless to a PNG
+cargo test                    # headless layout check
+```
+
+The GUI is a skeleton: it shows the home screen only and is not wired to the
+agent. It does not replace the TUI.
+
 ## Contributing
 
 Contributions are welcome. Open an issue before submitting a pull request.

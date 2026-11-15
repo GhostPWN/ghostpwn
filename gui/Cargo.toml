@@ -1,0 +1,19 @@
+[package]
+name = "ghostpwn-gui"
+version = "0.1.0"
+edition = "2024"
+license = "MIT"
+publish = false
+
+[dependencies]
+rune = { git = "https://github.com/anomalyco/rune", rev = "7a92d24d63d9be8480e3e475489d2a4d0ed48c8d" }
+
+# Rune builds against vendored, patched forks of these crates. A dependency's own
+# [patch] does not apply to the crate that depends on it, so an app that builds Rune
+# must repeat them. See Rune's root Cargo.toml.
+[patch.crates-io]
+wgpu-hal = { git = "https://github.com/anomalyco/rune", rev = "7a92d24d63d9be8480e3e475489d2a4d0ed48c8d", package = "wgpu-hal" }
+winit = { git = "https://github.com/anomalyco/rune", rev = "7a92d24d63d9be8480e3e475489d2a4d0ed48c8d", package = "winit" }
+parley_engine = { git = "https://github.com/anomalyco/rune", rev = "7a92d24d63d9be8480e3e475489d2a4d0ed48c8d", package = "parley_engine" }
+accesskit_windows = { git = "https://github.com/anomalyco/rune", rev = "7a92d24d63d9be8480e3e475489d2a4d0ed48c8d", package = "accesskit_windows" }
+accesskit_macos = { git = "https://github.com/anomalyco/rune", rev = "7a92d24d63d9be8480e3e475489d2a4d0ed48c8d", package = "accesskit_macos" }
